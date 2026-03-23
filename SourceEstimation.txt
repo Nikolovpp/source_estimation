@@ -1,0 +1,614 @@
+﻿TY  - JOUR
+AB  - In recent years, multiple noninvasive imaging modalities have been used to develop a better understanding of the human brain functionality, including positron emission tomography, single-photon emission computed tomography, and functional magnetic resonance imaging, all of which provide brain images with millimeter spatial resolutions. Despite good spatial resolution, time resolution of these methods are poor and values are about seconds. Scalp electroencephalography recordings can be used to perform the inverse problem in order to specify the location of the dominant sources of the brain activity. In this paper, EEG source localization method, diagnosis of brain abnormalities using common EEG source localization methods, investigating the effect of the head model on EEG source imaging results have been studied. In this review we present enough evidence that provides motivation for consideration in the future research using EEG source localization methods.
+AU  - Asadzadeh, Shiva
+AU  - Rezaii, Tohid Yousefi
+AU  - Beheshti, Soosan
+AU  - Delpak, Azra
+AU  - Meshgini, Saeed
+DO  - 10.1016/j.jneumeth.2020.108740 PMID - 32353472
+J2  - J Neurosci Meth
+N1  - 32353472
+PY  - 2020
+SN  - 0165-0270
+SP  - 108740
+ST  - A systematic review of EEG source localization techniques and their applications on diagnosis of brain abnormalities
+T2  - Journal of Neuroscience Methods
+TI  - A systematic review of EEG source localization techniques and their applications on diagnosis of brain abnormalities
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S0165027020301631?via%3Dihub
+VL  - 339
+ID  - 459
+ER  - 
+
+TY  - JOUR
+AB  - Electroencephalography (EEG) is the non-invasive measurement of the brain's electric fields. Electrodes placed on the scalp record voltage potentials resulting from current flow in and around neurons. EEG is nearly a century old: this long history has afforded EEG a rich and diverse spectrum of applications. On the one hand, foundations of EEG in clinical diagnostics have dovetailed more recently into brain-triggered neurorehabilitation treatments. On the other hand, EEG has not only been a workhorse for providing brain correlates of constructs in the field of experimental psychology, but has also been used as a true neuroimaging method with more recent extensions in translational as well as computational neuroscience. The versatility and accessibility of the technique, in combination with advances in signal processing, allow for this 'old dog' to still deliver new tricks and innovations.
+AD  - The Laboratory for Investigative Neurophysiology (The LINE), Department of Radiology, University Hospital Center and University of Lausanne (CHUV), Lausanne, Switzerland.
+The Laboratory for Investigative Neurophysiology (The LINE), Department of Radiology, University Hospital Center and University of Lausanne (CHUV), Lausanne, Switzerland; Ophthalmology Department, University of Lausanne, Fondation Asile des Aveugles, Lausanne, Switzerland.
+The Laboratory for Investigative Neurophysiology (The LINE), Department of Radiology, University Hospital Center and University of Lausanne (CHUV), Lausanne, Switzerland; Ophthalmology Department, University of Lausanne, Fondation Asile des Aveugles, Lausanne, Switzerland; EEG Brain Mapping Core, Center for Biomedical Imaging (CIBM) of Lausanne and Geneva, Lausanne, Switzerland; Department of Hearing and Speech Sciences, Vanderbilt University Medical Center, Nashville, TN 37232, USA. Electronic address: micah.murray@chuv.ch.
+AN  - 30721678
+AU  - Biasiucci, A.
+AU  - Franceschiello, B.
+AU  - Murray, M. M.
+DA  - Feb 4
+DO  - 10.1016/j.cub.2018.11.052
+ET  - 2019/02/06
+IS  - 3
+KW  - Animals
+Brain/*physiology
+Electroencephalography/*methods
+Humans
+Neuroimaging/*methods
+N1  - Biasiucci, Andrea
+Franceschiello, Benedetta
+Murray, Micah M
+eng
+England
+Curr Biol. 2019 Feb 4;29(3):R80-R85. doi: 10.1016/j.cub.2018.11.052.
+PY  - 2019
+SN  - 1879-0445 (Electronic)
+0960-9822 (Linking)
+SP  - R80-R85
+ST  - Electroencephalography
+T2  - Curr Biol
+TI  - Electroencephalography
+UR  - https://www.ncbi.nlm.nih.gov/pubmed/30721678
+VL  - 29
+ID  - 462
+ER  - 
+
+TY  - JOUR
+AB  - Electromagnetic source imaging (ESI) techniques have become one of the most common alternatives for understanding cognitive processes in the human brain and for guiding possible therapies for neurological diseases. However, ESI accuracy strongly depends on the forward model capabilities to accurately describe the subject's head anatomy from the available structural data. Attempting to improve the ESI performance, we enhance the brain structure model within the individual-defined forward problem formulation, combining the head geometry complexity of the modeled tissue compartments and the prior knowledge of the brain tissue morphology. We validate the proposed methodology using 25 subjects, from which a set of magnetic-resonance imaging scans is acquired, extracting the anatomical priors and an electroencephalography signal set needed for validating the ESI scenarios. Obtained results confirm that incorporating patient-specific head models enhances the performed accuracy and improves the localization of focal and deep sources.
+AD  - Signal Processing and Recognition Group, Universidad Nacional de Colombia, Manizales, Colombia.
+Instituto Tecnologico Metropolitano, Medellin, Colombia.
+AN  - 32328152
+AU  - Cespedes-Villar, Y.
+AU  - Martinez-Vargas, J. D.
+AU  - Castellanos-Dominguez, G.
+C2  - PMC7157795 publication of this paper.
+DO  - 10.1155/2020/5076865
+ET  - 2020/04/25
+KW  - Adolescent
+Brain/anatomy & histology/diagnostic imaging
+Brain Mapping/methods/statistics & numerical data
+Child
+Child, Preschool
+Computational Biology
+Electroencephalography/*methods/statistics & numerical data
+Electromagnetic Phenomena
+Head/*anatomy & histology/*diagnostic imaging
+Humans
+Image Processing, Computer-Assisted/statistics & numerical data
+Magnetic Resonance Imaging/statistics & numerical data
+Models, Neurological
+Neuroimaging/statistics & numerical data
+Patient-Specific Modeling/*statistics & numerical data
+N1  - Cespedes-Villar, Yohan
+Martinez-Vargas, Juan David
+Castellanos-Dominguez, G
+eng
+Validation Study
+Comput Math Methods Med. 2020 Apr 3;2020:5076865. doi: 10.1155/2020/5076865. eCollection 2020.
+PY  - 2020
+SN  - 1748-6718 (Electronic)
+1748-670X (Linking)
+SP  - 5076865
+ST  - Influence of Patient-Specific Head Modeling on EEG Source Imaging
+T2  - Comput Math Methods Med
+TI  - Influence of Patient-Specific Head Modeling on EEG Source Imaging
+UR  - https://www.ncbi.nlm.nih.gov/pubmed/32328152
+https://pmc.ncbi.nlm.nih.gov/articles/PMC7157795/
+VL  - 2020
+ID  - 473
+ER  - 
+
+TY  - JOUR
+AB  - The scalp electroencephalogram (EEG) exhibits spatiotemporal dynamics reflecting synchronous dendritic activity of cortical pyramidal neurons. Recent advances in EEG acquisition and electric head modeling are improving the spatial resolution of scalp EEG, but the skull remains an obstacle. We use lead field theory to quantify the spatial resolution of scalp EEG, contrasting two electrode spacings and two values of skull conductivity. We show that, without cortical constraints, 19-electrode EEG systems have optimal spatial resolution near 22–37cm3, while 129-electrode systems have 6–8cm3. These results emphasize the benefits of more electrodes, but also the need for methods of measuring local skull conductivity.
+AU  - Ferree, T. C.
+AU  - Clay, M. T.
+AU  - Tucker, D. M.
+DO  - 10.1016/s0925-2312(01)00568-9
+J2  - Neurocomputing
+PY  - 2001
+SN  - 0925-2312
+SP  - 1209-1216
+ST  - The spatial resolution of scalp EEG
+T2  - Neurocomputing
+TI  - The spatial resolution of scalp EEG
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S0925231201005689?via%3Dihub
+VL  - 38
+ID  - 429
+ER  - 
+
+TY  - JOUR
+AB  - In this chapter, we present the physical and physiological basics behind EEG and MEG signal generation and propagation. We first start by presenting the biophysical principles that explain how the coordinated movements of ions inside and outside neuronal cells result in macroscale phenomena at the scalp, such as electric potentials recorded by EEG and magnetic fields sensed by MEG. These physical principles enforce EEG and MEG signals to have specific spatial and temporal features, which can be used to study brain’s response to internal and external stimuli. We continue our exploration by developing a mathematical framework within which EEG and MEG signals can be computed if the distribution of underlying brain sources is known, a process called forward problem. We further continue to discuss methods that attempt the reverse, i.e., solving for underlying brain sources given scalp measurements such as EEG and MEG, a process called source imaging. We will provide various examples of how electrophysiological source imaging techniques can help study the brain during its normal and pathological states. We will also briefly discuss how combining electrophysiological signals from EEG with hemodynamic signals from functional magnetic resonance imaging (fMRI) helps improve the spatiotemporal resolution of estimates of the underlying brain sources, which is critical for studying spatiotemporal processes within the brain. The goal of this chapter is to provide proper physical and physiological intuition and biophysical principles that explain EEG/MEG signal generation, its propagation from sources in the brain to EEG/MEG sensors, and how this process can be inverted using signal processing and machine learning techniques and algorithms.
+AU  - He, Bin
+AU  - Ding, Lei
+AU  - Sohrabpour, Abbas
+DO  - 10.1007/978-3-030-43395-6_13
+PY  - 2020
+SP  - 379-413
+ST  - Neural Engineering
+TI  - Neural Engineering
+UR  - https://link.springer.com/chapter/10.1007/978-3-030-43395-6_13
+ID  - 452
+ER  - 
+
+TY  - JOUR
+AU  - He, Bin
+AU  - Sohrabpour, Abbas
+DO  - 10.1016/j.clinph.2015.04.074 PMID - 26051752
+IS  - 1
+J2  - Clin Neurophysiol
+N1  - 26051752
+PY  - 2016
+SN  - 1388-2457
+SP  - 5-7
+ST  - Imaging epileptogenic brain using high density EEG source imaging and MRI
+T2  - Clinical Neurophysiology
+TI  - Imaging epileptogenic brain using high density EEG source imaging and MRI
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S1388245715003156?via%3Dihub
+VL  - 127
+ID  - 453
+ER  - 
+
+TY  - JOUR
+AB  - Brain activity and connectivity are distributed in the three-dimensional space and evolve in time. It is important to image brain dynamics with high spatial and temporal resolution. Electroencephalography (EEG) and magnetoencephalography (MEG) are noninvasive measurements associated with complex neural activations and interactions that encode brain functions. Electrophysiological source imaging estimates the underlying brain electrical sources from EEG and MEG measurements. It offers increasingly improved spatial resolution and intrinsically high temporal resolution for imaging large-scale brain activity and connectivity on a wide range of timescales. Integration of electrophysiological source imaging and functional magnetic resonance imaging could further enhance spatiotemporal resolution and specificity to an extent that is not attainable with either technique alone. We review methodological developments in electrophysiological source imaging over the past three decades and envision its future advancement into a powerful functional neuroimaging technology for basic and clinical neuroscience applications.
+AD  - Department of Biomedical Engineering, Carnegie Mellon University, Pittsburgh, Pennsylvania 15213, USA; email: bhe1@andrew.cmu.edu.
+Department of Biomedical Engineering, University of Minnesota, Minneapolis, Minnesota 55455, USA.
+Institute for Medical Engineering and Science, Massachusetts Institute of Technology, Cambridge, Massachusetts 02139, USA.
+Weldon School of Biomedical Engineering, School of Electrical and Computer Engineering, and Purdue Institute of Integrative Neuroscience, Purdue University, West Lafayette, Indiana 47906, USA.
+AN  - 29494213
+AU  - He, B.
+AU  - Sohrabpour, A.
+AU  - Brown, E.
+AU  - Liu, Z.
+C2  - PMC7941524
+DA  - Jun 4
+DO  - 10.1146/annurev-bioeng-062117-120853
+ET  - 2018/03/02
+KW  - Algorithms
+Animals
+Bayes Theorem
+Brain/*diagnostic imaging
+Electroencephalography/*methods
+Electrophysiology/*methods
+Humans
+Magnetic Resonance Imaging/methods
+Magnetoencephalography/*methods
+Neurosciences/trends
+Signal Processing, Computer-Assisted
+Software
+*eeg
+*meg
+*electrophysiological source imaging
+*functional connectivity
+*inverse problem
+*source localization
+L1  - internal-pdf://0943201596/He-2018-Electrophysiological Source Imaging_ A.pdf
+N1  - He, Bin
+Sohrabpour, Abbas
+Brown, Emery
+Liu, Zhongming
+eng
+RF1 MH114233/MH/NIMH NIH HHS/
+T32 EB008389/EB/NIBIB NIH HHS/
+R01 EY023101/EY/NEI NIH HHS/
+R01 AT009263/AT/NCCIH NIH HHS/
+U01 HL117664/HL/NHLBI NIH HHS/
+R01 EB021027/EB/NIBIB NIH HHS/
+R01 MH104402/MH/NIMH NIH HHS/
+R01 NS096761/NS/NINDS NIH HHS/
+Research Support, N.I.H., Extramural
+Research Support, U.S. Gov't, Non-P.H.S.
+Review
+Annu Rev Biomed Eng. 2018 Jun 4;20:171-196. doi: 10.1146/annurev-bioeng-062117-120853. Epub 2018 Mar 1.
+PY  - 2018
+SN  - 1545-4274 (Electronic)
+1523-9829 (Linking)
+SP  - 171-196
+ST  - Electrophysiological Source Imaging: A Noninvasive Window to Brain Dynamics
+T2  - Annu Rev Biomed Eng
+TI  - Electrophysiological Source Imaging: A Noninvasive Window to Brain Dynamics
+UR  - https://www.ncbi.nlm.nih.gov/pubmed/29494213
+VL  - 20
+ID  - 428
+ER  - 
+
+TY  - JOUR
+AB  - Unlocking the dynamic inner workings of the brain continues to remain a grand challenge of the 21st century. To this end, functional neuroimaging modalities represent an outstanding approach to better understand the mechanisms of both normal and abnormal brain functions. The ability to image brain function with ever increasing spatial and temporal resolution has made a significant leap over the past several decades. Further delineation of functional networks could lead to improved understanding of brain function in both normal and diseased states. This paper reviews recent advancements and current challenges in dynamic functional neuroimaging techniques, including electrophysiological source imaging, multimodal neuroimaging integrating fMRI with EEG/MEG, and functional connectivity imaging.
+AD  - Department of Biomedical Engineering, University of Minnesota, Minneapolis, MN 55455, USA. binhe@umn.edu
+AN  - 21478071
+AU  - He, B.
+AU  - Yang, L.
+AU  - Wilke, C.
+AU  - Yuan, H.
+C2  - PMC3241716
+DA  - Jul
+DO  - 10.1109/TBME.2011.2139210
+ET  - 2011/04/12
+IS  - 7
+KW  - Brain/anatomy & histology/*physiology
+Brain Mapping/*methods
+Electroencephalography
+Humans
+Magnetic Resonance Imaging
+Magnetoencephalography
+Nerve Net/anatomy & histology/*physiology
+N1  - He, Bin
+Yang, Lin
+Wilke, Christopher
+Yuan, Han
+eng
+T32 EB008389/EB/NIBIB NIH HHS/
+R01 EB007920-03/EB/NIBIB NIH HHS/
+R01 EB006433/EB/NIBIB NIH HHS/
+R01 EB007920-04/EB/NIBIB NIH HHS/
+R01 EB006433-03/EB/NIBIB NIH HHS/
+R01 EB007920/EB/NIBIB NIH HHS/
+T32 EB008389-01/EB/NIBIB NIH HHS/
+R01 EB006433-02/EB/NIBIB NIH HHS/
+Research Support, N.I.H., Extramural
+Research Support, U.S. Gov't, Non-P.H.S.
+Review
+IEEE Trans Biomed Eng. 2011 Jul;58(7):1918-31. doi: 10.1109/TBME.2011.2139210. Epub 2011 Apr 7.
+PY  - 2011
+SN  - 1558-2531 (Electronic)
+0018-9294 (Linking)
+SP  - 1918-31
+ST  - Electrophysiological imaging of brain activity and connectivity-challenges and opportunities
+T2  - IEEE Trans Biomed Eng
+TI  - Electrophysiological imaging of brain activity and connectivity-challenges and opportunities
+UR  - https://www.ncbi.nlm.nih.gov/pubmed/21478071
+https://pmc.ncbi.nlm.nih.gov/articles/PMC3241716/
+VL  - 58
+ID  - 463
+ER  - 
+
+TY  - JOUR
+AB  - BackgroundThe present study aims at evaluating and comparing electrical and magnetic distributed source imaging methods applied to high-density Electroencephalography (hdEEG) and Magnetoencephalography (MEG) data. We used resolution matrices to characterize spatial resolution properties of Minimum Norm Estimate (MNE), dynamic Statistical Parametric Mapping (dSPM), standardized Low-Resolution Electromagnetic Tomography (sLORETA) and coherent Maximum Entropy on the Mean (cMEM, an entropy-based technique). The resolution matrix provides information of the Point Spread Functions (PSF) and of the Crosstalk functions (CT), this latter being also called source leakage, as it reflects the influence of a source on its neighbors.MethodsThe spatial resolution of the inverse operators was first evaluated theoretically and then with real data acquired using electrical median nerve stimulation on five healthy participants. We evaluated the Dipole Localization Error (DLE) and the Spatial Dispersion (SD) of each PSF and CT map.ResultscMEM showed the smallest spatial spread (SD) for both PSF and CT maps, whereas localization errors (DLE) were similar for all methods. Whereas cMEM SD values were lower in MEG compared to hdEEG, the other methods slightly favored hdEEG over MEG. In real data, cMEM provided similar localization error and significantly less spatial spread than other methods for both MEG and hdEEG. Whereas both MEG and hdEEG provided very accurate localizations, all the source imaging methods actually performed better in MEG compared to hdEEG according to all evaluation metrics, probably due to the higher signal-to-noise ratio of the data in MEG.ConclusionOur overall results show that all investigated methods provide similar localization errors, suggesting very accurate localization for both MEG and hdEEG when similar number of sensors are considered for both modalities. Intrinsic properties of source imaging methods as well as their behavior for well-controlled tasks, suggest an overall better performance of cMEM in regards to spatial resolution and spatial leakage for both hdEEG and MEG. This indicates that cMEM would be a good candidate for studying source localization of focal and extended generators as well as functional connectivity studies.
+AU  - Hedrich, T.
+AU  - Pellegrino, G.
+AU  - Kobayashi, E.
+AU  - Lina, J. M.
+AU  - Grova, C.
+DO  - 10.1016/j.neuroimage.2017.06.022 PMID - 28619655
+J2  - Neuroimage
+N1  - 28619655
+PY  - 2017
+SN  - 1053-8119
+SP  - 531-544
+ST  - Comparison of the spatial resolution of source imaging techniques in high-density EEG and MEG
+T2  - NeuroImage
+TI  - Comparison of the spatial resolution of source imaging techniques in high-density EEG and MEG
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S1053811917304913?via%3Dihub
+VL  - 157
+ID  - 448
+ER  - 
+
+TY  - JOUR
+AB  - Objective: Adaptive beamformer methods that have been extensively used for functional brain imaging using EEG/MEG (magnetoencephalography) signals are sensitive to model mismatches. We propose a robust minimum variance beamformer (RMVB) technique, which explicitly incorporates the uncertainty of the lead field matrix into the estimation of spatial-filter weights that are subsequently used to perform the imaging. Methods: The uncertainty of the lead field is modeled by ellipsoids in the RMVB method; these hyperellipsoids (ellipsoids in higher dimensions) define regions of uncertainty for a given nominal lead field vector. These ellipsoids are estimated empirically by sampling lead field vectors surrounding each point of the source space, or more generally by building several forward models for the source space. Once these uncertainty regions (ellipsoids) are estimated, they are used to perform the source-imaging task. Computer simulations are conducted to evaluate the performance of the proposed RMVB technique. Results: Our results show that robust beamformers can outperform conventional beamformers in terms of localization error, recovering source dynamics, and estimation of the underlying source extents when uncertainty in the lead field matrix is properly determined and modeled. Conclusion: The RMVB can be substituted for conventional beamformers, especially in applications where source imaging is performed off-line, and computational speed and complexity are not of major concern. Significance: A high-quality source imaging can be utilized in various applications, such as determining the epileptogenic zone in medically intractable epilepsy patients or estimating the time course of activity, which is a required step for computing the functional connectivity of brain networks.
+AU  - Hosseini, Seyed Amir Hossein
+AU  - Sohrabpour, Abbas
+AU  - Akcakaya, Mehmet
+AU  - He, Bin
+DO  - 10.1109/tbme.2018.2859204 PMID - 30047869
+IS  - 10
+J2  - Ieee T Bio-med Eng
+N1  - 30047869
+PY  - 2018
+SN  - 0018-9294
+SP  - 2365-2374
+ST  - Electromagnetic Brain Source Imaging by Means of a Robust Minimum Variance Beamformer
+T2  - IEEE Transactions on Biomedical Engineering
+TI  - Electromagnetic Brain Source Imaging by Means of a Robust Minimum Variance Beamformer
+VL  - 65
+ID  - 450
+ER  - 
+
+TY  - JOUR
+AB  - Conventional methods for positioning electroencephalography electrodes according to the international 10/20 system are based on the manual identification of the principal 10/20 landmarks via visual inspection and palpation, inducing intersession variations in their determined locations due to structural ambiguity or poor visibility. To address the variation issue, we propose an image guidance system for precision electrode placement. Following the electrode placement according to the 10/20 system, affixed electrodes are laser-scanned together with the facial surface. For subsequent procedures, the laser scan is conducted likewise after positioning the electrodes in an arbitrary manner, and following the measurement of fiducial electrode locations, frame matching is performed to determine a transformation from the coordinate frame of the position tracker to that of the laser-scanned image. Finally, by registering the intra-procedural scan of the facial surface to the reference scan, the current tracking data of the electrodes can be visualized relative to the reference goal positions without manually measuring the four principal landmarks for each trial. The experimental results confirmed that use of the electrode navigation system significantly improved the electrode placement precision compared to the conventional 10/20 system (p < 0.005). The proposed system showed the possibility of precise image-guided electrode placement as an alternative to the conventional manual 10/20 system.
+AU  - Jeon, Sangseo
+AU  - Chien, Jongho
+AU  - Song, Chanho
+AU  - Hong, Jaesung
+DO  - 10.1007/s10548-017-0610-y PMID - 29204789
+IS  - 2
+J2  - Brain Topogr
+N1  - 29204789
+PY  - 2018
+SN  - 0896-0267
+SP  - 174-185
+ST  - A Preliminary Study on Precision Image Guidance for Electrode Placement in an EEG Study
+T2  - Brain Topography
+TI  - A Preliminary Study on Precision Image Guidance for Electrode Placement in an EEG Study
+UR  - https://link.springer.com/article/10.1007/s10548-017-0610-y
+VL  - 31
+ID  - 446
+ER  - 
+
+TY  - JOUR
+AB  - EEG source imaging (ESI) is a technique designed to predict the source of a given field potential obtained using EEG. Kaiboriboonet al.describe the principles and technical aspects underlying ESI in epilepsy. They discuss the practicalities and pitfalls of ESI in the clinical setting, specifically for epileptic source localization and identification of the eloquent cortex—two important considerations when planning resective surgery in patients with refractory epilepsy. EEG source imaging (ESI) is a model-based imaging technique that integrates temporal and spatial components of EEG to identify the generating source of electrical potentials recorded on the scalp. Recent advances in computer technologies have made the analysis of ESI data less time-consuming, and have rekindled interest in this technique as a clinical diagnostic tool. On the basis of the available body of evidence, ESI seems to be a promising tool for epilepsy evaluation; however, the precise clinical value of ESI in presurgical evaluation of epilepsy and in localization of eloquent cortex remains to be investigated. In this Review, we describe two fundamental issues in ESI; namely, the forward and inverse problems, and their solutions. The clinical application of ESI in surgical planning for patients with medically refractory focal epilepsy, and its use in source reconstruction together with invasive recordings, is also discussed. As ESI can be used to map evoked responses, we discuss the clinical utility of this technique in cortical mapping—an essential process when planning resective surgery for brain regions that are in close proximity to eloquent cortex. EEG source imaging (ESI) is a model-based imaging technique that integrates temporal and spatial components of EEG to identify the source of scalp-recorded potentialsThe choice of forward and inverse solutions can crucially influence the outcome of source localization using ESIA realistic head model using an individual's MRI offers the best forward solutionA high total number of electrodes or concentration of electrodes over the region of interest can improve the accuracy of ESIAttention to technical recording details, including co-registration of electrode positions on MRI and modelling of the initial phase of epileptic spikes, is crucial for accurate source localization using ESIOn the basis of current evidence, ESI is a promising tool for epilepsy evaluation, but further studies in large epilepsy cohorts are needed to demonstrate its clinical value EEG source imaging (ESI) is a model-based imaging technique that integrates temporal and spatial components of EEG to identify the source of scalp-recorded potentials The choice of forward and inverse solutions can crucially influence the outcome of source localization using ESI A realistic head model using an individual's MRI offers the best forward solution A high total number of electrodes or concentration of electrodes over the region of interest can improve the accuracy of ESI Attention to technical recording details, including co-registration of electrode positions on MRI and modelling of the initial phase of epileptic spikes, is crucial for accurate source localization using ESI On the basis of current evidence, ESI is a promising tool for epilepsy evaluation, but further studies in large epilepsy cohorts are needed to demonstrate its clinical value
+AU  - Kaiboriboon, Kitti
+AU  - Lüders, Hans O.
+AU  - Hamaneh, Mehdi
+AU  - Turnbull, John
+AU  - Lhatoo, Samden D.
+DO  - 10.1038/nrneurol.2012.150 PMID - 22868868
+IS  - 9
+J2  - Nat Rev Neurol
+N1  - 22868868
+PY  - 2012
+SN  - 1759-4758
+SP  - 498-507
+ST  - EEG source imaging in epilepsy—practicalities and pitfalls
+T2  - Nature Reviews Neurology
+TI  - EEG source imaging in epilepsy—practicalities and pitfalls
+UR  - https://www.nature.com/articles/nrneurol.2012.150
+VL  - 8
+ID  - 457
+ER  - 
+
+TY  - JOUR
+AB  - Electroencephalography (EEG) and magnetoencephalography (MEG) are widely used to localize brain activity and their spatial resolutions have been compared in several publications. While most clinical studies demonstrated higher accuracy of MEG source localization, simulation studies suggested a more accurate EEG than MEG localization for the same number of channels. However, studies comparing real MEG and EEG data with equivalent number of channels are scarce. We investigated 14 right-handed healthy subjects performing a motor task in MEG, high-density-(hd-) EEG and fMRI as well as a somatosensory task in MEG and hd-EEG and compared source analysis results of the evoked brain activity between modalities with different head models. Using individual head models, hd-EEG localized significantly closer to the anatomical reference point obtained by fMRI than MEG. Source analysis results were least accurate for hd-EEG based on a standard head model. Further, hd-EEG and MEG localized more medially than fMRI. Localization accuracy of electric source imaging is dependent on the head model used with more accurate results obtained with individual head models. If this is taken into account, EEG localization can be more accurate than MEG localization for the same number of channels.
+AU  - Klamer, Silke
+AU  - Elshahabi, Adham
+AU  - Lerche, Holger
+AU  - Braun, Christoph
+AU  - Erb, Michael
+AU  - Scheffler, Klaus
+AU  - Focke, Niels K.
+DO  - 10.1007/s10548-014-0405-3 PMID - 25296614
+IS  - 1
+J2  - Brain Topogr
+N1  - 25296614
+PY  - 2015
+SN  - 0896-0267
+SP  - 87-94
+ST  - Differences Between MEG and High-Density EEG Source Localizations Using a Distributed Source Model in Comparison to fMRI
+T2  - Brain Topography
+TI  - Differences Between MEG and High-Density EEG Source Localizations Using a Distributed Source Model in Comparison to fMRI
+UR  - https://link.springer.com/article/10.1007/s10548-014-0405-3
+VL  - 28
+ID  - 447
+ER  - 
+
+TY  - JOUR
+AB  - We describe a simple and efficient solution to the problem of reconstructing electromagnetic sources into a canonical or standard anatomical space. Its simplicity rests upon incorporating subject-specific anatomy into the forward model in a way that eschews the need for cortical surface extraction. The forward model starts with a canonical cortical mesh, defined in a standard stereotactic space. The mesh is warped, in a nonlinear fashion, to match the subject's anatomy. This warping is the inverse of the transformation derived from spatial normalization of the subject's structural MRI image, using fully automated procedures that have been established for other imaging modalities. Electromagnetic lead fields are computed using the warped mesh, in conjunction with a spherical head model (which does not rely on individual anatomy). The ensuing forward model is inverted using an empirical Bayesian scheme that we have described previously in several publications. Critically, because anatomical information enters the forward model, there is no need to spatially normalize the reconstructed source activity. In other words, each source, comprising the mesh, has a predetermined and unique anatomical attribution within standard stereotactic space. This enables the pooling of data from multiple subjects and the reporting of results in stereotactic coordinates. Furthermore, it allows the graceful fusion of fMRI and MEG data within the same anatomical framework.
+AD  - INSERM U821, Dynamique Cerebrale et Cognition, Lyon, France. jeremiemattout@yahoo.fr
+AN  - 18350131
+AU  - Mattout, J.
+AU  - Henson, R. N.
+AU  - Friston, K. J.
+C2  - PMC2266807
+DO  - 10.1155/2007/67613
+ET  - 2008/03/20
+N1  - Mattout, Jeremie
+Henson, Richard N
+Friston, Karl J
+eng
+Wellcome Trust/United Kingdom
+MC_U105579226/Medical Research Council/United Kingdom
+Comput Intell Neurosci. 2007:67613. doi: 10.1155/2007/67613.
+PY  - 2007
+SN  - 1687-5265 (Print)
+SP  - 67613
+ST  - Canonical source reconstruction for MEG
+T2  - Comput Intell Neurosci
+TI  - Canonical source reconstruction for MEG
+UR  - https://www.ncbi.nlm.nih.gov/pubmed/18350131
+https://pmc.ncbi.nlm.nih.gov/articles/PMC2266807/
+ID  - 472
+ER  - 
+
+TY  - JOUR
+AB  - The electroencephalogram (EEG) is one of the oldest technologies to measure neuronal activity of the human brain. It has its undisputed value in clinical diagnosis, particularly (but not exclusively) in the identification of epilepsy and sleep disorders and in the evaluation of dysfunctions in sensory transmission pathways. With the advancement of digital technologies, the analysis of EEG has moved from pure visual inspection of amplitude and frequency modulations over time to a comprehensive exploration of the temporal and spatial characteristics of the recorded signals. Today, EEG is accepted as a powerful tool to capture brain function with the unique advantage of measuring neuronal processes in the time frame in which these processes occur, namely in the sub-second range. However, it is generally stated that EEG suffers from a poor spatial resolution that makes it difficult to infer to the location of the brain areas generating the neuronal activity measured on the scalp. This statement has challenged a whole community of biomedical engineers to offer solutions to localize more precisely and more reliably the generators of the EEG activity. High-density EEG systems combined with precise information of the head anatomy and sophisticated source localization algorithms now exist that convert the EEG to a true neuroimaging modality. With these tools in hand and with the fact that EEG still remains versatile, inexpensive and portable, electrical neuroimaging has become a widely used technology to study the functions of the pathological and healthy human brain. However, several steps are needed to pass from the recording of the EEG to 3-dimensional images of neuronal activity. This review explains these different steps and illustrates them in a comprehensive analysis pipeline integrated in a stand-alone freely available academic software: Cartool. The information about how the different steps are performed in Cartool is only meant as a suggestion. Other EEG source imaging software may apply similar or different approaches to the different steps.
+AU  - Michel, Christoph M.
+AU  - Brunet, Denis
+DO  - 10.3389/fneur.2019.00325 PMID - 31019487
+J2  - Front Neurol
+L1  - internal-pdf://4045628550/Michel-2019-EEG Source Imaging_ A Practical Re.pdf
+N1  - 31019487
+PY  - 2019
+SN  - 1664-2295
+SP  - 325
+ST  - EEG Source Imaging: A Practical Review of the Analysis Steps
+T2  - Frontiers in Neurology
+TI  - EEG Source Imaging: A Practical Review of the Analysis Steps
+UR  - https://public-pages-files-2025.frontiersin.org/journals/neurology/articles/10.3389/fneur.2019.00325/pdf
+VL  - 10
+ID  - 461
+ER  - 
+
+TY  - JOUR
+AB  - Recent advances in signal analysis have engendered EEG with the status of a true brain mapping and brain imaging method capable of providing spatio-temporal information regarding brain (dys)function. Because of the increasing interest in the temporal dynamics of brain networks, and because of the straightforward compatibility of the EEG with other brain imaging techniques, EEG is increasingly used in the neuroimaging community. However, the full capability of EEG is highly underestimated. Many combined EEG-fMRI studies use the EEG only as a spike-counter or an oscilloscope. Many cognitive and clinical EEG studies use the EEG still in its traditional way and analyze grapho-elements at certain electrodes and latencies. We here show that this way of using the EEG is not only dangerous because it leads to misinterpretations, but it is also largely ignoring the spatial aspects of the signals. In fact, EEG primarily measures the electric potential field at the scalp surface in the same way as MEG measures the magnetic field. By properly sampling and correctly analyzing this electric field, EEG can provide reliable information about the neuronal activity in the brain and the temporal dynamics of this activity in the millisecond range. This review explains some of these analysis methods and illustrates their potential in clinical and experimental applications.
+AD  - EEG Brain Mapping Core, Center for Biomedical Imaging of Lausanne and Geneva, and Department of Fundamental Neurosciences, University Medical School, 1 rue Michel-Servet, Geneva, Switzerland. Christoph.michel@unige.ch
+AN  - 22227136
+AU  - Michel, C. M.
+AU  - Murray, M. M.
+DA  - Jun
+DO  - 10.1016/j.neuroimage.2011.12.039
+ET  - 2012/01/10
+IS  - 2
+KW  - Brain/*anatomy & histology
+Brain Mapping/instrumentation/methods
+Electroencephalography/*methods/trends
+Epilepsy/diagnosis/pathology
+Humans
+Mental Disorders/diagnosis/pathology
+Nervous System Diseases/diagnosis/pathology
+Neural Pathways/anatomy & histology/physiology
+Neuroimaging/*methods/trends
+N1  - Michel, Christoph M
+Murray, Micah M
+eng
+Research Support, Non-U.S. Gov't
+Review
+Neuroimage. 2012 Jun;61(2):371-85. doi: 10.1016/j.neuroimage.2011.12.039. Epub 2011 Dec 28.
+PY  - 2012
+SN  - 1095-9572 (Electronic)
+1053-8119 (Linking)
+SP  - 371-85
+ST  - Towards the utilization of EEG as a brain imaging tool
+T2  - Neuroimage
+TI  - Towards the utilization of EEG as a brain imaging tool
+UR  - https://www.ncbi.nlm.nih.gov/pubmed/22227136
+https://www.sciencedirect.com/science/article/abs/pii/S1053811911014418?via%3Dihub
+VL  - 61
+ID  - 464
+ER  - 
+
+TY  - JOUR
+AB  - Objective: Electroencephalography (EEG) is an important tool for studying the temporal dynamics of the human brain's large-scale neuronal circuits. However, most EEG applications fail to capitalize on all of the data's available information, particularly that concerning the location of active sources in the brain. Localizing the sources of a given scalp measurement is only achieved by solving the so-called inverse problem. By introducing reasonable a priori constraints, the inverse problem can be solved and the most probable sources in the brain at every moment in time can be accurately localized.Methods and Results: Here, we review the different EEG source localization procedures applied during the last two decades. Additionally, we detail the importance of those procedures preceding and following source estimation that are intimately linked to a successful, reliable result. We discuss (1) the number and positioning of electrodes, (2) the varieties of inverse solution models and algorithms, (3) the integration of EEG source estimations with MRI data, (4) the integration of time and frequency in source imaging, and (5) the statistical analysis of inverse solution results.Conclusions and Significance: We show that modern EEG source imaging simultaneously details the temporal and spatial dimensions of brain activity, making it an important and affordable tool to study the properties of cerebral, neural networks in cognitive and clinical neurosciences.
+AU  - Michel, Christoph M.
+AU  - Murray, Micah M.
+AU  - Lantz, Göran
+AU  - Gonzalez, Sara
+AU  - Spinelli, Laurent
+AU  - Peralta, Rolando Grave de
+DO  - 10.1016/j.clinph.2004.06.001 PMID - 15351361
+IS  - 10
+J2  - Clin Neurophysiol
+N1  - 15351361
+PY  - 2004
+SN  - 1388-2457
+SP  - 2195-2222
+ST  - EEG source imaging
+T2  - Clinical Neurophysiology
+TI  - EEG source imaging
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S1388245704002135?via%3Dihub
+VL  - 115
+ID  - 458
+ER  - 
+
+TY  - JOUR
+AB  - Electroencephalography (EEG) and magnetoencephalography (MEG) are the two modalities for measuring neuronal dynamics at a millisecond temporal resolution. Different source analysis methods, to locate the dipoles in the brain from which these dynamics originate, have been readily applied to both modalities alone. However, direct comparisons and possible advantages of combining both modalities have rarely been assessed during voluntary movements using coherent source analysis. In the present study, the cortical and sub-cortical network of coherent sources at the finger tapping task frequency (2–4 Hz) and the modes of interaction within this network were analysed in 15 healthy subjects using a beamformer approach called the dynamic imaging of coherent sources (DICS) with subsequent source signal reconstruction and renormalized partial directed coherence analysis (RPDC). MEG and EEG data were recorded simultaneously allowing the comparison of each of the modalities separately to that of the combined approach. We found the identified network of coherent sources for the finger tapping task as described in earlier studies when using only the MEG or combined MEG+EEG whereas the EEG data alone failed to detect single sub-cortical sources. The signal-to-noise ratio (SNR) level of the coherent rhythmic activity at the tapping frequency in MEG and combined MEG+EEG data was significantly higher than EEG alone. The functional connectivity analysis revealed that the combined approach had more active connections compared to either of the modalities during the finger tapping (FT) task. These results indicate that MEG is superior in the detection of deep coherent sources and that the SNR seems to be more vital than the sensitivity to theoretical dipole orientation and the volume conduction effect in the case of EEG.
+AU  - Muthuraman, Muthuraman
+AU  - Hellriegel, Helge
+AU  - Hoogenboom, Nienke
+AU  - Anwar, Abdul Rauf
+AU  - Mideksa, Kidist Gebremariam
+AU  - Krause, Holger
+AU  - Schnitzler, Alfons
+AU  - Deuschl, Günther
+AU  - Raethjen, Jan
+DO  - 10.1371/journal.pone.0091441 PMID - 24618596
+IS  - 3
+J2  - Plos One
+L1  - internal-pdf://3216081721/Muthuraman-2014-Beamformer Source Analysis and.pdf
+N1  - 24618596
+PMC3949988
+PY  - 2014
+SP  - e91441
+ST  - Beamformer Source Analysis and Connectivity on Concurrent EEG and MEG Data during Voluntary Movements
+T2  - PLoS ONE
+TI  - Beamformer Source Analysis and Connectivity on Concurrent EEG and MEG Data during Voluntary Movements
+UR  - https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0091441&type=printable
+VL  - 9
+ID  - 451
+ER  - 
+
+TY  - JOUR
+AB  - Beamforming approaches have recently been developed for the field of electroencephalography (EEG) and magnetoencephalography (MEG) source analysis and opened up new applications within various fields of neuroscience. While the number of beamformer applications thus increases fast-paced, fundamental methodological considerations, especially the dependence of beamformer performance on leadfield accuracy, is still quite unclear. In this article, we present a systematic study on the influence of improper volume conductor modeling on the source reconstruction performance of an EEG-data based synthetic aperture magnetometry (SAM) beamforming approach. A finite element model of a human head is derived from multimodal MR images and serves as a realistic volume conductor model. By means of a theoretical analysis followed by a series of computer simulations insight is gained into beamformer performance with respect to reconstruction errors in peak location, peak amplitude, and peak width resulting from geometry and anisotropy volume conductor misspecifications, sensor noise, and insufficient sensor coverage. We conclude that depending on source position, sensor coverage, and accuracy of the volume conductor model, localization errors up to several centimeters must be expected. As we could show that the beamformer tries to find the best fitting leadfield (least squares) with respect to its scanning space, this result can be generalized to other localization methods. More specific, amplitude, and width of the beamformer peaks significantly depend on the interaction between noise and accuracy of the volume conductor model. The beamformer can strongly profit from a high signal-to-noise ratio, but this requires a sufficiently realistic volume conductor model. Hum Brain Mapp, 2010. © 2010 Wiley-Liss, Inc.
+AU  - Steinsträter, Olaf
+AU  - Sillekens, Stephanie
+AU  - Junghoefer, Markus
+AU  - Burger, Martin
+AU  - Wolters, Carsten H.
+DO  - 10.1002/hbm.20986 PMID - 21086549
+IS  - 12
+J2  - Hum Brain Mapp
+N1  - 21086549
+PY  - 2010
+SN  - 1097-0193
+SP  - 1907-1927
+ST  - Sensitivity of beamformer source analysis to deficiencies in forward modeling
+T2  - Human Brain Mapping
+TI  - Sensitivity of beamformer source analysis to deficiencies in forward modeling
+UR  - https://pmc.ncbi.nlm.nih.gov/articles/PMC6871065/
+VL  - 31
+ID  - 449
+ER  - 
+
+TY  - JOUR
+AB  - ─Time resolved imaging techniques, such as MEG and EEG, are unique in their ability to reveal the rich dynamic spatiotemporal patterning of neural activities. Here we propose a technique based on spatiotemporal searchlight Representational Similarity Analysis (RSA) of combined MEG and EEG (EMEG) data to directly analyze the multivariate pattern of information flow across the brain. This novel technique can recognize finegrained dynamic neural computations both in space and in time. A prime example of such neural computations is our ability to understand spoken words in real time. A computational approach to these processes is suggested by the Cohort Model of spoken-word recognition. Here we show how spatiotemporal searchlight RSA applied to source estimations of EMEG data can provide insights into the neural correlates of the cohort model within bilateral frontotemporal brain regions.
+AU  - Su, Li
+AU  - Fonteneau, Elisabeth
+AU  - Marslen-Wilson, William
+AU  - Kriegeskorte, Nikolaus
+DO  - 10.1109/prni.2012.26
+J2  - 2012 Second Int Work Pattern Recognit Neuroimaging
+PY  - 2012
+SP  - 97-100
+ST  - Spatiotemporal Searchlight Representational Similarity Analysis in EMEG Source Space
+T2  - 2012 Second International Workshop on Pattern Recognition in NeuroImaging
+TI  - Spatiotemporal Searchlight Representational Similarity Analysis in EMEG Source Space
+UR  - https://ieeexplore.ieee.org/document/6295937/
+VL  - 1
+ID  - 460
+ER  - 
+
+TY  - JOUR
+AB  - Electroencephalography (EEG) is widely used to characterize the temporal patterns of electrical activity, primarily associated with neocortex. Traditionally, the sensitivity of EEG to cerebellar activity has been considered limited with the electrical potentials assumed to stem from cortical pyramidal cells. This study leverages recent work examining the structure, organization, and synchrony of purkinje neurons to promote local field potentials measured by EEG. In conjunction with high fidelity EEG recording and source imaging analysis we examined the feasibility of using current EEG systems to characterize cerebellar function in a series of simple motor tasks. Distributed source imaging analysis revealed consistent task-related cerebellar activity across subjects whose time course was consistent with cerebellar involvement for the control of voluntary movement. The results demonstrate the feasibility of using current EEG systems and source imaging techniques to resolve activity in the cerebellum that is distinct from task-related activity in cortex.
+AU  - Torres, Efrain
+AU  - Beardsley, Scott
+DO  - 10.1109/ner.2019.8716916
+J2  - 2019 9th Int Ieee Embs Conf Neural Eng Ner
+PY  - 2019
+SP  - 1076-1079
+ST  - Cerebellar Source Localization using Event-Related Potentials in a Simple Motor Task
+T2  - 2019 9th International IEEE/EMBS Conference on Neural Engineering (NER)
+TI  - Cerebellar Source Localization using Event-Related Potentials in a Simple Motor Task
+UR  - https://ieeexplore.ieee.org/document/8716916/
+VL  - 00
+ID  - 454
+ER  - 
+
+TY  - JOUR
+AU  - Valdés, P.
+AU  - Picton, T.
+AU  - Trujillo, N.
+AU  - Bosch, J.
+AU  - Aubert, E.
+AU  - Riera, J.
+AU  - Biscay, R.
+AU  - Carbonell, F.
+AU  - Barroso, E.
+AU  - Fernandez, A.
+AU  - Evans, A.
+DO  - 10.1016/s1053-8119(18)31468-x
+IS  - 4
+J2  - Neuroimage
+PY  - 1998
+SN  - 1053-8119
+SP  - S635
+ST  - Constraining EEG-MEG Source Imaging with Statistical Neuroanatomy
+T2  - NeuroImage
+TI  - Constraining EEG-MEG Source Imaging with Statistical Neuroanatomy
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S105381191831468X?via%3Dihub
+VL  - 7
+ID  - 456
+ER  - 
+
+TY  - JOUR
+AB  - We examine the performance of approximate models (AM) of the head in solving the EEG inverse problem. The AM are needed when the individual's MRI is not available. We simulate the electric potential distribution generated by cortical sources for a large sample of 305 subjects, and solve the inverse problem with AM. Statistical comparisons are carried out with the distribution of the localization errors. We propose several new AM. These are the average of many individual realistic MRI-based models, such as surface-based models or lead fields. We demonstrate that the lead fields of the AM should be calculated considering source moments not constrained to be normal to the cortex. We also show that the imperfect anatomical correspondence between all cortices is the most important cause of localization errors. Our average models perform better than a random individual model or the usual average model in the MNI space. We also show that a classification based on race and gender or head size before averaging does not significantly improve the results. Our average models are slightly better than an existing AM with shape guided by measured individual electrode positions, and have the advantage of not requiring such measurements. Among the studied models, the Average Lead Field seems the most convenient tool in large and systematical clinical and research studies demanding EEG source localization, when MRI are unavailable. This AM does not need a strict alignment between head models, and can therefore be easily achieved for any type of head modeling approach.
+AU  - Valdés-Hernández, Pedro A.
+AU  - Ellenrieder, Nicolás von
+AU  - Ojeda-Gonzalez, Alejandro
+AU  - Kochen, Silvia
+AU  - Alemán-Gómez, Yasser
+AU  - Muravchik, Carlos
+AU  - Valdés-Sosa, Pedro A.
+DO  - 10.1016/j.jneumeth.2009.09.005 PMID - 19747944
+IS  - 1
+J2  - J Neurosci Meth
+N1  - 19747944
+PY  - 2009
+SN  - 0165-0270
+SP  - 125-132
+ST  - Approximate average head models for EEG source imaging
+T2  - Journal of Neuroscience Methods
+TI  - Approximate average head models for EEG source imaging
+UR  - https://www.sciencedirect.com/science/article/abs/pii/S016502700900497X?via%3Dihub
+VL  - 185
+ID  - 455
+ER  - 
+
