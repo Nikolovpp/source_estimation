@@ -6,11 +6,6 @@ sync_eeg_sofia.sh
 sync_eeg_remote.sh
 sync_eeg_remote.sh.example
 
-# PIPELINE SUMMARY
-PIPELINE_SUMMARY.md
-README.md
-SourceEstimation.txt
-
 # Python
 __pycache__/
 *.pyc
