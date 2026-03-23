@@ -1,0 +1,23 @@
+# Local environment config (contains machine-specific paths)
+config.env
+
+# Sync script (contains server credentials / IPs)
+sync_eeg_sofia.sh
+sync_eeg_remote.sh
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code IDE settings
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
