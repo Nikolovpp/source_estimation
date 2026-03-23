@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT,
-    BASELINE_WINDOWS, DECODE_TMIN, SOURCE_ROIS,
+    BASELINE_WINDOWS, DECODE_TMIN, SPEECH_ROIS,
     SVM_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
 )
 from data_loader import load_subject_epochs
@@ -269,7 +269,7 @@ def main():
 
     if args.atlas == 'aparc':
         roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
-                                     composite_rois=SOURCE_ROIS)
+                                     composite_rois=SPEECH_ROIS)
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=args.atlas)
 

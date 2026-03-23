@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))
                 if '__file__' in dir() else os.getcwd())
 
 from config import (
-    SUBJECT_IDS, SVM_OUTPUT_ROOT, SOURCE_ROIS,
+    SUBJECT_IDS, SVM_OUTPUT_ROOT, SPEECH_ROIS,
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
     ROI_TIMESERIES_ROOT,
 )
