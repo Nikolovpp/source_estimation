@@ -14,6 +14,7 @@ when brain regions discriminate between stimulus classes.
 
 | File | Purpose |
 |------|---------|
+| `config.env.example` | Template for machine-specific `EEG_PROJECT_ROOT` path |
 | `config.py` | Central configuration: paths, subjects, ROIs, atlas maps, parameters |
 | `data_loader.py` | EEGLAB `.mat` → MNE `Epochs` conversion |
 | `forward_model.py` | fsaverage BEM, source space, multi-atlas cortical ROI labels |
@@ -21,12 +22,15 @@ when brain regions discriminate between stimulus classes.
 | `leakage_correction.py` | Spatial leakage correction (orthogonalization + regression) |
 | `pseudo_trials.py` | Pseudo-trial averaging within CV folds |
 | `svm_decoding.py` | ROI feature extraction + sliding-window SVM |
+| `plotting.py` | Figure generation for sensor ERPs, ROI time courses, and SVM accuracy |
 | `run_source_svm.py` | Sequential main runner (CLI) |
 | `run_parallel.py` | Multiprocessing parallel runner (CLI) |
 | `run_parallel_lowram.py` | Low-RAM parallel runner (generator-based) |
+| `run_pipeline_notebook.py` | Interactive notebook-style runner (standard memory) |
 | `run_pipeline_notebook_lowram.py` | Interactive notebook-style runner (low-RAM) |
 | `source_stats_viz.py` | Group-level statistics and visualization |
 | `validate_pipeline.py` | End-to-end validation / smoke test |
+| `visualize_rois.py` | Interactive and publication-ready ROI visualization on fsaverage surface |
 
 ---
 
@@ -38,6 +42,18 @@ when brain regions discriminate between stimulus classes.
   - Perception data: `perception/{subj}/average_ref/eeglab_standard/fs_2000/*popthresh120.mat`
   - Production data: `overtProd/{subj}/average_ref/fs_2000/*ProdOnset.mat`
 - **SVM_OUTPUT_ROOT**: `$EEG_PROJECT_ROOT/derivatives/SVM_source/`
+- **ROI_TIMESERIES_ROOT**: `$EEG_PROJECT_ROOT/derivatives/SVM_source_timeseries/`
+- **FIGURES_ROOT**: `$EEG_PROJECT_ROOT/derivatives/SOURCE_ESTIMATION/`
+- **CODE_DIR**: `$EEG_PROJECT_ROOT/code/source_estimation/`
+
+#### Output directory structure
+
+Results are saved as CSV files under a hierarchical path that encodes all run parameters:
+
+```
+derivatives/SVM_source/{task}/{method}/{atlas}/{feature_mode}/{sw_dur}_{sw_step}/{stim_class}/
+    {subj}_{task}_{stim_class}_{sw_dur}_{sw_step}.csv
+```
 
 ### Subjects
 
@@ -49,8 +65,8 @@ Two binary contrasts are defined:
 
 | Contrast | Class 0 | Class 1 | Description |
 |----------|---------|---------|-------------|
-| **prodDiff** | F-words (e.g., "FIN", "FILL") | TH-words (e.g., "THIN", "THICK") | Production difficulty |
-| **percDiff** | S-words (e.g., "SIN", "SILL") | T-words (e.g., "TIN", "TICK") | Perceptual difficulty |
+| **prodDiff** | F-pseudowords (e.g., "FEEP", "FOPE") | TH-pseudowords (e.g., "THEEP", "THOPE") | Production difference |
+| **percDiff** | S-pseudowords (e.g., "SAFF", "SOOG") | T-pseudowords (e.g., "TAFF", "TOOG") | Perceptual difference |
 
 ### Cortical ROIs and Atlas Selection
 
@@ -62,30 +78,79 @@ The pipeline supports three atlas parcellations, selectable via `--atlas`:
 | `Schaefer200` | 200 (100/hemi) | Schaefer et al. (2018) functional parcellation, 17-network variant |
 | `HCPMMP1` | 360 (180/hemi) | Glasser et al. (2016) Human Connectome Project multi-modal parcellation |
 
-**Default ROIs** (aparc composite, 4 per hemisphere):
+**Speech Network ROIs** (16 regions, left hemisphere, all atlases):
 
-| ROI Name | aparc Labels | Hemisphere |
-|----------|-------------|------------|
-| Temporal | superiortemporal + middletemporal + transversetemporal | Left |
-| Inferior_Frontal | parsopercularis + parstriangularis + parsorbitalis | Left |
-| Superior_Frontal | superiorfrontal + caudalmiddlefrontal | Left |
-| Superior_Parietal | superiorparietal + inferiorparietal + precuneus | Left |
-| Temporal_RH | (same regions) | Right |
-| Inferior_Frontal_RH | (same regions) | Right |
-| Superior_Frontal_RH | (same regions) | Right |
-| Superior_Parietal_RH | (same regions) | Right |
+The pipeline defines 16 cortical ROIs spanning the dual-stream speech processing
+network. Each ROI is mapped to atlas-specific parcels in `config.SPEECH_ROIS[atlas]`.
+Right-hemisphere analogues are obtained by flipping label suffixes
+(`-lh`→`-rh`, `L_`→`R_`).
+
+| # | ROI | Stream | Motivation |
+|---|-----|--------|------------|
+| 1 | `Temporal` | Both | Sensor ROI (FT7/T7/TP7) — STG, MTG, STS |
+| 2 | `Inferior_Frontal` | Both | Sensor ROI (F5/FC5/FC3) — IFG/Broca's, BA44/45 |
+| 3 | `Superior_Frontal` | Dorsal | Sensor ROI (F1/FC1/FCz) — SMA, pre-SMA |
+| 4 | `Superior_Parietal` | Dorsal | Sensor ROI (CPz/CP1/P1) — SPL, precuneus |
+| 5 | `vSMC` | Motor | Chang — ventral sensorimotor cortex (articulatory representations) |
+| 6 | `Supramarginal` | Dorsal | Hickok, Poeppel, Flinker — phonological processing, area Spt |
+| 7 | `Angular_Gyrus` | Ventral | Poeppel, Tian — semantic integration |
+| 8 | `Insula` | Planning | Flinker, Dronkers — articulatory planning |
+| 9 | `TPOJ` | Hub | Glasser, Poeppel — multimodal integration |
+| 10 | `Cingulate_Motor` | Dorsal | Tian — speech initiation, efference copy / forward predictions |
+| 11 | `Planum_Temporale` | Hub | Rauschecker & Scott — computational hub between streams |
+| 12 | `Anterior_STS` | Ventral | Scott et al. — intelligible speech processing |
+| 13 | `Temporal_Pole` | Ventral | Rauschecker — ventral stream semantic terminus |
+| 14 | `Pars_Orbitalis` | Ventral | Scott & Eisner — ventral stream prefrontal terminus (BA47) |
+| 15 | `Posterior_STS` | Entry | Rauschecker & Scott — acoustic-phonetic analysis |
+| 16 | `DLPFC` | Dorsal | Rauschecker — dorsal stream learned sequence storage |
+
+**Key references:**
+- Rauschecker & Scott (2009), *Nat Neurosci* — dual-stream model, anterior STS hierarchy
+- DeWitt & Rauschecker (2012), *PNAS* — phoneme/word ventral stream gradient
+- Scott et al. (2000), *Brain* — anterior STS pathway for intelligible speech
+- Hickok & Poeppel (2007), *Nat Rev Neurosci* — dorsal/ventral stream cortical organization
+- Chang lab (Bouchard et al., 2013) — vSMC articulatory somatotopy
+- Flinker et al. (2015) — sequential STG → IFG → motor cortex activation
+- Tian & Poeppel (2010, 2013) — efference copy / forward predictions in speech
+- Glasser et al. (2016) — HCP-MMP1 multi-modal parcellation
+
+**Aparc atlas labels** (first 4 ROIs, backward-compatible defaults):
+
+| ROI Name | aparc Labels |
+|----------|-------------|
+| Temporal | superiortemporal, middletemporal, bankssts |
+| Inferior_Frontal | parsopercularis, parstriangularis |
+| Superior_Frontal | superiorfrontal |
+| Superior_Parietal | superiorparietal, precuneus |
+
+**Atlas resolution notes:** The aparc atlas is too coarse to separate anterior from
+posterior STS, or to isolate planum temporale — several ROIs map to the same broad
+labels. Use HCPMMP1 or Schaefer-200 for the full benefit of the 16-ROI speech network.
 
 **Rationale for finer-grained atlases**: The Desikan-Killiany atlas is structurally
 too coarse for multivariate investigation of the dual-stream speech model. It merges
 functionally distinct regions such as Area Spt, discrete auditory parcellations, and
 IFG sub-regions into broad macro-regions that obscure sensorimotor interactions.
-Literature recommends 100–250 parcels as optimal for 64-channel EEG source-space
-MVPA, balancing the spatial resolution limits of the leadfield against the
-dimensionality requirements of the classifier (Tait et al., 2021). The Schaefer-200
-atlas (200 parcels derived from functional connectivity gradients) falls squarely in
-this range. The HCPMMP1 atlas (360 parcels with fine functional boundaries) is above
-the target but can be used effectively with PCA or supervised feature selection for
-dimensionality reduction.
+However, adopting an ultra-high-resolution atlas (e.g., 360-region HCP-MMP) without
+dimensionality reduction introduces instability: a 64-channel EEG array cannot
+resolve 360 independent spatial sources, and the cross-talk from distributed inverse
+solutions injects massive multicollinearity that triggers the curse of dimensionality
+in the SVM.
+
+The optimal feature space for 64-channel EEG lies between **100 and 250 parcels**
+(Tait et al., 2021). The Schaefer-200 atlas (200 parcels derived from functional
+connectivity gradients) provides an excellent dimensional match while naturally
+separating cognitive and sensorimotor networks. The HCPMMP1 atlas (360 parcels with
+fine functional boundaries) can be used effectively with PCA or supervised feature
+selection (`vertex_pca` or `vertex_selectkbest` modes) for dimensionality reduction.
+
+**Full atlas parcellations** — when running without `--speech-rois` or `--roi`, all
+parcels from the selected atlas are used:
+
+| Atlas | Parcels | Example names |
+|-------|---------|---------------|
+| Schaefer-200 | 200 (100/hemi) | `17Networks_LH_SomMotB_Aud_1-lh`, `17Networks_LH_TempPar_1-lh` |
+| HCPMMP1 | 360 (180/hemi) | `L_A1_ROI-lh`, `L_44_ROI-lh`, `L_STSda_ROI-lh` |
 
 ### SVM Parameters
 
@@ -133,7 +198,9 @@ dimensionality reduction.
 1. Fetch fsaverage template (`ico-5` source space: ~10,242 vertices/hemisphere)
 2. Load 3-layer BEM solution (skin, skull, brain)
 3. Create forward solution using the EEG montage from the loaded data
-4. Build composite ROI labels by combining multiple `aparc` atlas regions
+4. Build ROI labels from the selected atlas parcellation:
+   - **`aparc`**: Reads Desikan-Killiany labels; merges them into composite speech-network ROIs via `config.SPEECH_ROIS['aparc']` (backward compatible)
+   - **`Schaefer200`** / **`HCPMMP1`**: Reads all parcels from the atlas; when `--speech-rois` is used, selects only the 16 speech-network ROIs defined in `config.SPEECH_ROIS`
 
 The forward model is built once and reused across all subjects (template approach).
 
@@ -204,7 +271,7 @@ minimum-norm estimate (MNE) used widely in MEG/EEG source imaging.
 **What you could change:**
 - `SNR` / `lambda2`: Try SNR=1 for more regularization on noisy single trials
 - `depth`: 0.0 to see superficial bias, or leave at 0.8
-- `method`: 'sLORETA' for potentially more focal estimates
+- `method`: 'sLORETA' for potentially more focal estimates (better if you have subject specific anatomy though..)
 - `loose`: 0.2 if you suspect sources aren't perfectly perpendicular
 
 #### LCMV (Linearly Constrained Minimum Variance Beamformer)
@@ -488,7 +555,7 @@ All figures saved as `.svg` and `.png`.
 | Aspect | Sensor-Space | Source-Space |
 |--------|-------------|--------------|
 | **Feature space** | Raw EEG channels (3-sensor custom ROIs) | Cortical source estimates within anatomical ROIs |
-| **ROI definition** | Hand-picked sensor triplets (e.g., FT7/T7/TP7) | Anatomically defined cortical regions from `aparc` atlas |
+| **ROI definition** | Hand-picked sensor triplets (e.g., FT7/T7/TP7) | Anatomically defined cortical regions from multi-atlas parcellations (aparc, Schaefer200, HCPMMP1) |
 | **Spatial resolution** | Limited by sensor spacing (~3 cm) | Vertex-level (~5 mm on cortex), though constrained by inverse accuracy |
 | **Volume conduction** | Present — each sensor mixes multiple sources | Mitigated by inverse modeling (dSPM/LCMV) |
 | **Forward model** | Not needed | Required (fsaverage BEM + source space) |
@@ -498,7 +565,7 @@ All figures saved as `.svg` and `.png`.
 | **CV structure** | 10-fold × 10 repeats | 5-fold × 5 repeats |
 | **Classifier** | `LinearSVC` (C=1.0 default) | `LinearSVC` (same) |
 | **Sliding window** | 40 ms / 5 ms step (identical) | 40 ms / 5 ms step (identical) |
-| **Number of ROIs** | ~14+ custom sensor groups per hemisphere | 4 per hemisphere (8 total) |
+| **Number of ROIs** | ~14+ custom sensor groups per hemisphere | 16 speech-network ROIs (LH; expandable to bilateral), or full atlas parcellation |
 | **Anatomical interpretability** | Indirect — sensor location ≠ source location | Direct — decoding in defined cortical regions |
 
 ### Summary of Differences
@@ -522,3 +589,65 @@ window), making their results directly comparable in terms of temporal dynamics.
 The source-space pipeline uses slightly fewer CV folds/repeats (5×5 vs 10×10) and
 offers richer feature extraction options (vertex PCA, SelectKBest) beyond simple
 channel averaging.
+
+---
+
+## ROI Visualization (`visualize_rois.py`)
+
+Interactive and publication-ready visualization of cortical ROIs on the fsaverage
+surface. Supports all three atlases and the 16 speech-network ROIs.
+
+- **`plot_roi_brain(atlas, fmt)`** — All ROIs on one brain (any atlas or speech-ROI subset)
+- **`plot_single_roi(roi_name, atlas, fmt)`** — Single named ROI or substring filter; accepts `SPEECH_ROIS` names (e.g., `Anterior_STS`, `vSMC`)
+- **`plot_compare_modes(atlas, fmt)`** — Full-resolution vs ico-5 side-by-side comparison
+- Supports `--format svg` for publication figures (vector labels/axes, embedded raster brain)
+- CLI flags: `--speech-rois` (all 16 ROIs), `--list-rois` (print names), `--roi NAME`
+
+---
+
+## Command-Line Reference
+
+```bash
+# Basic (backward compatible, aparc atlas, 8 composite ROIs)
+python run_source_svm.py \
+    --task {perception,overtProd} \
+    --stim-class {prodDiff,percDiff} \
+    --method {dSPM,LCMV} \
+    [--feature-mode {pca_flip,vertex_pca,vertex_selectkbest}] \
+    [--subjects EEGPROD4001 EEGPROD4003 ...] \
+    [--sw-dur 40] [--sw-step 5]
+
+# Advanced: Schaefer-200 atlas with leakage correction and pseudo-trials
+python run_source_svm.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas Schaefer200 \
+    --leakage-correction \
+    --pseudo-trial-size 5 \
+    --svm-c 1.0
+
+# Parallel (low-RAM, same args plus --n-jobs)
+python run_parallel_lowram.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --leakage-correction \
+    --n-jobs 2
+
+# Validate on one subject
+python validate_pipeline.py \
+    [--subject EEGPROD4001] [--task overtProd] \
+    [--stim-class prodDiff] [--skip-lcmv]
+
+# ── ROI Visualization ──
+
+# List available speech-network ROI names
+python visualize_rois.py --list-rois --atlas HCPMMP1
+
+# All 16 speech ROIs on HCP-MMP1, save as SVG
+python visualize_rois.py --speech-rois --atlas HCPMMP1 --save --format svg
+
+# Single named ROI
+python visualize_rois.py --roi Anterior_STS --atlas HCPMMP1 --save --format svg
+python visualize_rois.py --roi vSMC --atlas Schaefer200 --save
+
+# Full-resolution vs ico-5 comparison
+python visualize_rois.py --mode compare --atlas Schaefer200 --save --format svg
+```
