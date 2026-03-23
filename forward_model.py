@@ -9,7 +9,7 @@ cortical ROI labels from supported atlases.
 import mne
 from mne.datasets import fetch_fsaverage
 
-from config import SOURCE_ROIS, ATLAS_PARC_MAP
+from config import SPEECH_ROIS, ATLAS_PARC_MAP
 
 
 def setup_fsaverage():
@@ -102,17 +102,22 @@ def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None):
 
     # Legacy composite-ROI mode (backward compat with existing 8-ROI setup)
     if composite_rois is not None and atlas == 'aparc':
-        def _get_label(name):
-            matches = [l for l in labels_all if l.name == name]
-            if not matches:
-                raise ValueError(f'Label "{name}" not found in {parc} atlas')
-            return matches[0]
+        available = {l.name: l for l in labels_all}
 
         roi_dict = {}
         for roi_name, label_names in composite_rois.items():
-            combined = _get_label(label_names[0])
-            for ln in label_names[1:]:
-                combined = combined + _get_label(ln)
+            found = [available[n] for n in label_names if n in available]
+            missing = [n for n in label_names if n not in available]
+            if missing:
+                print(f'  Warning: {roi_name}: labels not found in '
+                      f'{parc} atlas (skipped): {missing}')
+            if not found:
+                print(f'  Warning: {roi_name}: no valid labels — '
+                      f'ROI omitted entirely')
+                continue
+            combined = found[0]
+            for lbl in found[1:]:
+                combined = combined + lbl
             combined.name = roi_name
             roi_dict[roi_name] = combined
 
