@@ -69,7 +69,7 @@ def apply_leakage_correction(X_roi):
 
 # ── vertex modes: regression-based leakage correction ───────────────
 
-def _regress_out_epoch(X_vertices, X_other_summaries, reg=1e-10):
+def _regress_out_epoch(X_vertices, X_other_summaries, reg=1e-6):
     """
     Remove cross-ROI leakage from one epoch's vertex data by regression.
 
@@ -93,8 +93,9 @@ def _regress_out_epoch(X_vertices, X_other_summaries, reg=1e-10):
     # beta = X_vertices @ X_other^T @ (X_other @ X_other^T + reg*I)^{-1}
     C = X_other_summaries @ X_other_summaries.T          # (n_other, n_other)
     C += reg * np.eye(C.shape[0])
-    C_inv = scipy.linalg.inv(C)
-    beta = X_vertices @ X_other_summaries.T @ C_inv      # (n_verts, n_other)
+    # Solve C @ beta^T = X_other @ X_vertices^T instead of explicit inverse
+    beta = scipy.linalg.solve(C, X_other_summaries @ X_vertices.T,
+                              assume_a='pos').T           # (n_verts, n_other)
     return X_vertices - beta @ X_other_summaries
 
 
