@@ -70,13 +70,14 @@ Two binary contrasts are defined:
 
 ### Cortical ROIs and Atlas Selection
 
-The pipeline supports three atlas parcellations, selectable via `--atlas`:
+The pipeline supports four atlas parcellations, selectable via `--atlas`:
 
 | Atlas | Parcels | Description |
 |-------|---------|-------------|
-| `aparc` (default) | 8 composite ROIs | Desikan-Killiany labels merged into 4 bilateral regions (backward compatible) |
+| `aparc` (default) | 16 composite ROIs | Desikan-Killiany labels merged into speech-network regions (backward compatible) |
 | `Schaefer200` | 200 (100/hemi) | Schaefer et al. (2018) functional parcellation, 17-network variant |
 | `HCPMMP1` | 360 (180/hemi) | Glasser et al. (2016) Human Connectome Project multi-modal parcellation |
+| `custom` | 6 (LH only) | Functional-localizer language ROIs (Chang et al.), volumetric NIfTI masks projected onto fsaverage |
 
 **Speech Network ROIs** (16 regions, left hemisphere, all atlases):
 
@@ -201,8 +202,74 @@ parcels from the selected atlas are used:
 4. Build ROI labels from the selected atlas parcellation:
    - **`aparc`**: Reads Desikan-Killiany labels; merges them into composite speech-network ROIs via `config.SPEECH_ROIS['aparc']` (backward compatible)
    - **`Schaefer200`** / **`HCPMMP1`**: Reads all parcels from the atlas; when `--speech-rois` is used, selects only the 16 speech-network ROIs defined in `config.SPEECH_ROIS`
+   - **`custom`**: Projects volumetric NIfTI masks onto fsaverage surface (see below)
 
 The forward model is built once and reused across all subjects (template approach).
+
+#### Custom ROI Volume-to-Surface Projection
+
+When `--atlas custom` is selected, `build_roi_labels()` dispatches to
+`load_custom_volumetric_rois()`, which projects 6 binary NIfTI masks from MNI
+volumetric space onto the fsaverage cortical surface mesh.
+
+**Source data**: 15 mm sphere ROIs with anatomical restriction, derived from
+language functional localizers (Chang et al.). Each mask is a binary volume
+(91 x 109 x 91 voxels, 2 mm isotropic, MNI152 space).
+
+| ROI | Full Name | Localizer | Full Vertices | ico-5 Vertices |
+|-----|-----------|-----------|---------------|----------------|
+| `awfa` | Auditory word form area | audioLoc | ~1,466 | ~95 |
+| `ifc` | Inferior frontal cortex | bothLoc | ~2,521 | ~159 |
+| `owfa` | Orthographic word form area | vwfaLoc | ~1,645 | ~105 |
+| `pmc` | Premotor cortex | audioLoc | ~2,731 | ~173 |
+| `tpc` | Temporo-parietal cortex | bothLoc | ~2,649 | ~159 |
+| `vwfa` | Visual word form area | vwfaLoc | ~2,081 | ~130 |
+
+**Projection procedure** (`forward_model.load_custom_volumetric_rois()`):
+
+1. **Load surface mesh**: The fsaverage pial surface is loaded from the
+   MNE-Python dataset (~163,842 vertices/hemisphere, MNI305 space).
+
+2. **`nilearn.surface.vol_to_surf()`**: For each surface vertex, the volumetric
+   mask is sampled along the surface normal within a **3.0 mm radius** ball. The
+   **`nearest_most_frequent`** interpolation method assigns each vertex the mode
+   (most common value) among all voxels within the search sphere. For binary
+   masks, this is a majority vote — a vertex is labelled positive only if the
+   majority of voxels within 3 mm of the surface point fall inside the ROI.
+
+   This interpolation method is specifically designed for deterministic atlases:
+   unlike linear interpolation (which blurs boundaries by producing fractional
+   values) or nearest-neighbor (which takes only the single closest voxel and is
+   susceptible to partial-volume effects at gyral/sulcal boundaries), majority-
+   vote sampling produces clean binary boundaries that faithfully represent the
+   volumetric ROI shape on the surface.
+
+   The 3.0 mm search radius bridges the gap between the cortical surface mesh
+   and voxel centers (especially in sulcal folds) without pulling in voxels from
+   adjacent gyri. At 2 mm voxel resolution, this captures the immediate 1–2
+   voxel neighborhood.
+
+3. **Coordinate alignment**: The NIfTI masks are in MNI152 coordinates; the
+   fsaverage surface is in MNI305 space. nilearn handles the MNI152-to-MNI305
+   affine transformation internally — no manual registration is required.
+
+4. **Thresholding at 25%**: Vertices with projected values >= 25% of the peak
+   are included in the label. This discards peripheral vertices where only a
+   small fraction of neighboring voxels fell inside the ROI.
+
+5. **Bilateral evaluation**: Each mask is projected onto both hemispheres
+   independently; hemispheres with zero surviving vertices are discarded. All 6
+   language-localizer ROIs produce left-hemisphere-only labels.
+
+6. **Output**: Standard `mne.Label` objects, directly compatible with
+   `mne.extract_label_time_course()` and `stc.in_label()`. When the pipeline
+   runs with ico-5 source space, labels are restricted to ~95–173 vertices per
+   ROI via `label.restrict(src)`, identical to the procedure for atlas labels.
+
+**Spatial precision**: The projection preserves volumetric ROI boundaries to
+within the resolution of the fsaverage surface mesh (~1 mm vertex spacing) and
+the voxel grid (2 mm). The 3 mm search radius introduces at most one voxel of
+spatial uncertainty at boundaries.
 
 ### Step 3: Inverse Solution (`inverse_pipelines.py`)
 
@@ -595,7 +662,8 @@ channel averaging.
 ## ROI Visualization (`visualize_rois.py`)
 
 Interactive and publication-ready visualization of cortical ROIs on the fsaverage
-surface. Supports all three atlases and the 16 speech-network ROIs.
+surface. Supports all four atlas options (aparc, Schaefer200, HCPMMP1, custom) and
+the 16 speech-network ROIs.
 
 - **`plot_roi_brain(atlas, fmt)`** — All ROIs on one brain (any atlas or speech-ROI subset)
 - **`plot_single_roi(roi_name, atlas, fmt)`** — Single named ROI or substring filter; accepts `SPEECH_ROIS` names (e.g., `Anterior_STS`, `vSMC`)
@@ -650,4 +718,8 @@ python visualize_rois.py --roi vSMC --atlas Schaefer200 --save
 
 # Full-resolution vs ico-5 comparison
 python visualize_rois.py --mode compare --atlas Schaefer200 --save --format svg
+
+# Custom functional-localizer ROIs
+python visualize_rois.py --atlas custom --save --mode full --hemi lh
+python run_source_svm.py --task overtProd --stim-class prodDiff --method dSPM --atlas custom
 ```
