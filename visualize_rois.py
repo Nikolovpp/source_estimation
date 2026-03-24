@@ -13,6 +13,9 @@ Supports three atlas parcellations via ``--atlas``:
 - ``Schaefer200``: Schaefer 2018, 200 parcels (17-network variant)
 - ``HCPMMP1``: HCP Multi-Modal Parcellation, 360 parcels
 
+Rendering uses ``mne.viz.Brain`` (PyVista/VTK) for publication-quality
+3D brain surface renders with proper lighting, shading, and transparency.
+
 Usage
 -----
     # Basic atlas views
@@ -25,24 +28,35 @@ Usage
     python visualize_rois.py --roi vSMC --atlas Schaefer200 --save  # Chang vSMC
     python visualize_rois.py --list-rois --atlas HCPMMP1            # list ROI names
 
+    # Surface selection
+    python visualize_rois.py --speech-rois --save --surf pial       # folded (default)
+    python visualize_rois.py --speech-rois --save --surf inflated   # inflated
+
     # SVG output for publication figures
     python visualize_rois.py --speech-rois --atlas HCPMMP1 --save --format svg
-    python visualize_rois.py --roi Temporal --atlas HCPMMP1 --save --format svg
+
+    # Stat-map overlay (continuous data)
+    python visualize_rois.py --statmap data.csv --atlas HCPMMP1 --save --cmap hot
 
     # Full atlas / compare modes
     python visualize_rois.py --atlas Schaefer200 --mode full        # full-res parcels
     python visualize_rois.py --mode compare --format svg --save     # full vs ico-5
 """
 import argparse
+import os
+import tempfile
 from pathlib import Path
+
+# Enable offscreen rendering for PyVista (must be set before import)
+os.environ.setdefault('PYVISTA_OFF_SCREEN', 'true')
 
 import numpy as np
 import mne
 from mne.datasets import fetch_fsaverage
 
 from config import (SPEECH_ROIS, SPEECH_ROI_NAMES, ATLAS_PARC_MAP,
-                     FIGURES_ROOT)
-from forward_model import build_roi_labels
+                     FIGURES_ROOT, CUSTOM_ROI_DIR)
+from forward_model import build_roi_labels, load_custom_volumetric_rois
 
 # Colorblind-friendly palette: Wong (2011) + Tol muted, 20 distinct colours.
 # Covers up to 20 ROIs; for larger atlases, cycles with offset luminance.
@@ -53,7 +67,7 @@ _CB_PALETTE = [
     '#CC3311',  # red
     '#33BBEE',  # cyan
     '#EE3377',  # magenta
-    '#BBBBBB',  # grey
+    # '#BBBBBB',  # grey
     '#000000',  # black
     '#AA3377',  # wine
     '#DDCC77',  # sand
@@ -85,6 +99,7 @@ def _restrict_labels_to_src(roi_dict, src):
         rlabel = label.restrict(src)
         restricted[roi_name] = rlabel
     return restricted
+
 
 def build_speech_roi_labels(atlas, subjects_dir=None):
     """
@@ -121,67 +136,205 @@ def build_speech_roi_labels(atlas, subjects_dir=None):
     return speech_labels
 
 
-def _save_brain_views(brain, views, out_dir, name_prefix, fmt='png',
-                      legend_items=None):
-    """Save brain views as composed figure with optional colour legend.
+# ─────────────────────────────────────────────────────────────────────
+# Shared rendering helpers (PyVista direct — MATLAB trisurf style)
+# ─────────────────────────────────────────────────────────────────────
+
+# Camera direction vectors per view/hemi: (dx, dy, dz) from focal point.
+# Matches MATLAB convention: lh lateral = view from left, etc.
+_CAMERA_DIRS = {
+    'lateral':  {'lh': (-1, 0, 0),  'rh': (1, 0, 0)},
+    'medial':   {'lh': (1, 0, 0),   'rh': (-1, 0, 0)},
+    'dorsal':   {'lh': (0, 0, 1),   'rh': (0, 0, 1)},
+    'ventral':  {'lh': (0, 0, -1),  'rh': (0, 0, -1)},
+    'anterior': {'lh': (0, 1, 0),   'rh': (0, 1, 0)},
+    'posterior': {'lh': (0, -1, 0),  'rh': (0, -1, 0)},
+    'frontal':  {'lh': (0, 1, 0),   'rh': (0, 1, 0)},
+}
+
+
+def _load_surface(subjects_dir, hemi, surf='pial', smooth=0.25):
+    """Load and optionally smooth a FreeSurfer surface.
+
+    Returns (coords, faces) as numpy arrays.
+    """
+    surf_dir = Path(subjects_dir) / 'fsaverage' / 'surf'
+    coords, faces = mne.read_surface(str(surf_dir / f'{hemi}.{surf}'))
+
+    if smooth and smooth > 0:
+        coords_infl, _ = mne.read_surface(str(surf_dir / f'{hemi}.inflated'))
+        coords = (coords * (1 - smooth) + coords_infl * smooth).astype(np.float32)
+
+    return coords, faces
+
+
+def _make_pv_mesh(coords, faces):
+    """Build a PyVista PolyData mesh from FreeSurfer coords and faces."""
+    import pyvista as pv
+    faces_pv = np.column_stack([np.full(len(faces), 3), faces]).ravel()
+    return pv.PolyData(coords, faces_pv)
+
+
+def _set_camera(plotter, view, hemi, coords):
+    """Set camera position for a named view and hemisphere."""
+    d = _CAMERA_DIRS.get(view, _CAMERA_DIRS['lateral']).get(hemi, (-1, 0, 0))
+    center = coords.mean(axis=0)
+    cam_dist = 300
+    cam_pos = [center[0] + d[0] * cam_dist,
+               center[1] + d[1] * cam_dist,
+               center[2] + d[2] * cam_dist]
+    # Up vector: Z-up for lateral/medial/anterior/posterior; Y-up for dorsal/ventral
+    if view in ('dorsal', 'ventral'):
+        up = (0, 1, 0)
+    else:
+        up = (0, 0, 1)
+    plotter.camera_position = [cam_pos, center.tolist(), up]
+    plotter.reset_camera()
+    plotter.camera.zoom(1.5)
+
+
+def _render_brain_views(coords, faces, views, hemi, size=(1200, 900),
+                        vertex_rgba=None, vertex_scalars=None,
+                        cmap='hot', clim=None):
+    """
+    Render brain surface screenshots using PyVista.
+
+    Uses smooth_shading + interpolate_before_map + backface_culling for
+    publication-quality Gouraud-lit renders matching MATLAB trisurf style.
+
+    Supports two colouring modes:
+      - *vertex_rgba*: per-vertex RGBA array (uint8) for discrete ROI colours.
+      - *vertex_scalars*: per-vertex float array for continuous heatmap overlay
+        (NaN = transparent, shows gray base underneath).
+
+    Returns {view_name: ndarray}.
+    """
+    import pyvista as pv
+    from matplotlib.image import imread
+
+    mesh = _make_pv_mesh(coords, faces)
+    # Smooth Gouraud shading with per-vertex interpolation and back-face
+    # culling — matches the rendering approach from the reference snippet.
+    _material = dict(smooth_shading=True, interpolate_before_map=True,
+                     backface_culling=True, style='surface', opacity=1.0)
+
+    images = {}
+    for view in views:
+        pl = pv.Plotter(off_screen=True, window_size=size)
+        pl.set_background('white')
+
+        if vertex_rgba is not None:
+            mesh['colors'] = vertex_rgba
+            pl.add_mesh(mesh, scalars='colors', rgb=True, **_material)
+        elif vertex_scalars is not None:
+            # Base gray layer
+            pl.add_mesh(mesh.copy(), color=[0.7, 0.7, 0.7], **_material)
+            # Overlay coloured data (NaN → transparent)
+            mesh['data'] = vertex_scalars
+            pl.add_mesh(mesh, scalars='data', cmap=cmap, clim=clim,
+                        nan_opacity=0, show_scalar_bar=False, **_material)
+        else:
+            pl.add_mesh(mesh, color=[0.7, 0.7, 0.7], **_material)
+
+        _set_camera(pl, view, hemi, coords)
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        try:
+            pl.screenshot(tmp_path)
+            images[view] = imread(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+        pl.close()
+
+    return images
+
+
+def _compose_brain_figure(hemi_view_images, views, legend_items=None,
+                          suptitle=None, save=False, out_dir=None,
+                          name_prefix='brain', fmt='png',
+                          colorbar_mappable=None, colorbar_label=None):
+    """
+    Compose rendered brain images into a matplotlib figure.
 
     Parameters
     ----------
+    hemi_view_images : dict
+        {hemi: {view: ndarray}} -- rendered images per hemisphere per view.
+    views : list of str
+        View names in column order.
     legend_items : list of (name, colour) | None
-        If provided, a colour legend is added to the right of the figure
-        and the output is always a single composed file (even for PNG).
+        Discrete ROI legend entries.
+    colorbar_mappable : ScalarMappable | None
+        If provided, adds a continuous colorbar instead of discrete legend.
+    colorbar_label : str | None
+        Label for the colorbar axis.
     """
     import matplotlib.pyplot as plt
-    from matplotlib.image import imread
-    from matplotlib.patches import Patch
-    import tempfile
+    import matplotlib.patches as mpatches
 
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    hemis = list(hemi_view_images.keys())
+    n_rows = len(hemis)
+    n_cols = len(views)
 
-    # Simple PNG-per-view when no legend is needed
-    if fmt == 'png' and legend_items is None:
-        for view in views:
-            brain.show_view(view)
-            fpath = out_dir / f'{name_prefix}_{view}.png'
-            brain.save_image(str(fpath))
-            print(f'Saved: {fpath}')
-        brain.close()
-        return
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(7 * n_cols, 6 * n_rows),
+                             squeeze=False)
 
-    # Composed matplotlib figure (SVG, or PNG-with-legend)
-    n = len(views)
-    fig, axes = plt.subplots(1, n, figsize=(8 * n, 8), squeeze=False)
-    for col, view in enumerate(views):
-        brain.show_view(view)
-        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-        brain.save_image(tmp.name)
-        axes[0, col].imshow(imread(tmp.name))
-        axes[0, col].set_title(view, fontsize=14)
-        axes[0, col].axis('off')
-        tmp.close()
-    brain.close()
+    for r, h in enumerate(hemis):
+        for c, view in enumerate(views):
+            ax = axes[r, c]
+            if view in hemi_view_images[h]:
+                ax.imshow(hemi_view_images[h][view])
+            ax.axis('off')
 
     if legend_items:
-        handles = [Patch(facecolor=c, edgecolor='grey', label=n)
+        handles = [mpatches.Patch(facecolor=c, edgecolor='grey', label=n)
                    for n, c in legend_items]
         fig.legend(handles=handles, loc='center left',
                    bbox_to_anchor=(1.0, 0.5), fontsize=10, frameon=True)
 
-    fig.suptitle(name_prefix.replace('_', ' '), fontsize=16, y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    if colorbar_mappable is not None:
+        cbar = fig.colorbar(colorbar_mappable, ax=axes.ravel().tolist(),
+                            shrink=0.6, pad=0.02)
+        if colorbar_label:
+            cbar.set_label(colorbar_label, fontsize=12)
 
-    ext = fmt if fmt in ('png', 'svg') else 'png'
-    fpath = out_dir / f'{name_prefix}.{ext}'
-    fig.savefig(str(fpath), format=ext, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-    print(f'Saved: {fpath}')
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=16, y=0.98)
 
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        fig.tight_layout(rect=[0, 0, 0.95 if legend_items else 1.0, 0.95 if suptitle else 1.0])
+
+    if save:
+        if out_dir is None:
+            out_dir = FIGURES_ROOT / 'ROI_maps'
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ext = fmt if fmt in ('png', 'svg') else 'png'
+        fpath = out_dir / f'{name_prefix}.{ext}'
+        fig.savefig(str(fpath), format=ext, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f'Saved: {fpath}')
+    else:
+        plt.show(block=True)
+
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Main plotting functions
+# ─────────────────────────────────────────────────────────────────────
 
 def plot_roi_brain(roi_dict=None, subjects_dir=None, views=None,
                    hemi=None, save=False, out_dir=None,
                    mode='ico5', atlas='aparc', fmt='png',
-                   brain_kwargs=None):
+                   surf='pial', smooth=0.25, brain_kwargs=None,
+                   custom_roi_dir=None):
     """
     Plot ROI labels on the fsaverage cortical surface.
 
@@ -200,26 +353,27 @@ def plot_roi_brain(roi_dict=None, subjects_dir=None, views=None,
         If True, save screenshots to *out_dir* and close instead of
         showing the interactive viewer.
     out_dir : Path | str | None
-        Directory for saved PNGs.  Defaults to FIGURES_ROOT / 'ROI_maps'.
+        Directory for saved figures.  Defaults to FIGURES_ROOT / 'ROI_maps'.
     mode : str
         'ico5' to show only source-space vertices (default), or 'full'
         to show full-resolution atlas parcel vertices.
     atlas : str
-        Atlas parcellation: 'aparc', 'Schaefer200', or 'HCPMMP1'.
+        Atlas parcellation: 'aparc', 'Schaefer200', 'HCPMMP1', or 'custom'.
+    surf : str
+        Cortical surface: 'pial' (default), 'inflated', or 'white'.
     brain_kwargs : dict | None
         Extra keyword arguments forwarded to ``mne.viz.Brain``.
+    custom_roi_dir : Path | str | None
+        Override directory for custom NIfTI ROIs (atlas='custom' only).
 
     Returns
     -------
-    brain : mne.viz.Brain
-        The Brain instance (useful for further interaction in a notebook).
+    fig : matplotlib.figure.Figure
+        The composed figure.
     """
     # ── resolve subjects_dir ──────────────────────────────────────────
     if subjects_dir is None:
-        fs_dir = fetch_fsaverage(verbose=False)
-        subjects_dir = str(fs_dir.parent)
-    else:
-        fs_dir = Path(subjects_dir) / 'fsaverage'
+        subjects_dir = str(fetch_fsaverage(verbose=False).parent)
 
     # ── build ROI labels ──────────────────────────────────────────────
     if roi_dict is None:
@@ -227,14 +381,16 @@ def plot_roi_brain(roi_dict=None, subjects_dir=None, views=None,
             roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
                                          composite_rois=SPEECH_ROIS['aparc'])
         else:
-            roi_dict = build_roi_labels(subjects_dir, atlas=atlas)
+            roi_dict = build_roi_labels(subjects_dir, atlas=atlas,
+                                         custom_roi_dir=custom_roi_dir)
 
     roi_dict_full = roi_dict
 
     # ── restrict to source-space vertices if requested ────────────────
     if mode == 'ico5':
+        fs_path = Path(subjects_dir) / 'fsaverage'
         src = mne.read_source_spaces(
-            fs_dir / 'bem' / 'fsaverage-ico-5-src.fif', verbose=False
+            fs_path / 'bem' / 'fsaverage-ico-5-src.fif', verbose=False
         )
         roi_dict = _restrict_labels_to_src(roi_dict, src)
 
@@ -251,38 +407,31 @@ def plot_roi_brain(roi_dict=None, subjects_dir=None, views=None,
         else:
             hemi = 'both'
 
-    # ── create the Brain ──────────────────────────────────────────────
-    bkw = dict(
-        subject='fsaverage',
-        subjects_dir=subjects_dir,
-        hemi=hemi,
-        surf='inflated',
-        cortex='low_contrast',
-        background='white',
-        size=(1000, 800),
-        views=views,
-    )
-    if brain_kwargs:
-        bkw.update(brain_kwargs)
+    hemis_to_plot = ['lh', 'rh'] if hemi == 'both' else [hemi]
+    colours_hex = _get_roi_colours(list(roi_dict.keys()))
 
-    brain = mne.viz.Brain(**bkw)
+    # ── render each hemisphere ────────────────────────────────────────
+    from matplotlib.colors import to_rgba
 
-    # ── add each ROI ──────────────────────────────────────────────────
-    colours = _get_roi_colours(list(roi_dict.keys()))
-    for idx, (roi_name, label) in enumerate(roi_dict.items()):
-        colour = colours[idx]
-        brain.add_label(label, color=colour, alpha=0.7,
-                        borders=False)
-        # Skip individual borders for very large atlases (slow to render)
-        if len(roi_dict) <= 50:
-            brain.add_label(label, color=colour, alpha=1.0,
-                            borders=True)
+    hemi_view_images = {}
+    for h in hemis_to_plot:
+        coords, faces = _load_surface(subjects_dir, h, surf=surf, smooth=smooth)
+
+        # Build per-vertex RGBA: base gray + ROI colours
+        rgba = np.full((len(coords), 4), [0.7, 0.7, 0.7, 1.0], dtype=np.float32)
+        for idx, (name, label) in enumerate(roi_dict.items()):
+            if hasattr(label, 'hemi') and label.hemi == h:
+                c = np.array(to_rgba(colours_hex[idx]))
+                rgba[label.vertices] = c
+
+        vertex_rgba = (rgba * 255).astype(np.uint8)
+        hemi_view_images[h] = _render_brain_views(
+            coords, faces, views, h, vertex_rgba=vertex_rgba)
 
     # ── print vertex summary ──────────────────────────────────────────
     print(f'\n── ROI vertex coverage (atlas={atlas}, mode={mode}, '
           f'{len(roi_dict)} ROIs) ──')
     shown_items = list(roi_dict.items())
-    # For large atlases, show a summary instead of all labels
     if len(shown_items) > 20:
         for roi_name, label in shown_items[:10]:
             full = roi_dict_full[roi_name]
@@ -303,23 +452,27 @@ def plot_roi_brain(roi_dict=None, subjects_dir=None, views=None,
                   f'shown={len(label.vertices):>5d}')
     print()
 
-    # ── save or show ──────────────────────────────────────────────────
-    if save:
-        if out_dir is None:
-            out_dir = FIGURES_ROOT / 'ROI_maps'
-        legend = list(zip(roi_dict.keys(), colours))
-        _save_brain_views(brain, views, out_dir,
-                          f'fsaverage_{atlas}_ROIs', fmt=fmt,
-                          legend_items=legend)
-    else:
-        print('Interactive viewer open – close the window when done.')
+    # ── build legend ──────────────────────────────────────────────────
+    legend_items = []
+    seen = set()
+    for idx, (name, label) in enumerate(roi_dict.items()):
+        if label.hemi in [h for h in hemis_to_plot] and name not in seen:
+            legend_items.append((name, colours_hex[idx]))
+            seen.add(name)
 
-    return brain
+    return _compose_brain_figure(
+        hemi_view_images, views,
+        legend_items=legend_items,
+        save=save, out_dir=out_dir,
+        name_prefix=f'fsaverage_{atlas}_ROIs',
+        fmt=fmt,
+    )
 
 
 def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=None,
                     views=None, hemi=None, save=False, out_dir=None,
-                    mode='ico5', atlas='aparc', fmt='png'):
+                    mode='ico5', atlas='aparc', fmt='png', surf='pial',
+                    smooth=0.25):
     """
     Plot one ROI (or a small set of named parcels) highlighted on the brain.
 
@@ -341,6 +494,8 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
     mode : str
         'ico5' to restrict to source-space vertices (default), or
         'full' to show full-resolution parcel vertices.
+    surf : str
+        Cortical surface: 'pial' (default), 'inflated', or 'white'.
     """
     if subjects_dir is None:
         fs_dir = fetch_fsaverage(verbose=False)
@@ -351,11 +506,10 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
     src = None
     if mode == 'ico5':
         src = mne.read_source_spaces(
-            fs_dir / 'bem' / 'fsaverage-ico-5-src.fif', verbose=False
+            Path(fs_dir) / 'bem' / 'fsaverage-ico-5-src.fif', verbose=False
         )
 
     if parcel_names is not None:
-        # Explicit parcel list provided — load the atlas and look them up
         parc = ATLAS_PARC_MAP.get(atlas, atlas)
         labels_all = mne.read_labels_from_annot(
             'fsaverage', parc=parc, hemi='both',
@@ -371,7 +525,6 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
         labels_to_plot = {pname: label_lookup[pname] for pname in parcel_names}
 
     elif roi_name in SPEECH_ROIS.get(atlas, {}):
-        # Named speech-network ROI → look up parcels from config
         parcel_names = SPEECH_ROIS[atlas][roi_name]
         parc = ATLAS_PARC_MAP.get(atlas, atlas)
         labels_all = mne.read_labels_from_annot(
@@ -383,7 +536,6 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
                           for pname in parcel_names if pname in label_lookup}
 
     elif atlas == 'aparc' and roi_name in SPEECH_ROIS['aparc']:
-        # Legacy: aparc composite ROI → show sub-parcels
         parcel_names = SPEECH_ROIS['aparc'][roi_name]
         labels_all = mne.read_labels_from_annot(
             'fsaverage', parc='aparc', hemi='both',
@@ -393,14 +545,12 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
         labels_to_plot = {pname: label_lookup[pname] for pname in parcel_names}
 
     else:
-        # Non-aparc atlas or unknown ROI name: use roi_name as substring filter
         if atlas == 'aparc':
             all_roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
                                              composite_rois=SPEECH_ROIS['aparc'])
         else:
             all_roi_dict = build_roi_labels(subjects_dir, atlas=atlas)
 
-        # Filter by substring match
         labels_to_plot = {
             name: label for name, label in all_roi_dict.items()
             if roi_name in name
@@ -412,7 +562,6 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
                 f'First 20 available: {available}'
             )
 
-    # Determine hemisphere
     if hemi is None:
         hemis = {label.hemi for label in labels_to_plot.values()}
         hemi = hemis.pop() if len(hemis) == 1 else 'both'
@@ -420,69 +569,65 @@ def plot_single_roi(roi_name, parcel_names=None, roi_dict=None, subjects_dir=Non
     if views is None:
         views = ['lateral', 'medial']
 
-    brain = mne.viz.Brain(
-        subject='fsaverage',
-        subjects_dir=subjects_dir,
-        hemi=hemi,
-        surf='inflated',
-        cortex='low_contrast',
-        background='white',
-        size=(1000, 800),
-        views=views,
-    )
+    hemis_to_plot = ['lh', 'rh'] if hemi == 'both' else [hemi]
+    colours_hex = _get_roi_colours(list(labels_to_plot.keys()))
 
-    colours = _get_roi_colours(list(labels_to_plot.keys()))
     print(f'\n── {roi_name}: {len(labels_to_plot)} parcels '
           f'(atlas={atlas}, mode={mode}) ──')
-    for idx, (pname, label_full) in enumerate(labels_to_plot.items()):
-        label = label_full.restrict(src) if src is not None else label_full
-        colour = colours[idx]
-        brain.add_label(label, color=colour, alpha=0.6, borders=False)
-        if len(labels_to_plot) <= 50:
-            brain.add_label(label, color=colour, alpha=1.0, borders=True)
-        print(f'  {pname:45s}  colour={colour}  '
-              f'full={len(label_full.vertices):>5d}  '
-              f'shown={len(label.vertices):>5d}')
+
+    # ── render each hemisphere ────────────────────────────────────────
+    from matplotlib.colors import to_rgba
+
+    hemi_view_images = {}
+    legend_items = []
+    printed_labels = set()
+
+    for h in hemis_to_plot:
+        coords, faces = _load_surface(subjects_dir, h, surf=surf, smooth=smooth)
+        rgba = np.full((len(coords), 4), [0.7, 0.7, 0.7, 1.0], dtype=np.float32)
+
+        for idx, (pname, label_full) in enumerate(labels_to_plot.items()):
+            label = label_full.restrict(src) if src is not None else label_full
+
+            if hasattr(label, 'hemi') and label.hemi == h:
+                colour = colours_hex[idx]
+                c = np.array(to_rgba(colour))
+                rgba[label.vertices] = c
+
+                if pname not in printed_labels:
+                    print(f'  {pname:45s}  colour={colour}  '
+                          f'full={len(label_full.vertices):>5d}  '
+                          f'shown={len(label.vertices):>5d}')
+                    printed_labels.add(pname)
+                    legend_items.append((pname, colour))
+
+        vertex_rgba = (rgba * 255).astype(np.uint8)
+        hemi_view_images[h] = _render_brain_views(
+            coords, faces, views, h, vertex_rgba=vertex_rgba)
+
     print()
 
-    if save:
-        if out_dir is None:
-            out_dir = FIGURES_ROOT / 'ROI_maps'
-        safe_name = roi_name.replace(' ', '_')
-        legend = list(zip(labels_to_plot.keys(), colours))
-        _save_brain_views(brain, views, out_dir,
-                          f'fsaverage_{atlas}_{safe_name}', fmt=fmt,
-                          legend_items=legend)
-    else:
-        print('Interactive viewer open – close the window when done.')
-
-    return brain
+    safe_name = roi_name.replace(' ', '_')
+    return _compose_brain_figure(
+        hemi_view_images, views,
+        legend_items=legend_items,
+        save=save, out_dir=out_dir,
+        name_prefix=f'fsaverage_{atlas}_{safe_name}',
+        fmt=fmt,
+    )
 
 
 def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects_dir=None,
                        views=None, hemi=None, save=False, out_dir=None,
-                       atlas='aparc', fmt='png'):
+                       atlas='aparc', fmt='png', surf='pial', smooth=0.25):
     """
     Plot full-resolution (top row) vs ico-5 (bottom row) for comparison.
 
     If *roi_name* or *parcel_names* is given, shows that single ROI's
     parcels.  Otherwise shows all ROIs from the specified atlas.
-
-    Parameters
-    ----------
-    atlas : str
-        'aparc', 'Schaefer200', or 'HCPMMP1'.
-    roi_name : str | None
-        Single ROI to plot.  For aparc, a key in SPEECH_ROIS['aparc'].  For other
-        atlases, a substring filter (e.g. 'Aud' for auditory parcels).
-    views : list of str | None
-        Brain views.  Defaults to ['lateral'].
-    save : bool
-        Save a combined figure instead of showing interactively.
     """
     import matplotlib.pyplot as plt
     from matplotlib.image import imread
-    import tempfile
 
     if subjects_dir is None:
         fs_dir = fetch_fsaverage(verbose=False)
@@ -494,12 +639,11 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
         views = ['lateral']
 
     src = mne.read_source_spaces(
-        fs_dir / 'bem' / 'fsaverage-ico-5-src.fif', verbose=False
+        Path(fs_dir) / 'bem' / 'fsaverage-ico-5-src.fif', verbose=False
     )
 
     # --- Build labels for both modes ---
     if parcel_names is not None:
-        # Explicit parcel list
         parc = ATLAS_PARC_MAP.get(atlas, atlas)
         labels_all = mne.read_labels_from_annot(
             'fsaverage', parc=parc, hemi='both',
@@ -510,7 +654,6 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
         title_tag = roi_name if roi_name else 'CustomROI'
 
     elif roi_name is not None:
-        # Single ROI by name or substring
         if atlas == 'aparc' and roi_name in SPEECH_ROIS['aparc']:
             parcel_names = SPEECH_ROIS['aparc'][roi_name]
             labels_all = mne.read_labels_from_annot(
@@ -533,7 +676,6 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
                 raise ValueError(f'No parcels matching "{roi_name}" in {atlas}')
         title_tag = roi_name
     else:
-        # All ROIs
         if roi_dict is None:
             if atlas == 'aparc':
                 roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
@@ -545,7 +687,6 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
 
     ico5_labels = _restrict_labels_to_src(full_labels, src)
 
-    # Determine hemisphere
     if hemi is None:
         hemis_present = {l.hemi for l in full_labels.values()}
         if hemis_present == {'lh'}:
@@ -555,40 +696,29 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
         else:
             hemi = 'both'
 
-    # --- Render each mode to temp images ---
+    hemis_to_plot = ['lh', 'rh'] if hemi == 'both' else [hemi]
     colours = _get_roi_colours(list(full_labels.keys()))
 
-    def _render_brain(labels_dict):
-        brain = mne.viz.Brain(
-            subject='fsaverage',
-            subjects_dir=subjects_dir,
-            hemi=hemi,
-            surf='inflated',
-            cortex='low_contrast',
-            background='white',
-            size=(1000, 800),
-            views=views[0],
-        )
-        for idx, (name, label) in enumerate(labels_dict.items()):
-            colour = colours[idx]
-            brain.add_label(label, color=colour, alpha=0.7, borders=False)
-            if len(labels_dict) <= 50:
-                brain.add_label(label, color=colour, alpha=1.0, borders=True)
-
-        images = {}
-        for view in views:
-            brain.show_view(view)
-            tmpfile = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-            brain.save_image(tmpfile.name)
-            images[view] = imread(tmpfile.name)
-            tmpfile.close()
-        brain.close()
-        return images
+    def _render_labels(labels_dict, label_tag):
+        """Render a set of labels across hemispheres. Returns {hemi: {view: img}}."""
+        from matplotlib.colors import to_rgba
+        result = {}
+        for h in hemis_to_plot:
+            coords, faces = _load_surface(subjects_dir, h, surf=surf, smooth=smooth)
+            rgba = np.full((len(coords), 4), [0.7, 0.7, 0.7, 1.0], dtype=np.float32)
+            for idx, (name, label) in enumerate(labels_dict.items()):
+                if hasattr(label, 'hemi') and label.hemi == h:
+                    c = np.array(to_rgba(colours[idx]))
+                    rgba[label.vertices] = c
+            vertex_rgba = (rgba * 255).astype(np.uint8)
+            result[h] = _render_brain_views(
+                coords, faces, views, h, vertex_rgba=vertex_rgba)
+        return result
 
     print(f'Rendering {atlas} full-resolution parcels...')
-    full_images = _render_brain(full_labels)
+    full_images = _render_labels(full_labels, 'full')
     print(f'Rendering {atlas} ico-5 source-space vertices...')
-    ico5_images = _render_brain(ico5_labels)
+    ico5_images = _render_labels(ico5_labels, 'ico5')
 
     # --- Print vertex summary ---
     items = list(full_labels.items())
@@ -603,23 +733,31 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
         print(f'  ... ({len(items) - 15} more ROIs) ...')
     print()
 
-    # --- Compose matplotlib figure: top=full, bottom=ico5 ---
+    # --- Compose: full on top, ico-5 on bottom ---
+    # Flatten into a single grid: for each hemi, top row = full, bottom = ico5
+    all_rows = []
+    row_labels = []
+    for h in hemis_to_plot:
+        all_rows.append(full_images[h])
+        row_labels.append(f'{h} full')
+        all_rows.append(ico5_images[h])
+        row_labels.append(f'{h} ico-5')
+
+    n_rows = len(all_rows)
     n_cols = len(views)
-    fig, axes = plt.subplots(2, n_cols, figsize=(8 * n_cols, 12),
-                              squeeze=False)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(8 * n_cols, 6 * n_rows),
+                             squeeze=False)
 
-    for col, view in enumerate(views):
-        axes[0, col].imshow(full_images[view])
-        axes[0, col].set_title(f'{atlas} full — {view}', fontsize=16)
-        axes[0, col].axis('off')
-
-        axes[1, col].imshow(ico5_images[view])
-        axes[1, col].set_title(f'{atlas} ico-5 — {view}', fontsize=16)
-        axes[1, col].axis('off')
+    for r, (images, rlabel) in enumerate(zip(all_rows, row_labels)):
+        for c, view in enumerate(views):
+            axes[r, c].imshow(images[view])
+            axes[r, c].set_title(f'{rlabel} — {view}', fontsize=14)
+            axes[r, c].axis('off')
 
     fig.suptitle(f'{title_tag}: full vs ico-5 source space',
-                 fontsize=20, y=0.95)
-    plt.tight_layout()
+                 fontsize=18, y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
 
     if save:
         if out_dir is None:
@@ -630,13 +768,130 @@ def plot_compare_modes(roi_name=None, parcel_names=None, roi_dict=None, subjects
         safe_tag = title_tag.replace(' ', '_')
         ext = fmt if fmt in ('png', 'svg') else 'png'
         fpath = out_dir / f'fsaverage_{safe_tag}_full_vs_ico5_{view_tag}.{ext}'
-        fig.savefig(fpath, dpi=200, bbox_inches='tight', format=ext)
+        fig.savefig(str(fpath), dpi=200, bbox_inches='tight', format=ext)
         print(f'Saved: {fpath}')
         plt.close(fig)
     else:
         plt.show()
 
     return fig
+
+
+def plot_mesh_only(subjects_dir=None, views=None, hemi=None, save=False,
+                   out_dir=None, fmt='png', surf='pial', smooth=0.25):
+    """Plot the bare fsaverage cortical surface without any ROI overlays."""
+    if subjects_dir is None:
+        subjects_dir = str(fetch_fsaverage(verbose=False).parent)
+
+    if hemi is None:
+        hemi = 'both'
+    if views is None:
+        views = ['lateral', 'medial']
+
+    hemis_to_plot = ['lh', 'rh'] if hemi == 'both' else [hemi]
+
+    hemi_view_images = {}
+    for h in hemis_to_plot:
+        coords, faces = _load_surface(subjects_dir, h, surf=surf, smooth=smooth)
+        hemi_view_images[h] = _render_brain_views(coords, faces, views, h)
+
+    return _compose_brain_figure(
+        hemi_view_images, views,
+        save=save, out_dir=out_dir,
+        name_prefix=f'fsaverage_{surf}_mesh',
+        fmt=fmt,
+    )
+
+
+def plot_statmap_brain(data_dict, subjects_dir=None, views=None,
+                       hemi=None, surf='pial', save=False, out_dir=None,
+                       atlas='aparc', fmt='png', cmap='hot',
+                       fmin=None, fmid=None, fmax=None,
+                       mode='ico5', smooth=0.25, brain_kwargs=None):
+    """
+    Overlay continuous stat-map data (e.g. SVM accuracy) on the cortical surface.
+
+    Parameters
+    ----------
+    data_dict : dict
+        {roi_name: float} mapping ROI names to scalar values.
+    cmap : str
+        Colormap for the continuous overlay (default: 'hot').
+    fmin, fmid, fmax : float | None
+        Thresholds for the colormap. If None, derived from data range.
+    mode : str
+        'ico5' or 'full' -- vertex restriction mode.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    from matplotlib.colors import Normalize
+
+    if subjects_dir is None:
+        subjects_dir = str(fetch_fsaverage(verbose=False).parent)
+
+    if views is None:
+        views = ['lateral', 'medial']
+
+    # Build speech ROI labels
+    speech_labels = build_speech_roi_labels(atlas, subjects_dir)
+
+    if mode == 'ico5':
+        src = mne.read_source_spaces(
+            Path(subjects_dir) / 'fsaverage' / 'bem' / 'fsaverage-ico-5-src.fif',
+            verbose=False
+        )
+        speech_labels = _restrict_labels_to_src(speech_labels, src)
+
+    if hemi is None:
+        hemis_present = {l.hemi for l in speech_labels.values()}
+        if hemis_present == {'lh'}:
+            hemi = 'lh'
+        elif hemis_present == {'rh'}:
+            hemi = 'rh'
+        else:
+            hemi = 'both'
+
+    hemis_to_plot = ['lh', 'rh'] if hemi == 'both' else [hemi]
+
+    # Compute colormap range from data
+    values = [v for k, v in data_dict.items() if k in speech_labels]
+    if not values:
+        raise ValueError('No matching ROI names between data_dict and speech labels.')
+
+    if fmin is None:
+        fmin = min(values)
+    if fmax is None:
+        fmax = max(values)
+    if fmid is None:
+        fmid = (fmin + fmax) / 2.0
+
+    hemi_view_images = {}
+    for h in hemis_to_plot:
+        coords, faces = _load_surface(subjects_dir, h, surf=surf, smooth=smooth)
+
+        # Build per-vertex scalar data (NaN for non-ROI → transparent)
+        scalars = np.full(len(coords), np.nan, dtype=np.float32)
+        for roi_name, label in speech_labels.items():
+            if label.hemi == h and roi_name in data_dict:
+                scalars[label.vertices] = data_dict[roi_name]
+
+        hemi_view_images[h] = _render_brain_views(
+            coords, faces, views, h,
+            vertex_scalars=scalars, cmap=cmap, clim=[fmin, fmax])
+
+    # Build colorbar mappable
+    norm = Normalize(vmin=fmin, vmax=fmax)
+    mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+    mappable.set_array([])
+
+    return _compose_brain_figure(
+        hemi_view_images, views,
+        colorbar_mappable=mappable,
+        colorbar_label='Value',
+        save=save, out_dir=out_dir,
+        name_prefix=f'fsaverage_{atlas}_statmap',
+        fmt=fmt,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -656,8 +911,21 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--atlas', default='aparc',
-        choices=['aparc', 'Schaefer200', 'HCPMMP1'],
-        help='Cortical atlas for ROI parcellation (default: aparc).'
+        choices=['aparc', 'Schaefer200', 'HCPMMP1', 'custom'],
+        help='Cortical atlas for ROI parcellation (default: aparc). '
+             '"custom" uses volumetric NIfTI ROIs from --custom-rois-dir.'
+    )
+    parser.add_argument(
+        '--surf', choices=['pial', 'inflated', 'white'],
+        default='pial',
+        help='Base cortical surface (default: pial). Combined with --smooth '
+             'to control sulcal depth.'
+    )
+    parser.add_argument(
+        '--smooth', type=float, default=0.25,
+        help='Blend ratio between base surface and inflated (0.0 = pure base, '
+             '1.0 = fully inflated). Default 0.25 gives shallow sulci like '
+             'publication figures. Use 0 for the raw surface.'
     )
     parser.add_argument(
         '--roi', type=str, default=None,
@@ -690,6 +958,10 @@ if __name__ == '__main__':
              'for the selected atlas (one colour per ROI).'
     )
     parser.add_argument(
+        '--mesh-only', action='store_true',
+        help='Plot the bare fsaverage cortical surface without any ROIs.'
+    )
+    parser.add_argument(
         '--list-rois', action='store_true',
         help='Print available speech-network ROI names and exit.'
     )
@@ -703,6 +975,21 @@ if __name__ == '__main__':
         '--hemi', choices=['lh', 'rh', 'both'], default=None,
         help='Hemisphere to plot (default: auto-detect from ROI labels).'
     )
+    parser.add_argument(
+        '--statmap', type=str, default=None,
+        help='Path to a CSV file with ROI-level stat values for heatmap '
+             'overlay. Format: roi_name,value (one per line, no header).'
+    )
+    parser.add_argument(
+        '--cmap', type=str, default='hot',
+        help='Colormap for stat-map overlay (default: hot). '
+             'Any matplotlib colormap name.'
+    )
+    parser.add_argument(
+        '--custom-rois-dir', type=str, default=None,
+        help='Override directory for custom volumetric NIfTI ROI masks '
+             '(used with --atlas custom). Defaults to config.CUSTOM_ROI_DIR.'
+    )
     args = parser.parse_args()
 
     # --list-rois: print available speech ROI names and exit
@@ -712,6 +999,35 @@ if __name__ == '__main__':
         for name in SPEECH_ROI_NAMES:
             parcels = roi_defs.get(name, [])
             print(f'  {name:25s}  ({len(parcels)} parcels)')
+        raise SystemExit(0)
+
+    # --custom-rois-dir implies --atlas custom
+    if args.custom_rois_dir is not None:
+        args.atlas = 'custom'
+
+    # --statmap: continuous heatmap overlay
+    if args.statmap:
+        import pandas as pd
+        df = pd.read_csv(args.statmap, header=None, names=['roi', 'value'])
+        data_dict = dict(zip(df.roi, df.value))
+        plot_statmap_brain(
+            data_dict=data_dict,
+            views=args.views, hemi=args.hemi, surf=args.surf, smooth=args.smooth,
+            save=args.save, out_dir=args.out_dir,
+            atlas=args.atlas, fmt=args.fmt, cmap=args.cmap,
+            mode=args.mode,
+        )
+        raise SystemExit(0)
+
+    if args.mesh_only:
+        fig = plot_mesh_only(
+            views=args.views,
+            hemi=args.hemi,
+            save=args.save,
+            out_dir=args.out_dir,
+            fmt=args.fmt,
+            surf=args.surf, smooth=args.smooth,
+        )
         raise SystemExit(0)
 
     if args.custom_labels:
@@ -727,9 +1043,10 @@ if __name__ == '__main__':
                 hemi=args.hemi,
                 atlas=args.atlas,
                 fmt=args.fmt,
+                surf=args.surf, smooth=args.smooth,
             )
         else:
-            brain = plot_single_roi(
+            fig = plot_single_roi(
                 roi_name=roi_name,
                 parcel_names=parcel_names,
                 views=args.views,
@@ -739,9 +1056,9 @@ if __name__ == '__main__':
                 hemi=args.hemi,
                 atlas=args.atlas,
                 fmt=args.fmt,
+                surf=args.surf, smooth=args.smooth,
             )
     elif args.speech_rois:
-        # Plot all 16 speech-network ROIs as merged composite labels
         speech_dict = build_speech_roi_labels(args.atlas)
         if args.mode == 'compare':
             plot_compare_modes(
@@ -752,9 +1069,10 @@ if __name__ == '__main__':
                 hemi=args.hemi,
                 atlas=args.atlas,
                 fmt=args.fmt,
+                surf=args.surf, smooth=args.smooth,
             )
         else:
-            brain = plot_roi_brain(
+            fig = plot_roi_brain(
                 roi_dict=speech_dict,
                 views=args.views,
                 save=args.save,
@@ -763,6 +1081,7 @@ if __name__ == '__main__':
                 hemi=args.hemi,
                 atlas=args.atlas,
                 fmt=args.fmt,
+                surf=args.surf, smooth=args.smooth,
             )
     elif args.mode == 'compare':
         plot_compare_modes(
@@ -773,9 +1092,10 @@ if __name__ == '__main__':
             hemi=args.hemi,
             atlas=args.atlas,
             fmt=args.fmt,
+            surf=args.surf, smooth=args.smooth,
         )
     elif args.roi:
-        brain = plot_single_roi(
+        fig = plot_single_roi(
             roi_name=args.roi,
             views=args.views,
             save=args.save,
@@ -784,9 +1104,10 @@ if __name__ == '__main__':
             hemi=args.hemi,
             atlas=args.atlas,
             fmt=args.fmt,
+            surf=args.surf, smooth=args.smooth,
         )
     else:
-        brain = plot_roi_brain(
+        fig = plot_roi_brain(
             views=args.views,
             save=args.save,
             out_dir=args.out_dir,
@@ -794,11 +1115,6 @@ if __name__ == '__main__':
             hemi=args.hemi,
             atlas=args.atlas,
             fmt=args.fmt,
+            surf=args.surf, smooth=args.smooth,
+            custom_roi_dir=args.custom_rois_dir,
         )
-
-    # Keep the interactive viewer alive by running the Qt event loop
-    if not args.save and args.mode != 'compare':
-        from qtpy.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is not None:
-            app.exec_()
