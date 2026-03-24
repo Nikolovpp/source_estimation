@@ -100,8 +100,9 @@ def parse_args():
     # Advanced pipeline options
     parser.add_argument(
         '--atlas', default='aparc',
-        choices=['aparc', 'HCPMMP1', 'Schaefer200'],
-        help='Cortical atlas for ROI parcellation (default: aparc)'
+        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'],
+        help='Cortical atlas for ROI parcellation (default: aparc). '
+             '"custom" uses volumetric NIfTI masks from config.CUSTOM_ROI_DIR'
     )
     parser.add_argument(
         '--leakage-correction', action='store_true', default=False,
@@ -354,7 +355,7 @@ def main():
 
     if atlas == 'aparc':
         roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
-                                     composite_rois=SPEECH_ROIS)
+                                     composite_rois=SPEECH_ROIS['aparc'])
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=atlas)
 
