@@ -26,6 +26,7 @@ from config import (
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT, SPEECH_ROIS,
     SVM_C, PSEUDO_TRIAL_SIZE,
 )
+from log_utils import setup_logging
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
 from run_source_svm import process_subject
@@ -95,6 +96,9 @@ def parse_args():
 def main():
     args = parse_args()
     subjects = args.subjects if args.subjects else SUBJECT_IDS
+
+    setup_logging(args.task, args.stim_class, args.method, args.atlas,
+                  args.feature_mode, runner_name='parallel')
 
     print(f'Parallel source-space SVM decoding')
     print(f'  Task:         {args.task}')
