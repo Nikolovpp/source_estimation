@@ -235,8 +235,9 @@ def parse_args():
                         help='Overwrite existing .npz ROI time series files')
     # Advanced pipeline options
     parser.add_argument('--atlas', default='aparc',
-                        choices=['aparc', 'HCPMMP1', 'Schaefer200'],
-                        help='Cortical atlas for ROI parcellation (default: aparc)')
+                        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'],
+                        help='Cortical atlas for ROI parcellation (default: aparc). '
+                             '"custom" uses volumetric NIfTI masks from config.CUSTOM_ROI_DIR')
     parser.add_argument('--leakage-correction', action='store_true', default=False,
                         help='Apply leakage correction (orthogonalization for pca_flip, regression for vertex modes)')
     parser.add_argument('--pseudo-trial-size', type=int, default=PSEUDO_TRIAL_SIZE,
@@ -269,7 +270,7 @@ def main():
 
     if args.atlas == 'aparc':
         roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
-                                     composite_rois=SPEECH_ROIS)
+                                     composite_rois=SPEECH_ROIS['aparc'])
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=args.atlas)
 
