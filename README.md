@@ -59,13 +59,14 @@ CSV columns:
 
 ## Atlas Selection
 
-Three cortical parcellation atlases are supported, selectable via `--atlas`:
+Four cortical parcellation options are supported, selectable via `--atlas`:
 
 | Atlas | CLI name | Parcels | Source |
 |-------|----------|---------|--------|
-| Desikan-Killiany | `aparc` | 8 composite ROIs | MNE built-in (default, backward compatible) |
+| Desikan-Killiany | `aparc` | 16 composite ROIs | MNE built-in (default, backward compatible) |
 | Schaefer 2018 | `Schaefer200` | 200 (100/hemi) | Yeo lab, 17-network functional parcellation |
 | HCP-MMP 1.0 | `HCPMMP1` | 360 (180/hemi) | Glasser et al. multi-modal parcellation |
+| Custom functional localizer | `custom` | 6 (LH only) | Lab-derived language ROIs (Chang et al.) |
 
 ### Why finer-grained atlases?
 
@@ -141,6 +142,8 @@ Central configuration. All paths, subject IDs, ROI definitions, atlas maps, and 
 - `SPEECH_ROIS` — 16 speech-network ROIs mapped per atlas: `SPEECH_ROIS[atlas][roi_name]` → parcel list
 - `SPEECH_ROI_NAMES` — ordered list of the 16 ROI names
 - `ATLAS_PARC_MAP` — maps CLI atlas names to MNE parcellation strings
+- `CUSTOM_ROI_DIR` — path to custom volumetric NIfTI ROI masks (functional localizers)
+- `CUSTOM_ROI_NAMES` — ordered list of the 6 custom ROI names
 - `SVM_C`, `PSEUDO_TRIAL_SIZE`, `LEAKAGE_CORRECTION` — advanced pipeline defaults
 - `SW_DUR`, `SW_STEP_SIZE` — sliding window parameters (40 ms, 5 ms)
 - `N_CV_FOLDS`, `N_CV_REPEATS` — cross-validation settings (5 folds, 5 repeats)
@@ -160,7 +163,8 @@ Builds the forward model using the fsaverage template anatomy. Supports multiple
 
 - **`setup_fsaverage()`** — Fetches fsaverage files, reads ico-5 source space and 3-layer BEM. Returns `(subjects_dir, fs_dir, src, bem)`.
 - **`make_forward(epochs_info, src, bem)`** — Computes the forward solution. Built once and shared across all subjects.
-- **`build_roi_labels(subjects_dir, atlas, composite_rois)`** — Reads cortical labels from the specified atlas. For `atlas='aparc'` with `composite_rois`, merges labels into composite ROIs (backward compat). For other atlases, returns all parcels (excluding `???` labels).
+- **`load_custom_volumetric_rois(roi_dir, threshold, subjects_dir, surf)`** — Projects volumetric NIfTI ROI masks onto the fsaverage surface via nilearn `vol_to_surf`. Returns `{roi_name: mne.Label}`.
+- **`build_roi_labels(subjects_dir, atlas, composite_rois, custom_roi_dir)`** — Reads cortical labels from the specified atlas. For `atlas='aparc'` with `composite_rois`, merges labels into composite ROIs. For `atlas='custom'`, dispatches to `load_custom_volumetric_rois()`. For other atlases, returns all parcels (excluding `???` labels).
 
 ### `inverse_pipelines.py`
 
@@ -289,6 +293,115 @@ When running without `--speech-rois` or `--roi`, all parcels from the atlas are 
 |-------|---------|---------------|
 | Schaefer-200 | 200 (100/hemi) | `17Networks_LH_SomMotB_Aud_1-lh`, `17Networks_LH_TempPar_1-lh` |
 | HCPMMP1 | 360 (180/hemi) | `L_A1_ROI-lh`, `L_44_ROI-lh`, `L_STSda_ROI-lh` |
+
+### Custom Functional-Localizer ROIs (`--atlas custom`)
+
+Six language-network ROIs derived from functional localizers (Chang et al.), defined
+as 15 mm spheres with anatomical restriction in MNI volumetric space.
+
+| # | ROI | Full Name | Localizer | Vertices (full) | Vertices (ico-5) |
+|---|-----|-----------|-----------|-----------------|------------------|
+| 1 | `awfa` | Auditory word form area | audioLoc | ~1,466 | ~95 |
+| 2 | `ifc` | Inferior frontal cortex | bothLoc | ~2,521 | ~159 |
+| 3 | `owfa` | Orthographic word form area | vwfaLoc | ~1,645 | ~105 |
+| 4 | `pmc` | Premotor cortex | audioLoc | ~2,731 | ~173 |
+| 5 | `tpc` | Temporo-parietal cortex | bothLoc | ~2,649 | ~159 |
+| 6 | `vwfa` | Visual word form area | vwfaLoc | ~2,081 | ~130 |
+
+All six ROIs are left-hemisphere only. Source masks are binary NIfTI volumes
+(91 x 109 x 91, 2 mm isotropic, MNI152 space).
+
+#### Volume-to-Surface Projection Method
+
+The atlas-based ROIs (aparc, Schaefer200, HCPMMP1) are natively defined on the
+FreeSurfer surface and can be read directly as vertex labels. The custom ROIs, by
+contrast, are defined as volumetric binary masks in MNI space and must be projected
+onto the fsaverage cortical surface. The projection is performed by
+`forward_model.load_custom_volumetric_rois()` using the following procedure:
+
+1. **Input**: Each ROI is a binary NIfTI mask (voxel values 0 or 1) in MNI152
+   space at 2 mm isotropic resolution, with an affine matrix mapping voxel
+   indices to MNI coordinates (origin at [-90, -126, -72] mm).
+
+2. **Surface mesh**: The fsaverage pial surface (`lh.pial`, `rh.pial`) is loaded
+   from the MNE-Python fsaverage dataset. This mesh has ~163,842 vertices per
+   hemisphere and is registered to MNI305 space, which is related to MNI152 by a
+   known affine transform that nilearn handles internally.
+
+3. **Projection via `nilearn.surface.vol_to_surf()`**: For each vertex on the
+   fsaverage pial surface, nilearn samples the volumetric mask along the surface
+   normal within a 3.0 mm radius ball. The `nearest_most_frequent` interpolation
+   method is used: within the sampling sphere, all voxels are evaluated and the
+   most frequently occurring non-NaN value is assigned to the vertex. For binary
+   masks this is equivalent to a majority-vote: a vertex is labelled positive only
+   if the majority of nearby voxels within 3 mm of the surface are inside the ROI.
+
+   - **Why `nearest_most_frequent`**: This interpolation is designed for
+     deterministic atlases and categorical labels. Unlike linear interpolation
+     (which would produce fractional values at ROI boundaries and blur the edges)
+     or simple nearest-neighbor (which takes only the single closest voxel and is
+     sensitive to partial-volume effects), `nearest_most_frequent` aggregates all
+     voxels within the search radius and assigns the mode. This produces clean
+     binary boundaries on the surface that respect the volumetric ROI shape without
+     artificial smoothing.
+
+   - **Why 3.0 mm radius**: The search radius must be large enough to bridge the
+     gap between the cortical surface mesh and nearby voxels (especially in sulcal
+     folds where the pial surface may not pass exactly through voxel centers), but
+     small enough to avoid pulling in voxels from adjacent gyri. At 2 mm voxel
+     resolution, a 3 mm radius captures the immediate 1–2 voxel neighborhood
+     around each surface vertex. This is the nilearn default and provides reliable
+     coverage without spatial blurring.
+
+4. **Thresholding**: After projection, each vertex has a projected value between
+   0.0 and 1.0. Vertices with projected values >= 25% of the maximum projected
+   value are included in the surface label. For binary input masks where the
+   maximum is 1.0, this threshold effectively keeps all vertices where the
+   majority-vote projection returned a positive value, while discarding vertices
+   at the extreme periphery where only a small fraction of neighboring voxels
+   fell inside the ROI.
+
+5. **Hemisphere selection**: Each volumetric mask is projected onto both the left
+   and right hemisphere surfaces independently. Hemispheres where no vertices
+   survive thresholding are discarded. For these language-specific ROIs, only left-
+   hemisphere labels are produced (all 6 ROIs yield `*-lh` labels; no vertices
+   survive on `rh`).
+
+6. **Output**: Standard `mne.Label` objects with the same interface as atlas-derived
+   labels. These are directly consumed by `mne.extract_label_time_course()` (for
+   `pca_flip` mode) and `stc.in_label()` (for vertex modes), ensuring full
+   compatibility with the existing pipeline infrastructure including leakage
+   correction and pseudo-trial averaging.
+
+#### Accuracy Considerations
+
+- **Spatial precision**: The projection preserves the volumetric ROI boundaries
+  to within the resolution of the surface mesh (~1 mm vertex spacing on fsaverage
+  pial) and the voxel grid (2 mm). The 3 mm search radius introduces at most one
+  voxel of spatial uncertainty at ROI boundaries.
+
+- **Coordinate system alignment**: The NIfTI masks use MNI152 coordinates
+  (sform/qform with `aligned` code). The fsaverage surfaces are in MNI305 space.
+  nilearn's `vol_to_surf` handles the MNI152-to-MNI305 affine transformation
+  internally, so no manual registration is required.
+
+- **Source-space restriction**: When the pipeline runs with the default ico-5
+  source space (~10,242 vertices per hemisphere), the full-resolution surface
+  labels (~1,400–2,700 vertices) are automatically restricted to the ico-5 vertex
+  subset via `label.restrict(src)`, yielding ~95–173 source-space vertices per
+  ROI. This is the same restriction applied to all atlas-based labels.
+
+```bash
+# Run SVM decoding with custom functional-localizer ROIs
+python run_source_svm.py --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas custom
+
+# Visualize custom ROIs on fsaverage (full resolution)
+python visualize_rois.py --atlas custom --save --mode full --hemi lh
+
+# Visualize with ico-5 restriction (what the pipeline actually uses)
+python visualize_rois.py --atlas custom --save --mode ico5 --hemi lh
+```
 
 ## Command-Line Reference
 
