@@ -7,14 +7,16 @@ Shows ROI coverage on the fsaverage cortical surface in two modes:
   inverse solution actually reconstructs.
 - **full**: the full-resolution parcel vertices from the atlas.
 
-Supports three atlas parcellations via ``--atlas``:
+Supports four atlas parcellations via ``--atlas``:
 
-- ``aparc`` (default): Desikan-Killiany, 8 composite ROIs
+- ``aparc`` (default): Desikan-Killiany, 16 composite speech-network ROIs
 - ``Schaefer200``: Schaefer 2018, 200 parcels (17-network variant)
 - ``HCPMMP1``: HCP Multi-Modal Parcellation, 360 parcels
+- ``custom``: 6 functional-localizer language ROIs (Chang et al.),
+  volumetric NIfTI masks projected onto fsaverage surface
 
-Rendering uses ``mne.viz.Brain`` (PyVista/VTK) for publication-quality
-3D brain surface renders with proper lighting, shading, and transparency.
+Rendering uses PyVista/VTK for publication-quality 3D brain surface
+renders with Gouraud shading, per-vertex colouring, and backface culling.
 
 Usage
 -----
@@ -22,11 +24,14 @@ Usage
     python visualize_rois.py                                        # aparc, ico-5
     python visualize_rois.py --atlas HCPMMP1 --hemi lh              # HCP-MMP left hemi
 
-    # Speech-network ROIs (16 regions from config.SPEECH_ROIS)
-    python visualize_rois.py --speech-rois --atlas HCPMMP1 --save   # all 16 ROIs
-    python visualize_rois.py --roi Anterior_STS --atlas HCPMMP1     # single named ROI
-    python visualize_rois.py --roi vSMC --atlas Schaefer200 --save  # Chang vSMC
+    # Speech-network ROIs (from config.SPEECH_ROIS)
+    python visualize_rois.py --speech-rois --atlas HCPMMP1 --save   # all speech ROIs
+    python visualize_rois.py --roi vSMC --atlas Schaefer200 --save  # single named ROI
     python visualize_rois.py --list-rois --atlas HCPMMP1            # list ROI names
+
+    # Custom functional-localizer ROIs (Chang et al.)
+    python visualize_rois.py --atlas custom --save --mode full      # all 6 ROIs
+    python visualize_rois.py --atlas custom --save --hemi lh        # LH only
 
     # Surface selection
     python visualize_rois.py --speech-rois --save --surf pial       # folded (default)
