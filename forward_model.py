@@ -153,6 +153,33 @@ def load_custom_volumetric_rois(roi_dir=None, threshold=0.25,
             )
             roi_labels[f'{roi_name}-{hemi}'] = label
 
+    # ── Mask awfa: remove vertices falling in vSMC (precentral/postcentral) ─
+    _vsmc_aparc = ['precentral', 'postcentral']
+    for key in list(roi_labels):
+        if not key.startswith('awfa'):
+            continue
+        label = roi_labels[key]
+        hemi = label.hemi
+        vsmc_labels = mne.read_labels_from_annot(
+            'fsaverage', parc='aparc', hemi=hemi,
+            subjects_dir=subjects_dir, verbose=False,
+        )
+        vsmc_verts = set()
+        for al in vsmc_labels:
+            if any(al.name.startswith(n) for n in _vsmc_aparc):
+                vsmc_verts.update(al.vertices)
+        clean_verts = np.array(
+            sorted(v for v in label.vertices if v not in vsmc_verts)
+        )
+        n_removed = len(label.vertices) - len(clean_verts)
+        if n_removed > 0:
+            print(f'  {key}: masked {n_removed} vertices overlapping '
+                  f'aparc vSMC (precentral/postcentral)')
+            roi_labels[key] = mne.Label(
+                vertices=clean_verts, hemi=hemi,
+                name=label.name, subject='fsaverage',
+            )
+
     print(f'Projected {len(nii_files)} NIfTI masks → '
           f'{len(roi_labels)} surface labels (threshold={threshold})')
     for name, label in roi_labels.items():
@@ -173,9 +200,9 @@ def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None,
     atlas : str
         Atlas name: 'aparc', 'HCPMMP1', 'Schaefer200', or 'custom'.
     composite_rois : dict or None
-        When provided with atlas='aparc', merges aparc labels into
-        composite ROIs (backward-compatible mode).  Maps ROI name to
-        list of aparc label names.
+        When provided, merges atlas parcels into composite ROIs.
+        Maps ROI name to list of native parcel names.  Works with
+        any non-custom atlas (aparc, HCPMMP1, Schaefer200).
     custom_roi_dir : Path | str | None
         Directory with NIfTI masks for atlas='custom'.  Defaults to
         ``CUSTOM_ROI_DIR`` from config.
@@ -198,8 +225,8 @@ def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None,
         subjects_dir=subjects_dir
     )
 
-    # Composite-ROI mode for aparc: merge parcels into speech-network ROIs
-    if composite_rois is not None and atlas == 'aparc':
+    # Composite-ROI mode: merge parcels into speech-network ROIs
+    if composite_rois is not None:
         available = {l.name: l for l in labels_all}
 
         roi_dict = {}
