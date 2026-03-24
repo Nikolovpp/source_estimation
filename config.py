@@ -158,18 +158,18 @@ SPEECH_ROIS = {
         'Planum_Temporale': [
             'superiortemporal-lh', 'transversetemporal-lh',
         ],
-        'Anterior_STS': [
-            'superiortemporal-lh', 'bankssts-lh',
-        ],
-        'Temporal_Pole': [
-            'temporalpole-lh',
-        ],
+        # 'Anterior_STS': [
+        #     'superiortemporal-lh', 'bankssts-lh',
+        # ],
+        # 'Temporal_Pole': [
+        #     'temporalpole-lh',
+        # ],
         'Pars_Orbitalis': [
             'parsorbitalis-lh',
         ],
-        'Posterior_STS': [
-            'superiortemporal-lh', 'bankssts-lh',
-        ],
+        # 'Posterior_STS': [
+        #     'superiortemporal-lh', 'bankssts-lh',
+        # ],
         'DLPFC': [
             'caudalmiddlefrontal-lh', 'rostralmiddlefrontal-lh',
         ],
@@ -239,24 +239,24 @@ SPEECH_ROIS = {
             'L_RI_ROI-lh', 'L_PBelt_ROI-lh',
             'L_52_ROI-lh', 'L_A4_ROI-lh',
         ],
-        # Scott et al. — anterior STS (intelligible speech)
-        'Anterior_STS': [
-            'L_STSda_ROI-lh', 'L_STSva_ROI-lh',
-            'L_STGa_ROI-lh', 'L_TA2_ROI-lh',
-        ],
-        # Rauschecker — temporal pole (ventral stream terminus)
-        'Temporal_Pole': [
-            'L_TGd_ROI-lh', 'L_TGv_ROI-lh',
-        ],
+        # # Scott et al. — anterior STS (intelligible speech)
+        # 'Anterior_STS': [
+        #     'L_STSda_ROI-lh', 'L_STSva_ROI-lh',
+        #     'L_STGa_ROI-lh', 'L_TA2_ROI-lh',
+        # ],
+        # # Rauschecker — temporal pole (ventral stream terminus)
+        # 'Temporal_Pole': [
+        #     'L_TGd_ROI-lh', 'L_TGv_ROI-lh',
+        # ],
         # Scott & Eisner — pars orbitalis / BA 47
         'Pars_Orbitalis': [
             'L_47l_ROI-lh', 'L_a47r_ROI-lh', 'L_p47r_ROI-lh',
         ],
         # Rauschecker & Scott — posterior STS (acoustic-phonetic)
-        'Posterior_STS': [
-            'L_STSdp_ROI-lh', 'L_STSvp_ROI-lh',
-            'L_PHT_ROI-lh', 'L_PSL_ROI-lh',
-        ],
+        # 'Posterior_STS': [
+        #     'L_STSdp_ROI-lh', 'L_STSvp_ROI-lh',
+        #     'L_PHT_ROI-lh', 'L_PSL_ROI-lh',
+        # ],
         # Rauschecker — dorsolateral PFC (sequence storage)
         'DLPFC': [
             'L_8C_ROI-lh', 'L_8Av_ROI-lh',
@@ -353,20 +353,20 @@ SPEECH_ROIS = {
             '17Networks_LH_SomMotB_Aud_2-lh',
             '17Networks_LH_SomMotB_Aud_3-lh',
         ],
-        # Scott et al. — anterior STS
-        'Anterior_STS': [
-            '17Networks_LH_DefaultB_Temp_1-lh',
-            '17Networks_LH_DefaultB_Temp_2-lh',
-            '17Networks_LH_DefaultB_Temp_3-lh',
-            '17Networks_LH_DefaultB_Temp_4-lh',
-        ],
+        # # Scott et al. — anterior STS
+        # 'Anterior_STS': [
+        #     '17Networks_LH_DefaultB_Temp_1-lh',
+        #     '17Networks_LH_DefaultB_Temp_2-lh',
+        #     '17Networks_LH_DefaultB_Temp_3-lh',
+        #     '17Networks_LH_DefaultB_Temp_4-lh',
+        # ],
         # Rauschecker — temporal pole
-        'Temporal_Pole': [
-            '17Networks_LH_LimbicA_TempPole_1-lh',
-            '17Networks_LH_LimbicA_TempPole_2-lh',
-            '17Networks_LH_LimbicA_TempPole_3-lh',
-            '17Networks_LH_LimbicA_TempPole_4-lh',
-        ],
+        # 'Temporal_Pole': [
+        #     '17Networks_LH_LimbicA_TempPole_1-lh',
+        #     '17Networks_LH_LimbicA_TempPole_2-lh',
+        #     '17Networks_LH_LimbicA_TempPole_3-lh',
+        #     '17Networks_LH_LimbicA_TempPole_4-lh',
+        # ],
         # Scott & Eisner — pars orbitalis / ventral PFC
         'Pars_Orbitalis': [
             '17Networks_LH_DefaultB_PFCv_1-lh',
@@ -375,10 +375,10 @@ SPEECH_ROIS = {
             '17Networks_LH_DefaultB_PFCv_4-lh',
         ],
         # Rauschecker & Scott — posterior STS
-        'Posterior_STS': [
-            '17Networks_LH_DorsAttnA_TempOcc_1-lh',
-            '17Networks_LH_DorsAttnA_TempOcc_2-lh',
-        ],
+        # 'Posterior_STS': [
+        #     '17Networks_LH_DorsAttnA_TempOcc_1-lh',
+        #     # '17Networks_LH_DorsAttnA_TempOcc_2-lh',
+        # ],
         # Rauschecker — DLPFC
         'DLPFC': [
             '17Networks_LH_ContA_PFCl_1-lh',
