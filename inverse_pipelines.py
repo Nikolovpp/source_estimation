@@ -148,6 +148,7 @@ def run_lcmv(epochs, fwd, baseline_tmin, baseline_tmax):
         noise_cov=noise_cov,
         pick_ori='max-power',
         weight_norm='unit-noise-gain',
+        reduce_rank=True,
         rank=rank,
         verbose=True,
     )
@@ -316,7 +317,8 @@ def run_lcmv_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
     filters = make_lcmv(
         epochs.info, fwd, data_cov, reg=0.05,
         noise_cov=noise_cov, pick_ori='max-power',
-        weight_norm='unit-noise-gain', rank=rank, verbose=True,
+        weight_norm='unit-noise-gain', reduce_rank=True,
+        rank=rank, verbose=True,
     )
 
     stc_gen = apply_lcmv_epochs(
