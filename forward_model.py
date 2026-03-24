@@ -4,12 +4,16 @@ Build the forward model using the fsaverage template anatomy.
 No individual MRIs are available, so we use the pre-computed fsaverage
 BEM solution and source space shipped with MNE-Python. This module
 handles fetching fsaverage, creating the forward solution, and building
-cortical ROI labels from supported atlases.
+cortical ROI labels from supported atlases (including custom volumetric
+NIfTI ROI masks projected onto the fsaverage surface).
 """
+from pathlib import Path
+
+import numpy as np
 import mne
 from mne.datasets import fetch_fsaverage
 
-from config import SPEECH_ROIS, ATLAS_PARC_MAP
+from config import SPEECH_ROIS, ATLAS_PARC_MAP, CUSTOM_ROI_DIR
 
 
 def setup_fsaverage():
@@ -73,7 +77,92 @@ def make_forward(epochs_info, src, bem):
     return fwd
 
 
-def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None):
+def load_custom_volumetric_rois(roi_dir=None, threshold=0.25,
+                                subjects_dir=None, surf='pial'):
+    """
+    Project volumetric NIfTI ROI masks onto the fsaverage surface.
+
+    Loads binary NIfTI masks from *roi_dir*, projects each onto the
+    fsaverage surface using nilearn's ``vol_to_surf``, thresholds the
+    projected values, and returns MNE Label objects.
+
+    Parameters
+    ----------
+    roi_dir : Path | str | None
+        Directory containing ``*_anatrestrict.nii`` masks.  Defaults to
+        ``CUSTOM_ROI_DIR`` from config.
+    threshold : float
+        Fraction of the max projected value above which a vertex is
+        included in the label (default 0.25).  Lower = larger labels.
+    subjects_dir : str | None
+        MNE subjects_dir containing 'fsaverage'.
+    surf : str
+        Surface mesh for projection ('pial' or 'white').
+
+    Returns
+    -------
+    roi_labels : dict
+        ``{roi_name: mne.Label}`` for each ROI, on the fsaverage surface.
+    """
+    from nilearn.surface import vol_to_surf
+
+    if roi_dir is None:
+        roi_dir = CUSTOM_ROI_DIR
+    roi_dir = Path(roi_dir)
+
+    if subjects_dir is None:
+        subjects_dir = str(fetch_fsaverage(verbose=False).parent)
+
+    fs_path = Path(subjects_dir) / 'fsaverage'
+
+    # Find all non-edge NIfTI masks
+    nii_files = sorted(
+        f for f in roi_dir.glob('*.nii')
+        if not f.name.startswith('edge_')
+    )
+    if not nii_files:
+        raise FileNotFoundError(f'No .nii ROI masks found in {roi_dir}')
+
+    roi_labels = {}
+    for nii_path in nii_files:
+        # Derive ROI name: e.g. "awfa-audioLoc_15mm_anatrestrict.nii" → "awfa"
+        roi_name = nii_path.stem.split('-')[0]
+
+        # Project onto both hemispheres
+        for hemi in ['lh', 'rh']:
+            surf_mesh = str(fs_path / 'surf' / f'{hemi}.{surf}')
+            projected = vol_to_surf(
+                str(nii_path), surf_mesh,
+                interpolation='nearest_most_frequent', radius=3.0,
+            )
+            projected = np.nan_to_num(projected, nan=0.0)
+
+            max_val = projected.max()
+            if max_val <= 0:
+                continue
+            mask = projected >= (threshold * max_val)
+            verts = np.where(mask)[0]
+            if len(verts) == 0:
+                continue
+
+            label = mne.Label(
+                vertices=verts,
+                hemi=hemi,
+                name=f'{roi_name}-{hemi}',
+                subject='fsaverage',
+            )
+            roi_labels[f'{roi_name}-{hemi}'] = label
+
+    print(f'Projected {len(nii_files)} NIfTI masks → '
+          f'{len(roi_labels)} surface labels (threshold={threshold})')
+    for name, label in roi_labels.items():
+        print(f'  {name:30s}  hemi={label.hemi}  '
+              f'vertices={len(label.vertices):>5d}')
+    return roi_labels
+
+
+def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None,
+                     custom_roi_dir=None):
     """
     Build cortical ROI labels from a supported atlas.
 
@@ -82,17 +171,26 @@ def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None):
     subjects_dir : Path
         The subjects_dir containing 'fsaverage'.
     atlas : str
-        Atlas name: 'aparc', 'HCPMMP1', or 'Schaefer200'.
+        Atlas name: 'aparc', 'HCPMMP1', 'Schaefer200', or 'custom'.
     composite_rois : dict or None
         When provided with atlas='aparc', merges aparc labels into
         composite ROIs (backward-compatible mode).  Maps ROI name to
         list of aparc label names.
+    custom_roi_dir : Path | str | None
+        Directory with NIfTI masks for atlas='custom'.  Defaults to
+        ``CUSTOM_ROI_DIR`` from config.
 
     Returns
     -------
     roi_dict : dict
         Mapping from ROI name to MNE Label object.
     """
+    # ── Custom volumetric ROIs ────────────────────────────────────────
+    if atlas == 'custom':
+        return load_custom_volumetric_rois(
+            roi_dir=custom_roi_dir, subjects_dir=subjects_dir,
+        )
+
     parc = ATLAS_PARC_MAP[atlas]
 
     labels_all = mne.read_labels_from_annot(
@@ -100,7 +198,7 @@ def build_roi_labels(subjects_dir, atlas='aparc', composite_rois=None):
         subjects_dir=subjects_dir
     )
 
-    # Legacy composite-ROI mode (backward compat with existing 8-ROI setup)
+    # Composite-ROI mode for aparc: merge parcels into speech-network ROIs
     if composite_rois is not None and atlas == 'aparc':
         available = {l.name: l for l in labels_all}
 
