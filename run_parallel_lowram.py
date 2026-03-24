@@ -32,6 +32,7 @@ from config import (
     BASELINE_WINDOWS, DECODE_TMIN, SPEECH_ROIS,
     SVM_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
 )
+from log_utils import setup_logging
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
 from inverse_pipelines import run_dspm_lowram, run_lcmv_lowram
@@ -250,6 +251,9 @@ def parse_args():
 def main():
     args = parse_args()
     subjects = args.subjects if args.subjects else SUBJECT_IDS
+
+    setup_logging(args.task, args.stim_class, args.method, args.atlas,
+                  args.feature_mode, runner_name='parallel_lowram')
 
     print(f'Low-RAM parallel source-space SVM decoding')
     print(f'  Task:         {args.task}')
