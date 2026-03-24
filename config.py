@@ -72,14 +72,37 @@ def get_production_data_path(subj_id):
 # Atlas configuration
 # ─────────────────────────────────────────────────────────────────────
 ATLAS = 'aparc'  # backward-compatible default
-# Supported: 'aparc', 'HCPMMP1', 'Schaefer200'
-# 'aparc' with no other flags uses SOURCE_ROIS composites (backward compat)
+# Supported: 'aparc', 'HCPMMP1', 'Schaefer200', 'custom'
+# 'aparc' with no other flags uses composite ROIs (backward compat)
+# 'custom' loads volumetric NIfTI masks from CUSTOM_ROI_DIR
 
 ATLAS_PARC_MAP = {
     'aparc': 'aparc',
     'HCPMMP1': 'HCPMMP1',
     'Schaefer200': 'Schaefer2018_200Parcels_17Networks_order',
+    # 'custom' is handled separately (volumetric NIfTI → surface projection)
 }
+
+# ─────────────────────────────────────────────────────────────────────
+# Custom volumetric ROIs (functional-localizer based)
+# ─────────────────────────────────────────────────────────────────────
+# Lab-derived ROIs from Phil & Lillian's language functional localizers,
+# 15mm spheres with anatomical restriction.  Binary NIfTI masks in MNI
+# space, projected onto fsaverage surface at pipeline runtime.
+CUSTOM_ROI_DIR = (
+    PROJECT_ROOT / 'derivatives' / 'ROIs'
+    / 'functional_localizer_language_ROIs' / 'rois_15mm_anatrestrict_final'
+)
+
+# Readable names for the 6 custom ROIs
+CUSTOM_ROI_NAMES = [
+    'awfa',   # auditory word form area (audioLoc)
+    'ifc',    # inferior frontal cortex (bothLoc)
+    'owfa',   # orthographic word form area (vwfaLoc)
+    'pmc',    # premotor cortex (audioLoc)
+    'tpc',    # temporo-parietal cortex (bothLoc)
+    'vwfa',   # visual word form area (vwfaLoc)
+]
 
 # ─────────────────────────────────────────────────────────────────────
 # Speech-network ROIs — atlas-specific parcel definitions
@@ -253,12 +276,12 @@ SPEECH_ROIS = {
             '17Networks_LH_SomMotB_Aud_3-lh',
             '17Networks_LH_TempPar_1-lh',
             '17Networks_LH_TempPar_2-lh',
-            '17Networks_LH_DefaultB_Temp_1-lh',
-            '17Networks_LH_DefaultB_Temp_2-lh',
+            # '17Networks_LH_DefaultB_Temp_1-lh',
+            # '17Networks_LH_DefaultB_Temp_2-lh',
             '17Networks_LH_DefaultB_Temp_3-lh',
             '17Networks_LH_DefaultB_Temp_4-lh',
-            '17Networks_LH_ContA_Temp_1-lh',
-            '17Networks_LH_ContB_Temp_1-lh',
+            # '17Networks_LH_ContA_Temp_1-lh',
+            # '17Networks_LH_ContB_Temp_1-lh',
         ],
         'Inferior_Frontal': [
             '17Networks_LH_SalVentAttnA_FrOper_1-lh',
