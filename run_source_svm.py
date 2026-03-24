@@ -353,9 +353,9 @@ def main():
     print('Setting up fsaverage forward model...')
     subjects_dir, fs_dir, src, bem = setup_fsaverage()
 
-    if atlas == 'aparc':
-        roi_dict = build_roi_labels(subjects_dir, atlas='aparc',
-                                     composite_rois=SPEECH_ROIS['aparc'])
+    if atlas in SPEECH_ROIS:
+        roi_dict = build_roi_labels(subjects_dir, atlas=atlas,
+                                     composite_rois=SPEECH_ROIS[atlas])
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=atlas)
 
