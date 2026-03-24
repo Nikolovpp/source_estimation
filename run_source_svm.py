@@ -38,6 +38,7 @@ from config import (
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     SVM_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
 )
+from log_utils import setup_logging
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
 from inverse_pipelines import run_dspm, run_lcmv
@@ -332,6 +333,9 @@ def main():
     leakage_correction = args.leakage_correction
     pseudo_trial_size = args.pseudo_trial_size
     svm_c = args.svm_c
+
+    setup_logging(task_cond, stim_class, method, atlas, feature_mode,
+                  runner_name='sequential')
 
     print(f'Source-space SVM decoding pipeline')
     print(f'  Task:         {task_cond}')
