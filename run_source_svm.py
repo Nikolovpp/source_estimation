@@ -198,7 +198,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
     if not skip_save_timeseries:
         _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                              feature_mode, roi_data, y, times, sfreq,
-                             overwrite=overwrite_timeseries)
+                             overwrite=overwrite_timeseries, atlas=atlas,
+                             leakage_correction=leakage_correction)
 
     # Save source-space ERP figure
     save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
@@ -223,7 +224,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
         # Step 5: Save SVM results
         _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                       sw_dur, sw_step, results_all_rois, save_dir,
-                      atlas=atlas, svm_c=svm_c)
+                      atlas=atlas, svm_c=svm_c,
+                      leakage_correction=leakage_correction)
 
     subj_time = (time.time() - subj_start) / 60.0
     print(f'\n  {subj_id} done in {subj_time:.1f} minutes')
@@ -232,7 +234,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
 
 def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                          feature_mode, roi_data, y, times, sfreq,
-                         overwrite=False):
+                         overwrite=False, atlas='aparc',
+                         leakage_correction=False):
     """
     Save source-estimated ROI time series as .npz files for use with
     the original sensor-space SVM notebooks.
@@ -252,8 +255,10 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
         sfreq = float(data['sfreq'])            # sampling frequency
         X_Temporal = data['Temporal']           # (trials, timepoints, features)
     """
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     ts_dir = (
-        ROI_TIMESERIES_ROOT / task_cond / method / feature_mode
+        ROI_TIMESERIES_ROOT / task_cond / method / atlas
+        / feature_mode / leakage_tag
     )
     ts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -284,12 +289,13 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
 
 def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                   sw_dur, sw_step, results_all_rois, save_dir,
-                  atlas='aparc', svm_c=1.0):
+                  atlas='aparc', svm_c=1.0, leakage_correction=False):
     """Save results in CSV format matching the existing pipeline."""
-    # Create output directory (includes atlas for separation)
+    # Create output directory (includes atlas and leakage tag for separation)
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     csv_save_path = (
         save_dir / task_cond / method / atlas / feature_mode
-        / f'{sw_dur}_{sw_step}' / stim_class
+        / leakage_tag / f'{sw_dur}_{sw_step}' / stim_class
     )
     csv_save_path.mkdir(parents=True, exist_ok=True)
 
