@@ -144,7 +144,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
     if not skip_save_timeseries:
         _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                              feature_mode, roi_data, y, times, sfreq,
-                             overwrite=overwrite_timeseries)
+                             overwrite=overwrite_timeseries, atlas=atlas,
+                             leakage_correction=leakage_correction)
 
     # Step 3: SVM decoding per ROI
     results_all_rois = {}
@@ -185,7 +186,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
         # Save SVM results CSV
         _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                       sw_dur, sw_step, results_all_rois, save_dir,
-                      atlas=atlas, svm_c=svm_c)
+                      atlas=atlas, svm_c=svm_c,
+                      leakage_correction=leakage_correction)
 
     subj_time = (time.time() - subj_start) / 60.0
     print(f'\n  {subj_id} done in {subj_time:.1f} minutes')
