@@ -577,15 +577,18 @@ if all_data:
 # (PCA-flip), and plots class-averaged ERPs with SEM.
 
 # %%
-def _load_subject_npz(subj, task, method, stim_class, feat_mode='pca_flip'):
+def _load_subject_npz(subj, task, method, stim_class, feat_mode='pca_flip',
+                      atlas='aparc', leakage_correction=False):
     """
     Try to load cached .npz ROI time series for one subject.
 
     Returns (roi_data_dict, y, times_s) or None if not found.
     roi_data_dict maps roi_name → (n_epochs, n_times).
     """
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     npz_file = (
-        ROI_TIMESERIES_ROOT / task / method / feat_mode
+        ROI_TIMESERIES_ROOT / task / method / atlas
+        / feat_mode / leakage_tag
         / f'{subj}_{task}_{stim_class}.npz'
     )
     if not npz_file.exists():
@@ -638,8 +641,8 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
     for i, name in enumerate(roi_names):
         roi_data[name] = X_roi[:, i, :]
 
-    # Save .npz cache for future runs
-    ts_dir = ROI_TIMESERIES_ROOT / task / method / 'pca_flip'
+    # Save .npz cache for future runs (no leakage correction → 'raw')
+    ts_dir = ROI_TIMESERIES_ROOT / task / method / 'aparc' / 'pca_flip' / 'raw'
     ts_dir.mkdir(parents=True, exist_ok=True)
     save_dict = {
         'y': y,
