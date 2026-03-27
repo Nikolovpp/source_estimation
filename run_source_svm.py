@@ -148,7 +148,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
 
     # Save sensor-space ERP figure
     save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
-                    method, feature_mode)
+                    method, feature_mode, atlas=atlas,
+                    leakage_correction=leakage_correction)
 
     # Step 2: Run inverse pipeline
     print(f'\n  Running {method} inverse...')
@@ -203,7 +204,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
 
     # Save source-space ERP figure
     save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
-                    method, feature_mode, decode_tmin)
+                    method, feature_mode, decode_tmin, atlas=atlas,
+                    leakage_correction=leakage_correction)
 
     # Step 4: SVM decoding (optional)
     results_all_rois = {}
@@ -219,7 +221,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
 
         # Save SVM accuracy figure
         save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
-                         method, feature_mode, sw_dur, sw_step)
+                         method, feature_mode, sw_dur, sw_step, atlas=atlas,
+                         leakage_correction=leakage_correction)
 
         # Step 5: Save SVM results
         _save_results(subj_id, task_cond, stim_class, method, feature_mode,
