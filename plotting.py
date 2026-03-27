@@ -13,23 +13,28 @@ import matplotlib.pyplot as plt
 from config import FIGURES_ROOT
 
 
-def _make_fig_dir(task_cond, method, feature_mode, subj_id):
+def _make_fig_dir(task_cond, method, feature_mode, subj_id,
+                  atlas='aparc', leakage_correction=False):
     """Create and return the figure output directory."""
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     fig_dir = (
-        FIGURES_ROOT / task_cond / method / feature_mode / 'figures' / subj_id
+        FIGURES_ROOT / task_cond / method / atlas / feature_mode
+        / leakage_tag / 'figures' / subj_id
     )
     fig_dir.mkdir(parents=True, exist_ok=True)
     return fig_dir
 
 
 def save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
-                    method, feature_mode):
+                    method, feature_mode, atlas='aparc',
+                    leakage_correction=False):
     """
     Save sensor-space ERP butterfly plot (all 64 channels) per class.
 
     This shows the raw input data before source estimation.
     """
-    fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id)
+    fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id,
+                            atlas=atlas, leakage_correction=leakage_correction)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
 
@@ -49,7 +54,8 @@ def save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
 
 
 def save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
-                    method, feature_mode, decode_tmin):
+                    method, feature_mode, decode_tmin, atlas='aparc',
+                    leakage_correction=False):
     """
     Save source-space ERP plot (class-averaged time courses per ROI).
 
@@ -61,7 +67,8 @@ def save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
     times : array-like
         Time vector in seconds.
     """
-    fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id)
+    fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id,
+                            atlas=atlas, leakage_correction=leakage_correction)
 
     roi_names = list(roi_data.keys())
     n_rois = len(roi_names)
@@ -111,11 +118,13 @@ def save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
 
 
 def save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
-                     method, feature_mode, sw_dur, sw_step):
+                     method, feature_mode, sw_dur, sw_step, atlas='aparc',
+                     leakage_correction=False):
     """
     Save SVM decoding accuracy time course per ROI.
     """
-    fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id)
+    fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id,
+                            atlas=atlas, leakage_correction=leakage_correction)
 
     n_rois = len(results_all_rois)
     n_cols = 4
