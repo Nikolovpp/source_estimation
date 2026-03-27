@@ -679,7 +679,7 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
         roi_data[name] = X_roi[:, i, :]
 
     # Save .npz cache for future runs (no leakage correction → 'raw')
-    ts_dir = ROI_TIMESERIES_ROOT / task / method / 'aparc' / 'pca_flip' / 'raw'
+    ts_dir = ROI_TIMESERIES_ROOT / task / method / ATLAS / 'pca_flip' / 'raw'
     ts_dir.mkdir(parents=True, exist_ok=True)
     save_dict = {
         'y': y,
@@ -754,7 +754,11 @@ def compute_source_erps(task, method, stim_class, subjects):
               f'uncached subjects...')
 
         subjects_dir, fs_dir, src, bem = setup_fsaverage()
-        roi_dict = build_roi_labels(subjects_dir)
+        if ATLAS in SPEECH_ROIS:
+            roi_dict = build_roi_labels(subjects_dir, atlas=ATLAS,
+                                         composite_rois=SPEECH_ROIS[ATLAS])
+        else:
+            roi_dict = build_roi_labels(subjects_dir, atlas=ATLAS)
         fwd_roi_labels = list(roi_dict.values())
         fwd_roi_names = list(roi_dict.keys())
 
