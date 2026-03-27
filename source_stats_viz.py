@@ -42,7 +42,7 @@ from config import (
 )
 
 # ──────────────────────────────────────────────────────────────
-# USER SETTINGS — change these to match your run
+# USER SETTINGS — defaults for notebook use, overridden by CLI args
 # ──────────────────────────────────────────────────────────────
 TASK         = 'overtProd'        # 'perception' or 'overtProd'
 METHOD       = 'dSPM'             # 'dSPM' or 'LCMV'
@@ -53,6 +53,38 @@ STIM_CLASSES = ['percDiff', 'prodDiff']
 
 # Subjects to include (default: all)
 SUBJECTS = SUBJECT_IDS
+
+# Override defaults from CLI when run as a script
+if __name__ == '__main__':
+    import argparse
+    _parser = argparse.ArgumentParser(
+        description='Source-space SVM statistics & visualization'
+    )
+    _parser.add_argument('--task', default=TASK,
+                         choices=['perception', 'overtProd'])
+    _parser.add_argument('--method', default=METHOD,
+                         choices=['dSPM', 'LCMV'])
+    _parser.add_argument('--feature-mode', default=FEAT_MODE,
+                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'])
+    _parser.add_argument('--atlas', default=ATLAS,
+                         choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+    _parser.add_argument('--leakage-correction', action='store_true',
+                         default=LEAKAGE_CORRECTION)
+    _parser.add_argument('--stim-classes', nargs='+', default=STIM_CLASSES,
+                         choices=['percDiff', 'prodDiff'])
+    _parser.add_argument('--subjects', nargs='+', default=None)
+    _parser.add_argument('--skip-erp', action='store_true',
+                         help='Skip source ERP computation (slow)')
+    _args = _parser.parse_args()
+
+    TASK = _args.task
+    METHOD = _args.method
+    FEAT_MODE = _args.feature_mode
+    ATLAS = _args.atlas
+    LEAKAGE_CORRECTION = _args.leakage_correction
+    STIM_CLASSES = _args.stim_classes
+    SUBJECTS = _args.subjects if _args.subjects else SUBJECT_IDS
+    RUN_ERP = not _args.skip_erp
 
 # Permutation test settings
 N_PERMUTATIONS = 1024
@@ -842,7 +874,8 @@ def plot_source_erps(all_roi_data, all_y, times_ms, ylim=None):
 # to execute, or skip if you only need SVM stats/plots.
 
 # %%
-RUN_ERP = True  # Set to True to compute and plot source ERPs
+if 'RUN_ERP' not in dir():
+    RUN_ERP = True  # Set to True to compute and plot source ERPs
 
 if RUN_ERP:
     for sc in STIM_CLASSES:
