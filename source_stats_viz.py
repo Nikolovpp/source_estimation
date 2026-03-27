@@ -103,7 +103,7 @@ def parse_args():
     p.add_argument('--stim-classes', nargs='+',
                    default=['percDiff', 'prodDiff'],
                    choices=['percDiff', 'prodDiff'])
-    p.add_argument('--subjects', nargs='+', default=None)
+    p.add_argument('--subjects', nargs='+', default=SUBJECT_IDS)
     p.add_argument('--skip-erp', action='store_true',
                    help='Skip source ERP computation (slow)')
     return p.parse_args()
@@ -771,7 +771,7 @@ def main():
     atlas = args.atlas
     leakage_correction = args.leakage_correction
     stim_classes = args.stim_classes
-    subjects = args.subjects if args.subjects else SUBJECT_IDS
+    subjects = args.subjects
     run_erp = not args.skip_erp
 
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
