@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-# %% [markdown]
-# # Source-Space SVM Statistics & Visualization
-#
-# Computes group-level statistics (cluster-based permutation + TFCE) and
-# visualizes SVM decoding accuracy and source-space ERPs for each cortical ROI.
-#
-# Mirrors the sensor-space `CSV_stats_FWE.ipynb` workflow but adapted for
-# source estimation output.
-#
-# **Sections:**
-# 1. Compute stats (mean, SEM, t-tests, cluster perm, TFCE) per ROI
-# 2. Visualize SVM accuracy with cluster significance shading
-# 3. Visualize SVM accuracy with TFCE significance shading
-# 4. Source-space ERP time courses per ROI (class-averaged)
-# 5. Combined multi-ROI panel figures
+"""Source-Space SVM Statistics & Visualization (CLI only).
 
-# %% [markdown]
-# ## Configuration
-# %%
+Computes group-level statistics (cluster-based permutation + TFCE) and
+visualizes SVM decoding accuracy and source-space ERPs for each cortical ROI.
+
+Usage examples:
+    python source_stats_viz.py --task overtProd --method dSPM --atlas Schaefer200 \
+        --feature-mode pca_flip --leakage-correction
+
+    python source_stats_viz.py --task perception --method dSPM --atlas aparc \
+        --feature-mode vertex_pca --stim-classes percDiff --skip-erp
+"""
+
+import argparse
 import os
 import sys
 import warnings
@@ -27,6 +22,8 @@ import pandas as pd
 from scipy.stats import ttest_1samp
 from statsmodels.stats.multitest import multipletests
 from mne.stats import permutation_cluster_1samp_test
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -42,55 +39,11 @@ from config import (
 )
 
 # ──────────────────────────────────────────────────────────────
-# USER SETTINGS — defaults for notebook use, overridden by CLI args
+# Constants (not configurable via CLI)
 # ──────────────────────────────────────────────────────────────
-TASK         = 'overtProd'        # 'perception' or 'overtProd'
-METHOD       = 'dSPM'             # 'dSPM' or 'LCMV'
-FEAT_MODE    = 'vertex_pca'         # 'pca_flip', 'vertex_pca', 'vertex_selectkbest'
-ATLAS        = 'aparc'            # 'aparc', 'Schaefer200', 'HCPMMP1', 'custom'
-LEAKAGE_CORRECTION = False        # True if data was run with --leakage-correction
-STIM_CLASSES = ['percDiff', 'prodDiff']
-
-# Subjects to include (default: all)
-SUBJECTS = SUBJECT_IDS
-
-# Override defaults from CLI when run as a script
-if __name__ == '__main__':
-    import argparse
-    _parser = argparse.ArgumentParser(
-        description='Source-space SVM statistics & visualization'
-    )
-    _parser.add_argument('--task', default=TASK,
-                         choices=['perception', 'overtProd'])
-    _parser.add_argument('--method', default=METHOD,
-                         choices=['dSPM', 'LCMV'])
-    _parser.add_argument('--feature-mode', default=FEAT_MODE,
-                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'])
-    _parser.add_argument('--atlas', default=ATLAS,
-                         choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
-    _parser.add_argument('--leakage-correction', action='store_true',
-                         default=LEAKAGE_CORRECTION)
-    _parser.add_argument('--stim-classes', nargs='+', default=STIM_CLASSES,
-                         choices=['percDiff', 'prodDiff'])
-    _parser.add_argument('--subjects', nargs='+', default=None)
-    _parser.add_argument('--skip-erp', action='store_true',
-                         help='Skip source ERP computation (slow)')
-    _args = _parser.parse_args()
-
-    TASK = _args.task
-    METHOD = _args.method
-    FEAT_MODE = _args.feature_mode
-    ATLAS = _args.atlas
-    LEAKAGE_CORRECTION = _args.leakage_correction
-    STIM_CLASSES = _args.stim_classes
-    SUBJECTS = _args.subjects if _args.subjects else SUBJECT_IDS
-    RUN_ERP = not _args.skip_erp
-
-# Permutation test settings
 N_PERMUTATIONS = 1024
 TFCE_THRESHOLD = dict(start=0, step=0.2)
 
-# Plot style
 STIM_COLORS = {
     'percDiff': 'tab:blue',
     'prodDiff': 'darkorange',
@@ -100,36 +53,65 @@ STIM_LABELS = {
     'prodDiff': 'prodDiff',
 }
 
-# ROI display names (for plot titles)
 ROI_DISPLAY_NAMES = {
-    'Temporal':            'Temporal',
-    'Inferior_Frontal':    'Inferior Frontal',
-    'Superior_Frontal':    'Superior Frontal',
-    'Superior_Parietal':   'Superior Parietal',
-    'Temporal_RH':         'Temporal (RH)',
-    'Inferior_Frontal_RH': 'Inferior Frontal (RH)',
-    'Superior_Frontal_RH': 'Superior Frontal (RH)',
-    'Superior_Parietal_RH':'Superior Parietal (RH)',
+    # Atlas-based speech-network ROIs (aparc / HCPMMP1 / Schaefer200)
+    'Temporal':          'Temporal',
+    'Inferior_Frontal':  'Inferior Frontal',
+    'Superior_Frontal':  'Superior Frontal',
+    'Superior_Parietal': 'Superior Parietal',
+    'vSMC':              'Ventral Sensorimotor',
+    'Supramarginal':     'Supramarginal',
+    'Angular_Gyrus':     'Angular Gyrus',
+    'Insula':            'Insula',
+    'TPOJ':              'Temporo-Parieto-Occipital Jct.',
+    'Cingulate_Motor':   'Cingulate Motor',
+    'Planum_Temporale':  'Planum Temporale',
+    'Pars_Orbitalis':    'Pars Orbitalis',
+    'DLPFC':             'Dorsolateral PFC',
+    # Custom functional-localizer ROIs (NIfTI keys: "{name}-{hemi}")
+    'awfa-lh':  'Auditory WFA (LH)',
+    'ifc-lh':   'Inferior Frontal Ctx (LH)',
+    'owfa-lh':  'Orthographic WFA (LH)',
+    'pmc-lh':   'Premotor Ctx (LH)',
+    'tpc-lh':   'Temporo-Parietal Ctx (LH)',
+    'vwfa-lh':  'Visual WFA (LH)',
+    'awfa-rh':  'Auditory WFA (RH)',
+    'ifc-rh':   'Inferior Frontal Ctx (RH)',
+    'owfa-rh':  'Orthographic WFA (RH)',
+    'pmc-rh':   'Premotor Ctx (RH)',
+    'tpc-rh':   'Temporo-Parietal Ctx (RH)',
+    'vwfa-rh':  'Visual WFA (RH)',
 }
 
+
 # ──────────────────────────────────────────────────────────────
-# Derived paths
+# CLI
 # ──────────────────────────────────────────────────────────────
-num_subj = len(SUBJECTS)
-sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
-LEAKAGE_TAG = 'leakage_corrected' if LEAKAGE_CORRECTION else 'raw'
+def parse_args():
+    p = argparse.ArgumentParser(
+        description='Source-space SVM statistics & visualization'
+    )
+    p.add_argument('--task', required=True,
+                   choices=['perception', 'overtProd'])
+    p.add_argument('--method', required=True,
+                   choices=['dSPM', 'LCMV'])
+    p.add_argument('--feature-mode', required=True,
+                   choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'])
+    p.add_argument('--atlas', required=True,
+                   choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+    p.add_argument('--leakage-correction', action='store_true', default=False)
+    p.add_argument('--stim-classes', nargs='+',
+                   default=['percDiff', 'prodDiff'],
+                   choices=['percDiff', 'prodDiff'])
+    p.add_argument('--subjects', nargs='+', default=None)
+    p.add_argument('--skip-erp', action='store_true',
+                   help='Skip source ERP computation (slow)')
+    return p.parse_args()
 
-FIGURES_DIR = (
-    SVM_OUTPUT_ROOT / TASK / METHOD / ATLAS / FEAT_MODE
-    / LEAKAGE_TAG / sw_tag / 'figures'
-)
-FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-
-# %% [markdown]
-# ## Helper functions
-
-# %%
+# ──────────────────────────────────────────────────────────────
+# Helper functions
+# ──────────────────────────────────────────────────────────────
 def find_contiguous_clusters(mask):
     """Find start and end indices of contiguous True values in a boolean array."""
     clusters = []
@@ -147,13 +129,15 @@ def find_contiguous_clusters(mask):
     return clusters
 
 
-def load_subject_csvs(task, method, feat_mode, stim_class, subjects):
+def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, stim_class,
+                      subjects):
     """Load per-subject SVM result CSVs and return list of DataFrames."""
+    sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
     subj_dfs = []
     for subj in subjects:
         csv_path = (
-            SVM_OUTPUT_ROOT / task / method / ATLAS / feat_mode
-            / LEAKAGE_TAG / sw_tag / stim_class
+            SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+            / leakage_tag / sw_tag / stim_class
             / f'{subj}_{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}.csv'
         )
         if not csv_path.exists():
@@ -187,10 +171,11 @@ def report_clusters(roi_name, ms_values, acc_values, clusters, label=''):
     print(f'    Global peak: {global_max_acc:.4f} at {global_max_time:.1f} ms')
 
 
-# %% [markdown]
-# ## Step 1: Compute group-level statistics
-# %%
-def compute_stats(task, method, feat_mode, stim_class, subjects):
+# ──────────────────────────────────────────────────────────────
+# Step 1: Compute group-level statistics
+# ──────────────────────────────────────────────────────────────
+def compute_stats(task, method, atlas, feat_mode, leakage_tag, stim_class,
+                  subjects):
     """
     Compute group-level stats for one task/method/stim_class combination.
 
@@ -203,7 +188,8 @@ def compute_stats(task, method, feat_mode, stim_class, subjects):
 
     Returns (mean_df, sem_df, stats_df) and saves CSVs.
     """
-    subj_dfs = load_subject_csvs(task, method, feat_mode, stim_class, subjects)
+    subj_dfs = load_subject_csvs(task, method, atlas, feat_mode, leakage_tag,
+                                 stim_class, subjects)
     n_subj = len(subj_dfs)
     if n_subj == 0:
         print(f'  No data found for {stim_class}')
@@ -211,14 +197,11 @@ def compute_stats(task, method, feat_mode, stim_class, subjects):
 
     print(f'  Loaded {n_subj} subjects for {stim_class}')
 
-    # Reference for key/ms columns
     ref_df = subj_dfs[0][['key', 'ms']].copy()
     n_obs = len(ref_df)
 
-    # Build accuracy matrix: (n_obs, n_subjects)
     acc_matrix = np.column_stack([s['SVM_acc'].values[:n_obs] for s in subj_dfs])
 
-    # Mean and SEM
     mean_acc = acc_matrix.mean(axis=1)
     sem_acc = np.std(acc_matrix, axis=1, ddof=1) / np.sqrt(n_subj)
 
@@ -241,7 +224,6 @@ def compute_stats(task, method, feat_mode, stim_class, subjects):
     tfce_pvals_arr = np.ones(n_obs)
     tfce_mask_arr = np.zeros(n_obs, dtype=bool)
 
-    # Run statistics independently per ROI (key)
     keys = ref_df['key'].unique()
     for key in keys:
         key_idx = np.where(ref_df['key'].values == key)[0]
@@ -307,7 +289,9 @@ def compute_stats(task, method, feat_mode, stim_class, subjects):
     stats_df['sig_tfce'] = tfce_mask_arr
 
     # Save CSVs
-    out_dir = SVM_OUTPUT_ROOT / task / method / ATLAS / feat_mode / LEAKAGE_TAG / sw_tag / stim_class
+    sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
+    out_dir = (SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+               / leakage_tag / sw_tag / stim_class)
     out_dir.mkdir(parents=True, exist_ok=True)
     base = f'{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}_{n_subj}subjAvg'
 
@@ -319,28 +303,11 @@ def compute_stats(task, method, feat_mode, stim_class, subjects):
     return mean_df, sem_df, stats_df
 
 
-# Run stats for all stim classes
-all_data = {}
-for sc in STIM_CLASSES:
-    print(f'\n{"="*60}')
-    print(f'Computing stats: {TASK} / {METHOD} / {sc}')
-    print(f'{"="*60}')
-    mean_df, sem_df, stats_df = compute_stats(
-        TASK, METHOD, FEAT_MODE, sc, SUBJECTS
-    )
-    if mean_df is not None:
-        all_data[sc] = {
-            'mean': mean_df,
-            'sem': sem_df,
-            'stats': stats_df,
-        }
-
-
-# %% [markdown]
-# ## Step 2: Standard cluster-based permutation visualization (per ROI)
-
-# %%
-def plot_svm_accuracy_single_roi(roi_key, all_data, sig_column='sig_cluster',
+# ──────────────────────────────────────────────────────────────
+# Step 2: Standard cluster-based permutation visualization (per ROI)
+# ──────────────────────────────────────────────────────────────
+def plot_svm_accuracy_single_roi(roi_key, all_data, stim_classes, method,
+                                  sig_column='sig_cluster',
                                   title_suffix='Cluster', ylim_top=0.60):
     """
     Plot SVM accuracy for one ROI with significance shading.
@@ -353,7 +320,7 @@ def plot_svm_accuracy_single_roi(roi_key, all_data, sig_column='sig_cluster',
     fig, ax = plt.subplots(figsize=(12, 7))
 
     ms_all = []
-    for sc in STIM_CLASSES:
+    for sc in stim_classes:
         if sc not in all_data:
             continue
         d = all_data[sc]
@@ -367,23 +334,20 @@ def plot_svm_accuracy_single_roi(roi_key, all_data, sig_column='sig_cluster',
         color = STIM_COLORS[sc]
         label = STIM_LABELS[sc]
 
-        # Accuracy line + SEM shading
         ax.plot(ms, acc, color=color, linewidth=2, label=label)
         ax.fill_between(ms, acc - sem, acc + sem, alpha=0.3, color=color)
 
-        # Significance shading
         clusters = find_contiguous_clusters(sig)
         for s, e in clusters:
             ax.axvspan(ms[s], ms[e], alpha=0.25, color=color, zorder=0)
 
-        # Report clusters
         report_clusters(roi_key, ms, acc, clusters, label=f'{label} {title_suffix}')
 
     ax.axhline(y=0.5, color='black', linestyle='--', label='chance')
     ax.axvline(x=0, color='black', linestyle='--', linewidth=0.8)
     ax.set_ylabel('SVM Accuracy', fontsize=18)
     ax.set_xlabel('Time (ms)', fontsize=18)
-    ax.set_title(f'{display_name} — Source-Space SVM ({METHOD})', fontsize=20)
+    ax.set_title(f'{display_name} — Source-Space SVM ({method})', fontsize=20)
     ax.set_ylim(top=ylim_top)
     if ms_all:
         ms_cat = np.concatenate(ms_all)
@@ -396,27 +360,11 @@ def plot_svm_accuracy_single_roi(roi_key, all_data, sig_column='sig_cluster',
     return fig
 
 
-# Plot each ROI
-rois_in_data = all_data[STIM_CLASSES[0]]['mean']['key'].unique() if all_data else []
-for roi_key in rois_in_data:
-    fig = plot_svm_accuracy_single_roi(roi_key, all_data, sig_column='sig_cluster',
-                                        title_suffix='Cluster')
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.svg',
-        format='svg', bbox_inches='tight'
-    )
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.png',
-        dpi=300, bbox_inches='tight'
-    )
-    plt.show()
-
-
-# %% [markdown]
-# ## Step 3: TFCE visualization (per ROI, with TFCE score subplot)
-
-# %%
-def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, ylim_top=0.62):
+# ──────────────────────────────────────────────────────────────
+# Step 3: TFCE visualization (per ROI, with TFCE score subplot)
+# ──────────────────────────────────────────────────────────────
+def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, stim_classes, method,
+                                       ylim_top=0.62):
     """
     Plot SVM accuracy + TFCE scores for one ROI.
 
@@ -430,7 +378,7 @@ def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, ylim_top=0.62):
                                     height_ratios=[3, 1], sharex=True)
 
     ms_all = []
-    for sc in STIM_CLASSES:
+    for sc in stim_classes:
         if sc not in all_data:
             continue
         d = all_data[sc]
@@ -445,17 +393,14 @@ def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, ylim_top=0.62):
         color = STIM_COLORS[sc]
         label = STIM_LABELS[sc]
 
-        # Top: accuracy
         ax1.plot(ms, acc, color=color, linewidth=2, label=label)
         ax1.fill_between(ms, acc - sem, acc + sem, alpha=0.3, color=color)
 
-        # TFCE significance shading on both panels
         clusters = find_contiguous_clusters(sig_tfce)
         for s, e in clusters:
             ax1.axvspan(ms[s], ms[e], alpha=0.25, color=color, zorder=0)
             ax2.axvspan(ms[s], ms[e], alpha=0.25, color=color, zorder=0)
 
-        # Bottom: TFCE scores
         ax2.plot(ms, tfce_score, color=color, linewidth=2,
                  label=f'TFCE score ({label})')
 
@@ -464,7 +409,7 @@ def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, ylim_top=0.62):
     ax1.axhline(y=0.5, color='black', linestyle='--', label='chance')
     ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
     ax1.set_ylabel('SVM Accuracy', fontsize=14)
-    ax1.set_title(f'{display_name} — Source-Space SVM ({METHOD})', fontsize=16)
+    ax1.set_title(f'{display_name} — Source-Space SVM ({method})', fontsize=16)
     ax1.set_ylim(top=ylim_top)
     if ms_all:
         ms_cat = np.concatenate(ms_all)
@@ -484,29 +429,14 @@ def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, ylim_top=0.62):
     return fig
 
 
-for roi_key in rois_in_data:
-    fig = plot_svm_accuracy_tfce_single_roi(roi_key, all_data)
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.svg',
-        format='svg', bbox_inches='tight'
-    )
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.png',
-        dpi=300, bbox_inches='tight'
-    )
-    plt.show()
-
-
-# %% [markdown]
-# ## Step 4: Multi-ROI panel figure (cluster-based)
-#
-# All ROIs in a single figure (2 rows x 4 cols for 8 ROIs).
-
-# %%
-def plot_multi_roi_panel(all_data, sig_column='sig_cluster',
+# ──────────────────────────────────────────────────────────────
+# Step 4: Multi-ROI panel figure
+# ──────────────────────────────────────────────────────────────
+def plot_multi_roi_panel(all_data, stim_classes, task, method, feat_mode,
+                          sig_column='sig_cluster',
                           title_suffix='Cluster', ylim_top=0.62):
     """Create a multi-panel figure with one subplot per ROI."""
-    rois = all_data[STIM_CLASSES[0]]['mean']['key'].unique()
+    rois = all_data[stim_classes[0]]['mean']['key'].unique()
     n_rois = len(rois)
     n_cols = 4
     n_rows = int(np.ceil(n_rois / n_cols))
@@ -514,9 +444,8 @@ def plot_multi_roi_panel(all_data, sig_column='sig_cluster',
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows),
                               squeeze=False, sharey=True)
 
-    # Determine shared xlim from data
     ms_all = []
-    for sc in STIM_CLASSES:
+    for sc in stim_classes:
         if sc not in all_data:
             continue
         ms_all.append(all_data[sc]['mean']['ms'].values)
@@ -530,7 +459,7 @@ def plot_multi_roi_panel(all_data, sig_column='sig_cluster',
         ax = axes[i // n_cols, i % n_cols]
         display_name = ROI_DISPLAY_NAMES.get(roi_key, roi_key)
 
-        for sc in STIM_CLASSES:
+        for sc in stim_classes:
             if sc not in all_data:
                 continue
             d = all_data[sc]
@@ -564,63 +493,29 @@ def plot_multi_roi_panel(all_data, sig_column='sig_cluster',
         if i // n_cols == n_rows - 1:
             ax.set_xlabel('Time (ms)', fontsize=12)
 
-    # Legend on first axis only
     axes[0, 0].legend(loc='upper left', fontsize=10)
 
-    # Hide empty subplots
     for j in range(i + 1, n_rows * n_cols):
         axes[j // n_cols, j % n_cols].set_visible(False)
 
     fig.suptitle(
-        f'{TASK} | {METHOD} | {FEAT_MODE} — Source-Space SVM ({title_suffix})',
+        f'{task} | {method} | {feat_mode} — Source-Space SVM ({title_suffix})',
         fontsize=16
     )
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
 
 
-if all_data:
-    # Cluster panel
-    fig = plot_multi_roi_panel(all_data, sig_column='sig_cluster',
-                                title_suffix='Cluster')
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.svg',
-        format='svg', bbox_inches='tight'
-    )
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.png',
-        dpi=300, bbox_inches='tight'
-    )
-    plt.show()
-
-    # TFCE panel
-    fig = plot_multi_roi_panel(all_data, sig_column='sig_tfce',
-                                title_suffix='TFCE')
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.svg',
-        format='svg', bbox_inches='tight'
-    )
-    fig.savefig(
-        FIGURES_DIR / f'{TASK}_{METHOD}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.png',
-        dpi=300, bbox_inches='tight'
-    )
-    plt.show()
-
-
-# %% [markdown]
-# ## Step 5: Source-space ERP visualization per ROI
-#
-# Loads source estimates for each subject, extracts ROI time courses
-# (PCA-flip), and plots class-averaged ERPs with SEM.
-
-# %%
-def _load_subject_npz(subj, task, method, stim_class, feat_mode='pca_flip',
-                      atlas='aparc', leakage_correction=False):
+# ──────────────────────────────────────────────────────────────
+# Step 5: Source-space ERP
+# ──────────────────────────────────────────────────────────────
+def _load_subject_npz(subj, task, method, stim_class, feat_mode,
+                      atlas, leakage_correction):
     """
     Try to load cached .npz ROI time series for one subject.
 
     Returns (roi_data_dict, y, times_s) or None if not found.
-    roi_data_dict maps roi_name → (n_epochs, n_times).
+    roi_data_dict maps roi_name -> (n_epochs, n_times).
     """
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     npz_file = (
@@ -638,7 +533,7 @@ def _load_subject_npz(subj, task, method, stim_class, feat_mode='pca_flip',
     for name in roi_names:
         arr = data[name]
         if arr.ndim == 3 and arr.shape[2] == 1:
-            arr = arr[:, :, 0]  # pca_flip: (n_epochs, n_times, 1) → (n_epochs, n_times)
+            arr = arr[:, :, 0]  # pca_flip: (n_epochs, n_times, 1) -> (n_epochs, n_times)
         elif arr.ndim == 3:
             arr = arr.mean(axis=2)  # vertex modes: average across vertices for ERP
         roi_data[name] = arr
@@ -647,7 +542,8 @@ def _load_subject_npz(subj, task, method, stim_class, feat_mode='pca_flip',
 
 def _compute_one_subject_erp(subj, task, method, stim_class,
                               fwd, roi_labels, roi_names, src,
-                              baseline_tmin, baseline_tmax):
+                              baseline_tmin, baseline_tmax,
+                              feat_mode, atlas, leakage_correction):
     """Compute source ERPs for a single subject (no cached .npz).
 
     Saves the result as .npz so future runs load from cache.
@@ -661,16 +557,15 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
         print(f'    SKIP {subj}: {e}')
         return None
 
-    # Use low-RAM variants: generator + immediate ROI extraction
     if method == 'dSPM':
         X_roi, stc_times = run_dspm_lowram(
             epochs, fwd, baseline_tmin, baseline_tmax,
-            roi_labels, src, feature_mode='pca_flip'
+            roi_labels, src, feature_mode=feat_mode
         )
     elif method == 'LCMV':
         X_roi, stc_times = run_lcmv_lowram(
             epochs, fwd, baseline_tmin, baseline_tmax,
-            roi_labels, src, feature_mode='pca_flip'
+            roi_labels, src, feature_mode=feat_mode
         )
 
     # X_roi shape: (n_epochs, n_rois, n_times)
@@ -678,8 +573,8 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
     for i, name in enumerate(roi_names):
         roi_data[name] = X_roi[:, i, :]
 
-    # Save .npz cache for future runs (no leakage correction → 'raw')
-    ts_dir = ROI_TIMESERIES_ROOT / task / method / ATLAS / 'pca_flip' / 'raw'
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    ts_dir = ROI_TIMESERIES_ROOT / task / method / atlas / feat_mode / leakage_tag
     ts_dir.mkdir(parents=True, exist_ok=True)
     save_dict = {
         'y': y,
@@ -691,20 +586,16 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
         save_dict[name] = roi_data[name][:, :, np.newaxis]  # (n_epochs, n_times, 1)
     npz_file = ts_dir / f'{subj}_{task}_{stim_class}.npz'
     np.savez_compressed(npz_file, **save_dict)
-    print(f'  Cached {subj} → {npz_file.name}')
+    print(f'  Cached {subj} -> {npz_file.name}')
 
     return roi_data, y, stc_times
 
 
-def compute_source_erps(task, method, stim_class, subjects):
+def compute_source_erps(task, method, stim_class, subjects,
+                        feat_mode, atlas, leakage_correction):
     """
     Load data and compute source estimates for all subjects,
     then extract ROI time courses.
-
-    Optimized to:
-      1. Load cached .npz files from the SVM pipeline when available
-      2. Use low-RAM generator-based inverse for uncached subjects
-      3. Parallelize uncached subjects across CPU cores
 
     Returns
     -------
@@ -715,7 +606,6 @@ def compute_source_erps(task, method, stim_class, subjects):
     times_ms : np.ndarray
         Time axis in milliseconds.
     """
-    # --- Phase 1: Try loading from cached .npz files ---
     all_roi_data = {}
     all_y = []
     times_s = None
@@ -724,13 +614,8 @@ def compute_source_erps(task, method, stim_class, subjects):
 
     print('Phase 1: Loading cached .npz time series...')
     for subj in subjects:
-        # ERPs always use pca_flip (1 virtual sensor per ROI);
-        # try pca_flip cache first, then fall back to current FEAT_MODE
-        result = _load_subject_npz(subj, task, method, stim_class, 'pca_flip',
-                                   atlas=ATLAS, leakage_correction=LEAKAGE_CORRECTION)
-        if result is None:
-            result = _load_subject_npz(subj, task, method, stim_class, FEAT_MODE,
-                                       atlas=ATLAS, leakage_correction=LEAKAGE_CORRECTION)
+        result = _load_subject_npz(subj, task, method, stim_class, feat_mode,
+                                   atlas, leakage_correction)
         if result is not None:
             roi_data, y, t_s = result
             if roi_names is None:
@@ -749,16 +634,17 @@ def compute_source_erps(task, method, stim_class, subjects):
         from data_loader import load_subject_epochs
         from forward_model import setup_fsaverage, make_forward, build_roi_labels
         from joblib import Parallel, delayed
+        from joblib.externals.loky import get_reusable_executor
 
         print(f'\nPhase 2: Computing inverse for {len(uncached_subjects)} '
               f'uncached subjects...')
 
         subjects_dir, fs_dir, src, bem = setup_fsaverage()
-        if ATLAS in SPEECH_ROIS:
-            roi_dict = build_roi_labels(subjects_dir, atlas=ATLAS,
-                                         composite_rois=SPEECH_ROIS[ATLAS])
+        if atlas in SPEECH_ROIS:
+            roi_dict = build_roi_labels(subjects_dir, atlas=atlas,
+                                         composite_rois=SPEECH_ROIS[atlas])
         else:
-            roi_dict = build_roi_labels(subjects_dir, atlas=ATLAS)
+            roi_dict = build_roi_labels(subjects_dir, atlas=atlas)
         fwd_roi_labels = list(roi_dict.values())
         fwd_roi_names = list(roi_dict.keys())
 
@@ -768,13 +654,11 @@ def compute_source_erps(task, method, stim_class, subjects):
 
         baseline_tmin, baseline_tmax = BASELINE_WINDOWS[task]
 
-        # Build forward model once
         first_epochs, _, _ = load_subject_epochs(
             uncached_subjects[0], task, stim_class
         )
         fwd = make_forward(first_epochs.info, src, bem)
 
-        # Process uncached subjects in parallel
         n_jobs = min(len(uncached_subjects), os.cpu_count() or 4)
         print(f'  Using {n_jobs} parallel workers')
 
@@ -782,10 +666,15 @@ def compute_source_erps(task, method, stim_class, subjects):
             delayed(_compute_one_subject_erp)(
                 subj, task, method, stim_class,
                 fwd, fwd_roi_labels, fwd_roi_names, src,
-                baseline_tmin, baseline_tmax
+                baseline_tmin, baseline_tmax,
+                feat_mode=feat_mode, atlas=atlas,
+                leakage_correction=leakage_correction
             )
             for subj in uncached_subjects
         )
+
+        # Shut down loky workers to avoid leaked file/folder warnings
+        get_reusable_executor().shutdown(wait=True)
 
         for subj, result in zip(uncached_subjects, results):
             if result is None:
@@ -800,7 +689,6 @@ def compute_source_erps(task, method, stim_class, subjects):
     if not all_y:
         raise RuntimeError(f'No data found for {task}/{method}/{stim_class}')
 
-    # Concatenate across subjects
     for name in roi_names:
         all_roi_data[name] = np.concatenate(all_roi_data[name], axis=0)
     all_y = np.concatenate(all_y)
@@ -813,7 +701,7 @@ def compute_source_erps(task, method, stim_class, subjects):
     return all_roi_data, all_y, times_ms
 
 
-def plot_source_erps(all_roi_data, all_y, times_ms, ylim=None):
+def plot_source_erps(all_roi_data, all_y, times_ms, task, method, ylim=None):
     """
     Plot class-averaged source-space ERPs for each ROI.
 
@@ -864,74 +752,156 @@ def plot_source_erps(all_roi_data, all_y, times_ms, ylim=None):
         axes[j // n_cols, j % n_cols].set_visible(False)
 
     fig.suptitle(
-        f'{TASK} | {METHOD} — Source-Space ERP by ROI',
+        f'{task} | {method} — Source-Space ERP by ROI',
         fontsize=16
     )
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
 
 
-# %% [markdown]
-# ### Run source ERP computation and plotting
-#
-# This cell is slow (loads all subjects, runs inverse). Set `RUN_ERP = True`
-# to execute, or skip if you only need SVM stats/plots.
+# ──────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────
+def main():
+    args = parse_args()
 
-# %%
-if 'RUN_ERP' not in dir():
-    RUN_ERP = True  # Set to True to compute and plot source ERPs
+    task = args.task
+    method = args.method
+    feat_mode = args.feature_mode
+    atlas = args.atlas
+    leakage_correction = args.leakage_correction
+    stim_classes = args.stim_classes
+    subjects = args.subjects if args.subjects else SUBJECT_IDS
+    run_erp = not args.skip_erp
 
-if RUN_ERP:
-    for sc in STIM_CLASSES:
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
+
+    figures_dir = (
+        SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+        / leakage_tag / sw_tag / 'figures'
+    )
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Step 1: Compute stats ---
+    all_data = {}
+    for sc in stim_classes:
         print(f'\n{"="*60}')
-        print(f'Source ERPs: {TASK} / {METHOD} / {sc}')
+        print(f'Computing stats: {task} / {method} / {sc}')
         print(f'{"="*60}')
-
-        all_roi_data, all_y, times_ms = compute_source_erps(
-            TASK, METHOD, sc, SUBJECTS
+        mean_df, sem_df, stats_df = compute_stats(
+            task, method, atlas, feat_mode, leakage_tag, sc, subjects
         )
+        if mean_df is not None:
+            all_data[sc] = {
+                'mean': mean_df,
+                'sem': sem_df,
+                'stats': stats_df,
+            }
 
-        fig = plot_source_erps(all_roi_data, all_y, times_ms)
-        fig.savefig(
-            FIGURES_DIR / f'{TASK}_{METHOD}_{sc}_sourceERP_allROIs.svg',
-            format='svg', bbox_inches='tight'
-        )
-        fig.savefig(
-            FIGURES_DIR / f'{TASK}_{METHOD}_{sc}_sourceERP_allROIs.png',
-            dpi=300, bbox_inches='tight'
-        )
-        plt.show()
-
-
-# %% [markdown]
-# ## Step 6: Print summary of all significant clusters
-
-# %%
-if all_data:
-    print(f'\n{"="*60}')
-    print(f'CLUSTER SUMMARY: {TASK} / {METHOD}')
-    print(f'{"="*60}')
+    # --- Step 2 & 3: Per-ROI plots ---
+    rois_in_data = (all_data[stim_classes[0]]['mean']['key'].unique()
+                    if all_data else [])
 
     for roi_key in rois_in_data:
-        print(f'\n--- {ROI_DISPLAY_NAMES.get(roi_key, roi_key)} ---')
-        for sc in STIM_CLASSES:
-            if sc not in all_data:
-                continue
-            d = all_data[sc]
-            mask = d['mean']['key'] == roi_key
-            ms = d['mean'].loc[mask, 'ms'].values
-            acc = d['mean'].loc[mask, 'SVM_acc'].values
+        # Cluster plot
+        fig = plot_svm_accuracy_single_roi(
+            roi_key, all_data, stim_classes, method,
+            sig_column='sig_cluster', title_suffix='Cluster')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.svg',
+            format='svg', bbox_inches='tight')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.png',
+            dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-            # Standard cluster
-            sig_c = d['stats'].loc[mask, 'sig_cluster'].values.astype(bool)
-            clusters_c = find_contiguous_clusters(sig_c)
-            report_clusters(roi_key, ms, acc, clusters_c, label=f'{sc} Cluster')
+        # TFCE plot
+        fig = plot_svm_accuracy_tfce_single_roi(
+            roi_key, all_data, stim_classes, method)
+        fig.savefig(
+            figures_dir / f'{task}_{method}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.svg',
+            format='svg', bbox_inches='tight')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_{roi_key}_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.png',
+            dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-            # TFCE
-            sig_t = d['stats'].loc[mask, 'sig_tfce'].values.astype(bool)
-            clusters_t = find_contiguous_clusters(sig_t)
-            report_clusters(roi_key, ms, acc, clusters_t, label=f'{sc} TFCE')
+    # --- Step 4: Multi-ROI panels ---
+    if all_data:
+        fig = plot_multi_roi_panel(all_data, stim_classes, task, method,
+                                    feat_mode, sig_column='sig_cluster',
+                                    title_suffix='Cluster')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.svg',
+            format='svg', bbox_inches='tight')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_CLUSTER.png',
+            dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-    print(f'\n{"="*60}')
-    print(f'Figures saved to: {FIGURES_DIR}')
-    print(f'{"="*60}')
+        fig = plot_multi_roi_panel(all_data, stim_classes, task, method,
+                                    feat_mode, sig_column='sig_tfce',
+                                    title_suffix='TFCE')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.svg',
+            format='svg', bbox_inches='tight')
+        fig.savefig(
+            figures_dir / f'{task}_{method}_allROIs_SW{SW_DUR}_{SW_STEP_SIZE}_TFCE.png',
+            dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+    # --- Step 5: Source ERPs ---
+    if run_erp:
+        for sc in stim_classes:
+            print(f'\n{"="*60}')
+            print(f'Source ERPs: {task} / {method} / {sc}')
+            print(f'{"="*60}')
+
+            all_roi_data, all_y, times_ms = compute_source_erps(
+                task, method, sc, subjects,
+                feat_mode, atlas, leakage_correction
+            )
+
+            fig = plot_source_erps(all_roi_data, all_y, times_ms, task, method)
+            fig.savefig(
+                figures_dir / f'{task}_{method}_{sc}_sourceERP_allROIs.svg',
+                format='svg', bbox_inches='tight')
+            fig.savefig(
+                figures_dir / f'{task}_{method}_{sc}_sourceERP_allROIs.png',
+                dpi=300, bbox_inches='tight')
+            plt.close(fig)
+
+    # --- Step 6: Cluster summary ---
+    if all_data:
+        print(f'\n{"="*60}')
+        print(f'CLUSTER SUMMARY: {task} / {method}')
+        print(f'{"="*60}')
+
+        for roi_key in rois_in_data:
+            print(f'\n--- {ROI_DISPLAY_NAMES.get(roi_key, roi_key)} ---')
+            for sc in stim_classes:
+                if sc not in all_data:
+                    continue
+                d = all_data[sc]
+                mask = d['mean']['key'] == roi_key
+                ms = d['mean'].loc[mask, 'ms'].values
+                acc = d['mean'].loc[mask, 'SVM_acc'].values
+
+                sig_c = d['stats'].loc[mask, 'sig_cluster'].values.astype(bool)
+                clusters_c = find_contiguous_clusters(sig_c)
+                report_clusters(roi_key, ms, acc, clusters_c,
+                                label=f'{sc} Cluster')
+
+                sig_t = d['stats'].loc[mask, 'sig_tfce'].values.astype(bool)
+                clusters_t = find_contiguous_clusters(sig_t)
+                report_clusters(roi_key, ms, acc, clusters_t,
+                                label=f'{sc} TFCE')
+
+        print(f'\n{"="*60}')
+        print(f'Figures saved to: {figures_dir}')
+        print(f'{"="*60}')
+
+
+if __name__ == '__main__':
+    main()
