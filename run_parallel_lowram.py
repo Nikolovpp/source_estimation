@@ -79,7 +79,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
 
     # Save sensor-space ERP figure
     save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
-                    method, feature_mode)
+                    method, feature_mode, atlas=atlas,
+                    leakage_correction=leakage_correction)
 
     roi_labels = list(_roi_dict.values())
     roi_names = list(_roi_dict.keys())
@@ -138,7 +139,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
 
     # Save source-space ERP figure
     save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
-                    method, feature_mode, decode_tmin)
+                    method, feature_mode, decode_tmin, atlas=atlas,
+                    leakage_correction=leakage_correction)
 
     # Save ROI time series for use with original SVM notebooks
     if not skip_save_timeseries:
@@ -181,7 +183,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
     if not skip_svm:
         # Save SVM accuracy figure
         save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
-                         method, feature_mode, sw_dur, sw_step)
+                         method, feature_mode, sw_dur, sw_step, atlas=atlas,
+                         leakage_correction=leakage_correction)
 
         # Save SVM results CSV
         _save_results(subj_id, task_cond, stim_class, method, feature_mode,
