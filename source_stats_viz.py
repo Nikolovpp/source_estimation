@@ -47,6 +47,8 @@ from config import (
 TASK         = 'overtProd'        # 'perception' or 'overtProd'
 METHOD       = 'dSPM'             # 'dSPM' or 'LCMV'
 FEAT_MODE    = 'vertex_pca'         # 'pca_flip', 'vertex_pca', 'vertex_selectkbest'
+ATLAS        = 'aparc'            # 'aparc', 'Schaefer200', 'HCPMMP1', 'custom'
+LEAKAGE_CORRECTION = False        # True if data was run with --leakage-correction
 STIM_CLASSES = ['percDiff', 'prodDiff']
 
 # Subjects to include (default: all)
@@ -83,9 +85,11 @@ ROI_DISPLAY_NAMES = {
 # ──────────────────────────────────────────────────────────────
 num_subj = len(SUBJECTS)
 sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
+LEAKAGE_TAG = 'leakage_corrected' if LEAKAGE_CORRECTION else 'raw'
 
 FIGURES_DIR = (
-    SVM_OUTPUT_ROOT / TASK / METHOD / FEAT_MODE / sw_tag / 'figures'
+    SVM_OUTPUT_ROOT / TASK / METHOD / ATLAS / FEAT_MODE
+    / LEAKAGE_TAG / sw_tag / 'figures'
 )
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -116,7 +120,8 @@ def load_subject_csvs(task, method, feat_mode, stim_class, subjects):
     subj_dfs = []
     for subj in subjects:
         csv_path = (
-            SVM_OUTPUT_ROOT / task / method / feat_mode / sw_tag / stim_class
+            SVM_OUTPUT_ROOT / task / method / ATLAS / feat_mode
+            / LEAKAGE_TAG / sw_tag / stim_class
             / f'{subj}_{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}.csv'
         )
         if not csv_path.exists():
@@ -270,7 +275,7 @@ def compute_stats(task, method, feat_mode, stim_class, subjects):
     stats_df['sig_tfce'] = tfce_mask_arr
 
     # Save CSVs
-    out_dir = SVM_OUTPUT_ROOT / task / method / feat_mode / sw_tag / stim_class
+    out_dir = SVM_OUTPUT_ROOT / task / method / ATLAS / feat_mode / LEAKAGE_TAG / sw_tag / stim_class
     out_dir.mkdir(parents=True, exist_ok=True)
     base = f'{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}_{n_subj}subjAvg'
 
@@ -689,9 +694,11 @@ def compute_source_erps(task, method, stim_class, subjects):
     for subj in subjects:
         # ERPs always use pca_flip (1 virtual sensor per ROI);
         # try pca_flip cache first, then fall back to current FEAT_MODE
-        result = _load_subject_npz(subj, task, method, stim_class, 'pca_flip')
+        result = _load_subject_npz(subj, task, method, stim_class, 'pca_flip',
+                                   atlas=ATLAS, leakage_correction=LEAKAGE_CORRECTION)
         if result is None:
-            result = _load_subject_npz(subj, task, method, stim_class, FEAT_MODE)
+            result = _load_subject_npz(subj, task, method, stim_class, FEAT_MODE,
+                                       atlas=ATLAS, leakage_correction=LEAKAGE_CORRECTION)
         if result is not None:
             roi_data, y, t_s = result
             if roi_names is None:
