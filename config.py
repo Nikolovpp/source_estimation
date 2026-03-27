@@ -19,9 +19,9 @@ load_dotenv(Path(__file__).resolve().parent / 'config.env')
 # ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(os.environ['EEG_PROJECT_ROOT'])
 EEGLAB_DIR = PROJECT_ROOT / 'derivatives' / 'EEGLAB'
-SVM_OUTPUT_ROOT = PROJECT_ROOT / 'derivatives' / 'SVM_source'
-ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'SVM_source_timeseries'
-FIGURES_ROOT = PROJECT_ROOT / 'derivatives' / 'SOURCE_ESTIMATION'
+SVM_OUTPUT_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SVM_source'
+ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SVM_source_timeseries'
+FIGURES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SOURCE_ESTIMATION'
 CODE_DIR = PROJECT_ROOT / 'code' / 'source_estimation'
 
 # ─────────────────────────────────────────────────────────────────────
