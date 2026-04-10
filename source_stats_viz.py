@@ -150,14 +150,23 @@ def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
 
 
 def report_clusters(roi_name, ms_values, acc_values, clusters, label=''):
-    """Print cluster onset, time range, and peak accuracy."""
+    """Print cluster onset, time range, and peak accuracy.
+
+    Returns a list of output lines (without trailing newlines) so callers
+    can collect them for logging.
+    """
+    lines = []
     display_name = ROI_DISPLAY_NAMES.get(roi_name, roi_name)
     if not clusters:
-        print(f'  {display_name}: no significant {label} clusters')
-        return
-    print(f'  {display_name}: {len(clusters)} significant {label} cluster(s)')
+        line = f'  {display_name}: no significant {label} clusters'
+        print(line)
+        lines.append(line)
+        return lines
+    line = f'  {display_name}: {len(clusters)} significant {label} cluster(s)'
+    print(line); lines.append(line)
     first_onset = ms_values[clusters[0][0]]
-    print(f'    First onset: {first_onset:.1f} ms')
+    line = f'    First onset: {first_onset:.1f} ms'
+    print(line); lines.append(line)
     global_max_acc = -np.inf
     global_max_time = None
     for i, (s, e) in enumerate(clusters):
@@ -165,12 +174,15 @@ def report_clusters(roi_name, ms_values, acc_values, clusters, label=''):
         peak_idx = np.argmax(c_accs)
         peak_acc = c_accs[peak_idx]
         peak_time = ms_values[s + peak_idx]
-        print(f'    Cluster {i+1}: {ms_values[s]:.1f} to {ms_values[e]:.1f} ms, '
-              f'peak acc={peak_acc:.4f} at {peak_time:.1f} ms')
+        line = (f'    Cluster {i+1}: {ms_values[s]:.1f} to {ms_values[e]:.1f} ms, '
+                f'peak acc={peak_acc:.4f} at {peak_time:.1f} ms')
+        print(line); lines.append(line)
         if peak_acc > global_max_acc:
             global_max_acc = peak_acc
             global_max_time = peak_time
-    print(f'    Global peak: {global_max_acc:.4f} at {global_max_time:.1f} ms')
+    line = f'    Global peak: {global_max_acc:.4f} at {global_max_time:.1f} ms'
+    print(line); lines.append(line)
+    return lines
 
 
 # ──────────────────────────────────────────────────────────────
@@ -875,12 +887,25 @@ def main():
 
     # --- Step 6: Cluster summary ---
     if all_data:
+        from datetime import datetime
+
+        header = (f'CLUSTER SUMMARY: {task} / {method} / {atlas} / {feat_mode}\n'
+                  f'Leakage correction: {leakage_correction} | '
+                  f'Pseudo-trial size: {pseudo_trial_size}\n'
+                  f'Subjects: {len(subjects)} | '
+                  f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+
         print(f'\n{"="*60}')
-        print(f'CLUSTER SUMMARY: {task} / {method}')
+        print(header)
         print(f'{"="*60}')
 
+        log_lines = [('=' * 60), header, ('=' * 60)]
+
         for roi_key in rois_in_data:
-            print(f'\n--- {ROI_DISPLAY_NAMES.get(roi_key, roi_key)} ---')
+            roi_header = f'\n--- {ROI_DISPLAY_NAMES.get(roi_key, roi_key)} ---'
+            print(roi_header)
+            log_lines.append(roi_header)
+
             for sc in stim_classes:
                 if sc not in all_data:
                     continue
@@ -891,16 +916,23 @@ def main():
 
                 sig_c = d['stats'].loc[mask, 'sig_cluster'].values.astype(bool)
                 clusters_c = find_contiguous_clusters(sig_c)
-                report_clusters(roi_key, ms, acc, clusters_c,
-                                label=f'{sc} Cluster')
+                log_lines.extend(report_clusters(roi_key, ms, acc, clusters_c,
+                                                 label=f'{sc} Cluster'))
 
                 sig_t = d['stats'].loc[mask, 'sig_tfce'].values.astype(bool)
                 clusters_t = find_contiguous_clusters(sig_t)
-                report_clusters(roi_key, ms, acc, clusters_t,
-                                label=f'{sc} TFCE')
+                log_lines.extend(report_clusters(roi_key, ms, acc, clusters_t,
+                                                 label=f'{sc} TFCE'))
+
+        # Write log file next to the stats CSVs
+        log_dir = (SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+                   / leakage_tag / pseudo_tag / sw_tag)
+        log_file = log_dir / f'{task}_{method}_cluster_summary.log'
+        log_file.write_text('\n'.join(log_lines) + '\n')
 
         print(f'\n{"="*60}')
         print(f'Figures saved to: {figures_dir}')
+        print(f'Log saved to:     {log_file}')
         print(f'{"="*60}')
 
 
