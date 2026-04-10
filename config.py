@@ -24,6 +24,14 @@ ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SVM_
 FIGURES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SOURCE_ESTIMATION'
 CODE_DIR = PROJECT_ROOT / 'code' / 'source_estimation'
 
+# Optional external location for ROI timeseries (e.g. external HDD).
+# Set ROI_TIMESERIES_EXTERNAL in config.env to enable.
+# When loading cached .npz files, the pipeline checks ROI_TIMESERIES_ROOT
+# first, then falls back to this path.  New files are always saved to
+# ROI_TIMESERIES_ROOT.
+_ext = os.environ.get('ROI_TIMESERIES_EXTERNAL', '')
+ROI_TIMESERIES_EXTERNAL = Path(_ext) if _ext else None
+
 # ─────────────────────────────────────────────────────────────────────
 # Subjects
 # ─────────────────────────────────────────────────────────────────────
@@ -440,3 +448,21 @@ DECODE_TMIN = {
     'perception': -0.100,   # start decoding at -100 ms
     'overtProd':  -1.500,   # start decoding at -1500 ms
 }
+
+
+def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
+                    subj, stim_class):
+    """Return the path to a cached .npz ROI timeseries file, or None.
+
+    Checks ROI_TIMESERIES_ROOT first, then ROI_TIMESERIES_EXTERNAL.
+    """
+    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    rel = Path(task) / method / atlas / feat_mode / leakage_tag / f'{subj}_{task}_{stim_class}.npz'
+    primary = ROI_TIMESERIES_ROOT / rel
+    if primary.exists():
+        return primary
+    if ROI_TIMESERIES_EXTERNAL is not None:
+        fallback = ROI_TIMESERIES_EXTERNAL / rel
+        if fallback.exists():
+            return fallback
+    return None
