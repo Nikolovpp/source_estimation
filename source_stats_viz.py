@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))
 from config import (
     SUBJECT_IDS, SVM_OUTPUT_ROOT, SPEECH_ROIS,
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
-    ROI_TIMESERIES_ROOT,
+    ROI_TIMESERIES_ROOT, find_cached_npz,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -517,13 +517,9 @@ def _load_subject_npz(subj, task, method, stim_class, feat_mode,
     Returns (roi_data_dict, y, times_s) or None if not found.
     roi_data_dict maps roi_name -> (n_epochs, n_times).
     """
-    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
-    npz_file = (
-        ROI_TIMESERIES_ROOT / task / method / atlas
-        / feat_mode / leakage_tag
-        / f'{subj}_{task}_{stim_class}.npz'
-    )
-    if not npz_file.exists():
+    npz_file = find_cached_npz(task, method, atlas, feat_mode,
+                               leakage_correction, subj, stim_class)
+    if npz_file is None:
         return None
     data = np.load(npz_file, allow_pickle=True)
     roi_names = list(data['roi_names'])

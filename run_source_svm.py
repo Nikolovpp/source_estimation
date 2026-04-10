@@ -37,6 +37,7 @@ from config import (
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT, ROI_TIMESERIES_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     SVM_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
+    find_cached_npz,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
@@ -120,6 +121,32 @@ def parse_args():
     return parser.parse_args()
 
 
+def _load_cached_roi_data(npz_path, feature_mode):
+    """Load cached ROI timeseries from an .npz file.
+
+    Returns (roi_data, y, times, sfreq) matching the format produced by
+    the inverse + ROI-extraction steps.
+    """
+    data = np.load(npz_path, allow_pickle=True)
+    roi_names = list(data['roi_names'])
+    y = data['y']
+    times = data['times']
+    sfreq = float(data['sfreq'])
+    roi_data = {}
+    for name in roi_names:
+        arr = data[name]
+        if feature_mode == 'pca_flip':
+            # saved as (n_epochs, n_times, 1) → (n_epochs, n_times)
+            if arr.ndim == 3 and arr.shape[2] == 1:
+                arr = arr[:, :, 0]
+        else:
+            # saved as (n_epochs, n_times, n_vertices) → (n_epochs, n_vertices, n_times)
+            if arr.ndim == 3:
+                arr = arr.transpose(0, 2, 1)
+        roi_data[name] = arr
+    return roi_data, y, times, sfreq
+
+
 def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
                     fwd, src, roi_dict, sw_dur, sw_step, save_dir,
                     skip_svm=False, skip_save_timeseries=False,
@@ -132,75 +159,84 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
     print(f'Processing: {subj_id} | {task_cond} | {stim_class} | {method}')
     print(f'{"="*60}')
 
-    # Step 1: Load data
-    try:
-        epochs, y, sfreq = load_subject_epochs(subj_id, task_cond, stim_class)
-    except FileNotFoundError as e:
-        print(f'  SKIPPING {subj_id}: {e}')
-        return None
-
-    tmin = epochs.tmin
-    times = epochs.times
-
     # Task-specific baseline and decode windows
     baseline_tmin, baseline_tmax = BASELINE_WINDOWS[task_cond]
     decode_tmin = DECODE_TMIN[task_cond]
 
-    # Save sensor-space ERP figure
-    save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
-                    method, feature_mode, atlas=atlas,
-                    leakage_correction=leakage_correction)
-
-    # Step 2: Run inverse pipeline
-    print(f'\n  Running {method} inverse...')
-    if method == 'dSPM':
-        stcs = run_dspm(epochs, fwd, baseline_tmin, baseline_tmax)
-    elif method == 'LCMV':
-        stcs = run_lcmv(epochs, fwd, baseline_tmin, baseline_tmax)
-
-    # Step 3: Extract features per ROI
-    # Build dict of {roi_name: X_roi} for both saving and decoding
-    roi_data = {}
-
-    if feature_mode == 'pca_flip':
-        roi_labels = list(roi_dict.values())
-        roi_names = list(roi_dict.keys())
-        X_all = extract_roi_data_pca_flip(stcs, roi_labels, src)
-        # X_all shape: (n_epochs, n_rois, n_times)
-
-        # Leakage correction: symmetric orthogonalization
-        if leakage_correction:
-            from leakage_correction import apply_leakage_correction
-            print('  Applying symmetric orthogonalization (leakage correction)...')
-            X_all = apply_leakage_correction(X_all)
-
-        for i, roi_name in enumerate(roi_names):
-            roi_data[roi_name] = X_all[:, i, :]  # (n_epochs, n_times)
+    # Check for cached ROI timeseries before running the inverse model
+    cached_npz = find_cached_npz(task_cond, method, atlas, feature_mode,
+                                 leakage_correction, subj_id, stim_class)
+    if cached_npz is not None and not overwrite_timeseries:
+        print(f'  Loading cached ROI timeseries: {cached_npz}')
+        roi_data, y, times, sfreq = _load_cached_roi_data(cached_npz,
+                                                           feature_mode)
+        tmin = times[0]
     else:
-        for roi_name, roi_label in roi_dict.items():
-            X_roi = extract_roi_data_vertices(stcs, roi_label)
-            # X_roi shape: (n_epochs, n_vertices, n_times)
-            roi_data[roi_name] = X_roi
+        # Step 1: Load data
+        try:
+            epochs, y, sfreq = load_subject_epochs(subj_id, task_cond, stim_class)
+        except FileNotFoundError as e:
+            print(f'  SKIPPING {subj_id}: {e}')
+            return None
 
-        # Vertex-level leakage correction: regress out other ROIs' signals
-        if leakage_correction:
-            from leakage_correction import apply_vertex_leakage_correction
-            print('  Computing pca_flip summaries for vertex leakage correction...')
+        tmin = epochs.tmin
+        times = epochs.times
+
+        # Save sensor-space ERP figure
+        save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
+                        method, feature_mode, atlas=atlas,
+                        leakage_correction=leakage_correction)
+
+        # Step 2: Run inverse pipeline
+        print(f'\n  Running {method} inverse...')
+        if method == 'dSPM':
+            stcs = run_dspm(epochs, fwd, baseline_tmin, baseline_tmax)
+        elif method == 'LCMV':
+            stcs = run_lcmv(epochs, fwd, baseline_tmin, baseline_tmax)
+
+        # Step 3: Extract features per ROI
+        # Build dict of {roi_name: X_roi} for both saving and decoding
+        roi_data = {}
+
+        if feature_mode == 'pca_flip':
             roi_labels = list(roi_dict.values())
             roi_names = list(roi_dict.keys())
-            X_all_pca = extract_roi_data_pca_flip(stcs, roi_labels, src)
-            print('  Applying regression-based vertex leakage correction...')
-            roi_data = apply_vertex_leakage_correction(
-                roi_data, X_all_pca, roi_names
-            )
-            del X_all_pca
+            X_all = extract_roi_data_pca_flip(stcs, roi_labels, src)
+            # X_all shape: (n_epochs, n_rois, n_times)
 
-    # Step 3b: Save ROI time series for use with original SVM notebooks
-    if not skip_save_timeseries:
-        _save_roi_timeseries(subj_id, task_cond, stim_class, method,
-                             feature_mode, roi_data, y, times, sfreq,
-                             overwrite=overwrite_timeseries, atlas=atlas,
-                             leakage_correction=leakage_correction)
+            # Leakage correction: symmetric orthogonalization
+            if leakage_correction:
+                from leakage_correction import apply_leakage_correction
+                print('  Applying symmetric orthogonalization (leakage correction)...')
+                X_all = apply_leakage_correction(X_all)
+
+            for i, roi_name in enumerate(roi_names):
+                roi_data[roi_name] = X_all[:, i, :]  # (n_epochs, n_times)
+        else:
+            for roi_name, roi_label in roi_dict.items():
+                X_roi = extract_roi_data_vertices(stcs, roi_label)
+                # X_roi shape: (n_epochs, n_vertices, n_times)
+                roi_data[roi_name] = X_roi
+
+            # Vertex-level leakage correction: regress out other ROIs' signals
+            if leakage_correction:
+                from leakage_correction import apply_vertex_leakage_correction
+                print('  Computing pca_flip summaries for vertex leakage correction...')
+                roi_labels = list(roi_dict.values())
+                roi_names = list(roi_dict.keys())
+                X_all_pca = extract_roi_data_pca_flip(stcs, roi_labels, src)
+                print('  Applying regression-based vertex leakage correction...')
+                roi_data = apply_vertex_leakage_correction(
+                    roi_data, X_all_pca, roi_names
+                )
+                del X_all_pca
+
+        # Step 3b: Save ROI time series for use with original SVM notebooks
+        if not skip_save_timeseries:
+            _save_roi_timeseries(subj_id, task_cond, stim_class, method,
+                                 feature_mode, roi_data, y, times, sfreq,
+                                 overwrite=overwrite_timeseries, atlas=atlas,
+                                 leakage_correction=leakage_correction)
 
     # Save source-space ERP figure
     save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
