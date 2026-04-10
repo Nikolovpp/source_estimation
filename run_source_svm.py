@@ -167,11 +167,14 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
     cached_npz = find_cached_npz(task_cond, method, atlas, feature_mode,
                                  leakage_correction, subj_id, stim_class)
     if cached_npz is not None and not overwrite_timeseries:
-        print(f'  Loading cached ROI timeseries: {cached_npz}')
+        print(f'\n  SUCCESSFULLY LOADED Pre-computed ROI source time series!')
+        print(f'    Source: {cached_npz}')
         roi_data, y, times, sfreq = _load_cached_roi_data(cached_npz,
                                                            feature_mode)
         tmin = times[0]
     else:
+        print(f'\n  NO PRE-COMPUTED ROI SOURCE TIME SERIES FOUND '
+              f'-- proceeding with inverse model computation...')
         # Step 1: Load data
         try:
             epochs, y, sfreq = load_subject_epochs(subj_id, task_cond, stim_class)
