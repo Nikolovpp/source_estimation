@@ -206,14 +206,18 @@ def _worker(args):
      sw_dur, sw_step, save_dir, skip_svm,
      skip_save_timeseries, overwrite_timeseries,
      atlas, leakage_correction, pseudo_trial_size, svm_c) = args
-    return _process_subject_lowram(
-        subj_id, task_cond, stim_class, method, feature_mode,
-        sw_dur, sw_step, save_dir, skip_svm=skip_svm,
-        skip_save_timeseries=skip_save_timeseries,
-        overwrite_timeseries=overwrite_timeseries,
-        atlas=atlas, leakage_correction=leakage_correction,
-        pseudo_trial_size=pseudo_trial_size, svm_c=svm_c,
-    )
+    try:
+        return _process_subject_lowram(
+            subj_id, task_cond, stim_class, method, feature_mode,
+            sw_dur, sw_step, save_dir, skip_svm=skip_svm,
+            skip_save_timeseries=skip_save_timeseries,
+            overwrite_timeseries=overwrite_timeseries,
+            atlas=atlas, leakage_correction=leakage_correction,
+            pseudo_trial_size=pseudo_trial_size, svm_c=svm_c,
+        )
+    except Exception as e:
+        print(f'\n  FAILED {subj_id}: {e}')
+        return None
 
 
 def parse_args():
@@ -308,10 +312,14 @@ def main():
         initializer=_init_worker,
         initargs=(fwd, src, roi_dict),
     ) as pool:
-        pool.map(_worker, worker_args)
+        results = pool.map(_worker, worker_args)
 
     total_time = (time.time() - total_start) / 60.0
-    print(f'\nAll {len(subjects)} subjects done in {total_time:.1f} minutes')
+    failed = [s for s, r in zip(subjects, results) if r is None]
+    n_ok = len(subjects) - len(failed)
+    print(f'\n{n_ok}/{len(subjects)} subjects done in {total_time:.1f} minutes')
+    if failed:
+        print(f'FAILED subjects: {", ".join(failed)}')
 
 
 if __name__ == '__main__':
