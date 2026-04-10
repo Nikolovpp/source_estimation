@@ -261,13 +261,15 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
         # Save SVM accuracy figure
         save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
                          method, feature_mode, sw_dur, sw_step, atlas=atlas,
-                         leakage_correction=leakage_correction)
+                         leakage_correction=leakage_correction,
+                         pseudo_trial_size=pseudo_trial_size)
 
         # Step 5: Save SVM results
         _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                       sw_dur, sw_step, results_all_rois, save_dir,
                       atlas=atlas, svm_c=svm_c,
-                      leakage_correction=leakage_correction)
+                      leakage_correction=leakage_correction,
+                      pseudo_trial_size=pseudo_trial_size)
 
     subj_time = (time.time() - subj_start) / 60.0
     print(f'\n  {subj_id} done in {subj_time:.1f} minutes')
@@ -331,13 +333,15 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
 
 def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                   sw_dur, sw_step, results_all_rois, save_dir,
-                  atlas='aparc', svm_c=1.0, leakage_correction=False):
+                  atlas='aparc', svm_c=1.0, leakage_correction=False,
+                  pseudo_trial_size=0):
     """Save results in CSV format matching the existing pipeline."""
     # Create output directory (includes atlas and leakage tag for separation)
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    pseudo_tag = f'pseudo_{pseudo_trial_size}' if pseudo_trial_size > 0 else 'no_pseudo'
     csv_save_path = (
         save_dir / task_cond / method / atlas / feature_mode
-        / leakage_tag / f'{sw_dur}_{sw_step}' / stim_class
+        / leakage_tag / pseudo_tag / f'{sw_dur}_{sw_step}' / stim_class
     )
     csv_save_path.mkdir(parents=True, exist_ok=True)
 

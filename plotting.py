@@ -14,12 +14,14 @@ from config import FIGURES_ROOT
 
 
 def _make_fig_dir(task_cond, method, feature_mode, subj_id,
-                  atlas='aparc', leakage_correction=False):
+                  atlas='aparc', leakage_correction=False,
+                  pseudo_trial_size=0):
     """Create and return the figure output directory."""
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    pseudo_tag = f'pseudo_{pseudo_trial_size}' if pseudo_trial_size > 0 else 'no_pseudo'
     fig_dir = (
         FIGURES_ROOT / task_cond / method / atlas / feature_mode
-        / leakage_tag / 'figures' / subj_id
+        / leakage_tag / pseudo_tag / 'figures' / subj_id
     )
     fig_dir.mkdir(parents=True, exist_ok=True)
     return fig_dir
@@ -119,12 +121,13 @@ def save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
 
 def save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
                      method, feature_mode, sw_dur, sw_step, atlas='aparc',
-                     leakage_correction=False):
+                     leakage_correction=False, pseudo_trial_size=0):
     """
     Save SVM decoding accuracy time course per ROI.
     """
     fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id,
-                            atlas=atlas, leakage_correction=leakage_correction)
+                            atlas=atlas, leakage_correction=leakage_correction,
+                            pseudo_trial_size=pseudo_trial_size)
 
     n_rois = len(results_all_rois)
     n_cols = 4
