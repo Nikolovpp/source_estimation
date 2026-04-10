@@ -100,6 +100,8 @@ def parse_args():
     p.add_argument('--atlas', required=True,
                    choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
     p.add_argument('--leakage-correction', action='store_true', default=False)
+    p.add_argument('--pseudo-trial-size', type=int, default=0,
+                   help='Pseudo-trial group size used during SVM decoding (must match the run)')
     p.add_argument('--stim-classes', nargs='+',
                    default=['percDiff', 'prodDiff'],
                    choices=['percDiff', 'prodDiff'])
@@ -129,15 +131,15 @@ def find_contiguous_clusters(mask):
     return clusters
 
 
-def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, stim_class,
-                      subjects):
+def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
+                      stim_class, subjects):
     """Load per-subject SVM result CSVs and return list of DataFrames."""
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
     subj_dfs = []
     for subj in subjects:
         csv_path = (
             SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
-            / leakage_tag / sw_tag / stim_class
+            / leakage_tag / pseudo_tag / sw_tag / stim_class
             / f'{subj}_{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}.csv'
         )
         if not csv_path.exists():
@@ -174,8 +176,8 @@ def report_clusters(roi_name, ms_values, acc_values, clusters, label=''):
 # ──────────────────────────────────────────────────────────────
 # Step 1: Compute group-level statistics
 # ──────────────────────────────────────────────────────────────
-def compute_stats(task, method, atlas, feat_mode, leakage_tag, stim_class,
-                  subjects):
+def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
+                  stim_class, subjects):
     """
     Compute group-level stats for one task/method/stim_class combination.
 
@@ -189,7 +191,7 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, stim_class,
     Returns (mean_df, sem_df, stats_df) and saves CSVs.
     """
     subj_dfs = load_subject_csvs(task, method, atlas, feat_mode, leakage_tag,
-                                 stim_class, subjects)
+                                 pseudo_tag, stim_class, subjects)
     n_subj = len(subj_dfs)
     if n_subj == 0:
         print(f'  No data found for {stim_class}')
@@ -291,7 +293,7 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, stim_class,
     # Save CSVs
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
     out_dir = (SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
-               / leakage_tag / sw_tag / stim_class)
+               / leakage_tag / pseudo_tag / sw_tag / stim_class)
     out_dir.mkdir(parents=True, exist_ok=True)
     base = f'{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}_{n_subj}subjAvg'
 
@@ -766,16 +768,18 @@ def main():
     feat_mode = args.feature_mode
     atlas = args.atlas
     leakage_correction = args.leakage_correction
+    pseudo_trial_size = args.pseudo_trial_size
     stim_classes = args.stim_classes
     subjects = args.subjects
     run_erp = not args.skip_erp
 
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    pseudo_tag = f'pseudo_{pseudo_trial_size}' if pseudo_trial_size > 0 else 'no_pseudo'
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
 
     figures_dir = (
         SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
-        / leakage_tag / sw_tag / 'figures'
+        / leakage_tag / pseudo_tag / sw_tag / 'figures'
     )
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -786,7 +790,8 @@ def main():
         print(f'Computing stats: {task} / {method} / {sc}')
         print(f'{"="*60}')
         mean_df, sem_df, stats_df = compute_stats(
-            task, method, atlas, feat_mode, leakage_tag, sc, subjects
+            task, method, atlas, feat_mode, leakage_tag, pseudo_tag, sc,
+            subjects
         )
         if mean_df is not None:
             all_data[sc] = {
