@@ -164,31 +164,18 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
     results_all_rois = {}
 
     if not skip_svm:
-        if feature_mode == 'pca_flip':
-            for i, roi_name in enumerate(roi_names):
-                print(f'\n  Decoding ROI: {roi_name} (pca_flip)')
-                X_roi_i = X_roi[:, i, :]
-                results = sliding_window_svm_decode(
-                    X_roi_i, y, sfreq, sw_dur, sw_step,
-                    tmin_epoch, decode_tmin, feature_mode='pca_flip',
-                    times=times, svm_c=svm_c,
-                    pseudo_trial_size=pseudo_trial_size,
-                )
-                results_all_rois[roi_name] = results
-        else:
-            for i, roi_name in enumerate(roi_names):
-                print(f'\n  Decoding ROI: {roi_name} ({feature_mode})')
-                X_vert = X_roi[i]
-                results = sliding_window_svm_decode(
-                    X_vert, y, sfreq, sw_dur, sw_step,
-                    tmin_epoch, decode_tmin, feature_mode=feature_mode,
-                    times=times, svm_c=svm_c,
-                    pseudo_trial_size=pseudo_trial_size,
-                )
-                results_all_rois[roi_name] = results
+        for roi_name in roi_names:
+            print(f'\n  Decoding ROI: {roi_name} ({feature_mode})')
+            results = sliding_window_svm_decode(
+                roi_data[roi_name], y, sfreq, sw_dur, sw_step,
+                tmin_epoch, decode_tmin, feature_mode=feature_mode,
+                times=times, svm_c=svm_c,
+                pseudo_trial_size=pseudo_trial_size,
+            )
+            results_all_rois[roi_name] = results
 
     # Free ROI data
-    del X_roi, roi_data
+    del roi_data
     gc.collect()
 
     if not skip_svm:
