@@ -29,10 +29,12 @@ Output:
     explore_summary.csv — peak/mean accuracy per (subject x config)
 """
 import argparse
+import gc
 import os
 import sys
 import time
 import warnings
+from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
@@ -99,6 +101,8 @@ def parse_args():
                         help=f'Default C for SVM/logistic (default: {SVM_C})')
     parser.add_argument('--leakage-correction', action='store_true', default=False)
     parser.add_argument('--pseudo-trial-size', type=int, default=PSEUDO_TRIAL_SIZE)
+    parser.add_argument('--n-jobs', type=int, default=1,
+                        help='Number of parallel workers across subjects (default: 1)')
     return parser.parse_args()
 
 
@@ -145,6 +149,77 @@ def _load_subject_roi(subj_id, task_cond, stim_class, method, feature_mode,
         X_roi = extract_roi_data_vertices(stcs, roi_dict[roi_name])
 
     return X_roi, y, epochs.times, sfreq
+
+
+# ──────────────────────────────────────────────────────────────
+# Parallel worker infrastructure
+# ──────────────────────────────────────────────────────────────
+_fwd = None
+_src = None
+_roi_dict_full = None
+
+
+def _init_worker(fwd, src, roi_dict_full):
+    """Initialize each worker process with shared forward model data."""
+    global _fwd, _src, _roi_dict_full
+    _fwd = fwd
+    _src = src
+    _roi_dict_full = roi_dict_full
+
+
+def _process_subject(args):
+    """Worker: load data for one subject and sweep all configs."""
+    (subj_id, task_cond, stim_class, method, feature_mode,
+     atlas, leakage_correction, roi_name, configs,
+     sw_step, svm_c, pseudo_trial_size, decode_tmin) = args
+
+    result = _load_subject_roi(
+        subj_id, task_cond, stim_class, method, feature_mode,
+        atlas, leakage_correction, roi_name,
+        _fwd, _src, _roi_dict_full,
+    )
+    if result is None:
+        return []
+
+    X_roi, y, times, sfreq = result
+    tmin = times[0]
+    rows = []
+
+    for cfg_idx, (clf_name, sw_dur, tuned) in enumerate(configs):
+        tuned_str = ' [tuned]' if tuned else ''
+        print(f'  [{subj_id}] Config {cfg_idx + 1}/{len(configs)}: '
+              f'{clf_name}{tuned_str}, sw_dur={sw_dur}ms')
+
+        cfg_start = time.time()
+        results = sliding_window_svm_decode(
+            X_roi, y, sfreq, sw_dur, sw_step, tmin, decode_tmin,
+            feature_mode=feature_mode, times=times,
+            classifier=clf_name, svm_c=svm_c,
+            tune_hyperparams=tuned,
+            pseudo_trial_size=pseudo_trial_size,
+        )
+        cfg_time = time.time() - cfg_start
+
+        for r in results:
+            rows.append({
+                'subject': subj_id,
+                'classifier': clf_name,
+                'sw_dur': sw_dur,
+                'sw_step': sw_step,
+                'tuned': tuned,
+                'ms': r['ms'],
+                'accuracy': r['SVM_acc'],
+            })
+
+        accs = [r['SVM_acc'] for r in results]
+        peak_acc = max(accs)
+        peak_ms = results[np.argmax(accs)]['ms']
+        print(f'    [{subj_id}] Peak: {peak_acc:.3f} at {peak_ms:.1f} ms '
+              f'({cfg_time:.1f}s)')
+
+    del X_roi, y
+    gc.collect()
+    return rows
 
 
 # ──────────────────────────────────────────────────────────────
@@ -375,12 +450,13 @@ def main():
     print(f'  SW durations: {args.sw_durs} ms')
     print(f'  SW step:      {args.sw_step} ms')
     print(f'  Tune HP:      {args.tune_hyperparams}')
+    print(f'  Workers:      {args.n_jobs}')
     print(f'  Subjects:     {len(subjects)}')
     print(f'  Total configs: {n_configs} per subject')
     print()
 
     # ── Setup ───────────────────────────────────────────────────────
-    print('Setting up fsaverage forward model...')
+    print('Setting up fsaverage source space and ROI labels...')
     subjects_dir, fs_dir, src, bem = setup_fsaverage()
 
     if args.atlas in SPEECH_ROIS:
@@ -394,13 +470,24 @@ def main():
     roi_dict = filter_roi_dict(roi_dict, [args.roi], args.atlas)
     roi_name = list(roi_dict.keys())[0]
 
-    # Build forward solution
-    print('\nLoading first subject to build forward solution...')
-    first_epochs, _, _ = load_subject_epochs(
-        subjects[0], args.task, args.stim_class,
+    # Only build the forward solution if at least one subject lacks cached data
+    any_uncached = any(
+        find_cached_npz(args.task, args.method, args.atlas, args.feature_mode,
+                        args.leakage_correction, s, args.stim_class) is None
+        for s in subjects
     )
-    fwd = make_forward(first_epochs.info, src, bem)
-    del first_epochs
+    if any_uncached:
+        print('\nBuilding forward solution (uncached subjects detected)...')
+        first_epochs, _, _ = load_subject_epochs(
+            subjects[0], args.task, args.stim_class,
+        )
+        fwd = make_forward(first_epochs.info, src, bem)
+        del first_epochs
+    else:
+        print('\nAll subjects cached — skipping forward model build.')
+        fwd = None
+    del bem
+    gc.collect()
 
     # ── Build configuration list ────────────────────────────────────
     configs = []
@@ -411,56 +498,31 @@ def main():
                 configs.append((clf_name, sw_dur, True))
 
     # ── Sweep ───────────────────────────────────────────────────────
-    all_rows = []
     total_start = time.time()
 
-    for subj_idx, subj_id in enumerate(subjects):
-        print(f'\n{"="*60}')
-        print(f'Subject {subj_idx + 1}/{len(subjects)}: {subj_id}')
-        print(f'{"="*60}')
+    worker_args = [
+        (subj_id, args.task, args.stim_class, args.method,
+         args.feature_mode, args.atlas, args.leakage_correction,
+         roi_name, configs, args.sw_step, args.svm_c,
+         args.pseudo_trial_size, decode_tmin)
+        for subj_id in subjects
+    ]
 
-        result = _load_subject_roi(
-            subj_id, args.task, args.stim_class, args.method,
-            args.feature_mode, args.atlas, args.leakage_correction,
-            roi_name, fwd, src, roi_dict_full,
-        )
-        if result is None:
-            continue
-
-        X_roi, y, times, sfreq = result
-        tmin = times[0]
-
-        for cfg_idx, (clf_name, sw_dur, tuned) in enumerate(configs):
-            tuned_str = ' [tuned]' if tuned else ''
-            print(f'\n  Config {cfg_idx + 1}/{len(configs)}: '
-                  f'{clf_name}{tuned_str}, sw_dur={sw_dur}ms')
-
-            cfg_start = time.time()
-            results = sliding_window_svm_decode(
-                X_roi, y, sfreq, sw_dur, args.sw_step, tmin, decode_tmin,
-                feature_mode=args.feature_mode, times=times,
-                classifier=clf_name, svm_c=args.svm_c,
-                tune_hyperparams=tuned,
-                pseudo_trial_size=args.pseudo_trial_size,
-            )
-            cfg_time = time.time() - cfg_start
-
-            for r in results:
-                all_rows.append({
-                    'subject': subj_id,
-                    'classifier': clf_name,
-                    'sw_dur': sw_dur,
-                    'sw_step': args.sw_step,
-                    'tuned': tuned,
-                    'ms': r['ms'],
-                    'accuracy': r['SVM_acc'],
-                })
-
-            accs = [r['SVM_acc'] for r in results]
-            peak_acc = max(accs)
-            peak_ms = results[np.argmax(accs)]['ms']
-            print(f'    Peak: {peak_acc:.3f} at {peak_ms:.1f} ms '
-                  f'({cfg_time:.1f}s)')
+    if args.n_jobs > 1:
+        print(f'Running {len(subjects)} subjects across {args.n_jobs} workers...')
+        with Pool(
+            processes=args.n_jobs,
+            initializer=_init_worker,
+            initargs=(fwd, src, roi_dict_full),
+        ) as pool:
+            results_per_subject = pool.map(_process_subject, worker_args)
+        all_rows = [row for subj_rows in results_per_subject for row in subj_rows]
+    else:
+        # Sequential — use module-level globals directly
+        _init_worker(fwd, src, roi_dict_full)
+        all_rows = []
+        for wa in worker_args:
+            all_rows.extend(_process_subject(wa))
 
     total_time = (time.time() - total_start) / 60.0
 

@@ -11,6 +11,7 @@ Usage:
         --n-jobs 4 --feature-mode vertex_pca
 """
 import argparse
+import gc
 import os
 import sys
 import time
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT, SPEECH_ROIS,
-    SVM_C, PSEUDO_TRIAL_SIZE,
+    SVM_C, PSEUDO_TRIAL_SIZE, find_cached_npz,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
@@ -127,7 +128,7 @@ def main():
     print()
 
     # Build forward model (once, in the main process)
-    print('Setting up fsaverage forward model...')
+    print('Setting up fsaverage source space and ROI labels...')
     subjects_dir, fs_dir, src, bem = setup_fsaverage()
 
     if args.atlas in SPEECH_ROIS:
@@ -139,11 +140,24 @@ def main():
     if args.roi_subset:
         roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
 
-    print('\nBuilding forward solution...')
-    first_epochs, _, _ = load_subject_epochs(
-        subjects[0], args.task, args.stim_class
+    # Only build forward solution if at least one subject lacks cached data
+    any_uncached = any(
+        find_cached_npz(args.task, args.method, args.atlas, args.feature_mode,
+                        args.leakage_correction, s, args.stim_class) is None
+        for s in subjects
     )
-    fwd = make_forward(first_epochs.info, src, bem)
+    if any_uncached:
+        print('\nBuilding forward solution (uncached subjects detected)...')
+        first_epochs, _, _ = load_subject_epochs(
+            subjects[0], args.task, args.stim_class
+        )
+        fwd = make_forward(first_epochs.info, src, bem)
+        del first_epochs
+    else:
+        print('\nAll subjects cached — skipping forward model build.')
+        fwd = None
+    del bem
+    gc.collect()
 
     # Build parameter list for workers
     worker_args = [
