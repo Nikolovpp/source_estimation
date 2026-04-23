@@ -38,7 +38,7 @@ from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
 from inverse_pipelines import run_dspm_lowram, run_lcmv_lowram
 from svm_decoding import sliding_window_svm_decode
-from run_source_svm import _save_results, _save_roi_timeseries
+from run_source_svm import _save_results, _save_roi_timeseries, filter_roi_dict
 from plotting import save_sensor_erp, save_source_erp, save_svm_results
 
 
@@ -61,7 +61,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
                             skip_svm=False, skip_save_timeseries=False,
                             overwrite_timeseries=False,
                             atlas='aparc', leakage_correction=False,
-                            pseudo_trial_size=0, svm_c=1.0):
+                            pseudo_trial_size=0, svm_c=1.0,
+                            classifier='svm', tune_hyperparams=False):
     """Process a single subject using low-RAM inverse pipeline."""
     from run_source_svm import _load_cached_roi_data
 
@@ -81,6 +82,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
         print(f'    Source: {cached_npz}')
         roi_data, y, times, sfreq = _load_cached_roi_data(cached_npz,
                                                            feature_mode)
+        # Filter to ROI subset (_roi_dict may be filtered by --roi-subset)
+        roi_data = {k: v for k, v in roi_data.items() if k in _roi_dict}
         tmin_epoch = times[0]
         roi_names = list(roi_data.keys())
     else:
@@ -169,7 +172,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
             results = sliding_window_svm_decode(
                 roi_data[roi_name], y, sfreq, sw_dur, sw_step,
                 tmin_epoch, decode_tmin, feature_mode=feature_mode,
-                times=times, svm_c=svm_c,
+                times=times, classifier=classifier, svm_c=svm_c,
+                tune_hyperparams=tune_hyperparams,
                 pseudo_trial_size=pseudo_trial_size,
             )
             results_all_rois[roi_name] = results
@@ -190,7 +194,8 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
                       sw_dur, sw_step, results_all_rois, save_dir,
                       atlas=atlas, svm_c=svm_c,
                       leakage_correction=leakage_correction,
-                      pseudo_trial_size=pseudo_trial_size)
+                      pseudo_trial_size=pseudo_trial_size,
+                      classifier=classifier)
 
     subj_time = (time.time() - subj_start) / 60.0
     print(f'\n  {subj_id} done in {subj_time:.1f} minutes')
@@ -205,7 +210,8 @@ def _worker(args):
     (subj_id, task_cond, stim_class, method, feature_mode,
      sw_dur, sw_step, save_dir, skip_svm,
      skip_save_timeseries, overwrite_timeseries,
-     atlas, leakage_correction, pseudo_trial_size, svm_c) = args
+     atlas, leakage_correction, pseudo_trial_size, svm_c,
+     classifier, tune_hyperparams) = args
     try:
         return _process_subject_lowram(
             subj_id, task_cond, stim_class, method, feature_mode,
@@ -214,6 +220,7 @@ def _worker(args):
             overwrite_timeseries=overwrite_timeseries,
             atlas=atlas, leakage_correction=leakage_correction,
             pseudo_trial_size=pseudo_trial_size, svm_c=svm_c,
+            classifier=classifier, tune_hyperparams=tune_hyperparams,
         )
     except Exception as e:
         print(f'\n  FAILED {subj_id}: {e}')
@@ -254,6 +261,14 @@ def parse_args():
                         help='Pseudo-trial group size; 0 = disabled (default: 0)')
     parser.add_argument('--svm-c', type=float, default=SVM_C,
                         help=f'SVM regularization parameter C (default: {SVM_C})')
+    parser.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
+                        help='Subset of ROI names to process (default: all). '
+                             'Case-insensitive, e.g., --roi-subset Temporal vSMC')
+    parser.add_argument('--classifier', default='svm',
+                        choices=['svm', 'lda', 'logistic'],
+                        help='Classifier algorithm (default: svm)')
+    parser.add_argument('--tune-hyperparams', action='store_true', default=False,
+                        help='Enable nested CV for hyperparameter tuning')
     return parser.parse_args()
 
 
@@ -270,9 +285,12 @@ def main():
     print(f'  Method:       {args.method}')
     print(f'  Atlas:        {args.atlas}')
     print(f'  Feature mode: {args.feature_mode}')
+    print(f'  Classifier:   {args.classifier}')
+    print(f'  Tune HP:      {args.tune_hyperparams}')
     print(f'  SVM C:        {args.svm_c}')
     print(f'  Pseudo-trial: {args.pseudo_trial_size if args.pseudo_trial_size > 0 else "disabled"}')
     print(f'  Leakage corr: {args.leakage_correction}')
+    print(f'  ROI subset:   {args.roi_subset if args.roi_subset else "all"}')
     print(f'  Workers:      {args.n_jobs}')
     print(f'  Subjects:     {len(subjects)}')
     print()
@@ -286,6 +304,9 @@ def main():
                                      composite_rois=SPEECH_ROIS[args.atlas])
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=args.atlas)
+
+    if args.roi_subset:
+        roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
 
     print('\nBuilding forward solution...')
     first_epochs, _, _ = load_subject_epochs(
@@ -301,7 +322,7 @@ def main():
          args.feature_mode, args.sw_dur, args.sw_step, SVM_OUTPUT_ROOT,
          args.skip_svm, args.skip_save_timeseries, args.overwrite_timeseries,
          args.atlas, args.leakage_correction, args.pseudo_trial_size,
-         args.svm_c)
+         args.svm_c, args.classifier, args.tune_hyperparams)
         for subj_id in subjects
     ]
 
