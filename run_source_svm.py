@@ -17,6 +17,7 @@ Usage:
         --feature-mode vertex_pca --subjects EEGPROD4001 EEGPROD4003
 """
 import argparse
+import gc
 import os
 import sys
 import time
@@ -476,7 +477,7 @@ def main():
     print()
 
     # Step 0: Build forward model (shared across subjects)
-    print('Setting up fsaverage forward model...')
+    print('Setting up fsaverage source space and ROI labels...')
     subjects_dir, fs_dir, src, bem = setup_fsaverage()
 
     if atlas in SPEECH_ROIS:
@@ -488,12 +489,24 @@ def main():
     if args.roi_subset:
         roi_dict = filter_roi_dict(roi_dict, args.roi_subset, atlas)
 
-    # We need to build the forward solution using the first subject's info
-    # to get the correct channel configuration. Since all subjects share
-    # the same montage, we build it once.
-    print('\nLoading first subject to build forward solution...')
-    first_epochs, _, _ = load_subject_epochs(subjects[0], task_cond, stim_class)
-    fwd = make_forward(first_epochs.info, src, bem)
+    # Only build forward solution if at least one subject lacks cached data
+    any_uncached = any(
+        find_cached_npz(task_cond, method, atlas, feature_mode,
+                        leakage_correction, s, stim_class) is None
+        or overwrite_timeseries
+        for s in subjects
+    )
+    if any_uncached:
+        print('\nBuilding forward solution (uncached subjects detected)...')
+        first_epochs, _, _ = load_subject_epochs(subjects[0], task_cond,
+                                                  stim_class)
+        fwd = make_forward(first_epochs.info, src, bem)
+        del first_epochs
+    else:
+        print('\nAll subjects cached — skipping forward model build.')
+        fwd = None
+    del bem
+    gc.collect()
 
     # Process all subjects
     total_start = time.time()
