@@ -21,7 +21,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold, GridSearchCV
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LogisticRegression
 
 import mne
 
@@ -112,10 +114,61 @@ def _apply_sliding_window_average(data_2d, sfreq, sw_dur_ms, sw_step_ms):
     return windowed
 
 
+def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
+    """Build sklearn pipeline and optional hyperparameter grid.
+
+    Parameters
+    ----------
+    classifier : str
+        'svm', 'lda', or 'logistic'.
+    feature_mode : str
+        'pca_flip', 'vertex_pca', or 'vertex_selectkbest'.
+    n_features : int
+        Number of input features (for SelectKBest clamping).
+    svm_c : float
+        Regularization parameter C (used by svm and logistic).
+
+    Returns
+    -------
+    pipeline : sklearn.pipeline.Pipeline
+    param_grid : dict or None
+        Grid for nested CV.  None means no tunable hyperparameters.
+    """
+    steps = [StandardScaler()]
+
+    if feature_mode == 'vertex_pca':
+        steps.append(PCA(n_components=0.95))
+    elif feature_mode == 'vertex_selectkbest':
+        steps.append(SelectKBest(f_classif, k=min(200, n_features)))
+
+    if classifier == 'svm':
+        steps.append(LinearSVC(C=svm_c, max_iter=5000))
+        param_grid = {'linearsvc__C': [0.01, 0.1, 1.0, 10.0]}
+    elif classifier == 'lda':
+        steps.append(LinearDiscriminantAnalysis(
+            solver='lsqr', shrinkage='auto',
+        ))
+        param_grid = None  # shrinkage estimated analytically (Ledoit-Wolf)
+    elif classifier == 'logistic':
+        steps.append(LogisticRegression(
+            penalty='elasticnet', solver='saga', l1_ratio=0.5,
+            C=svm_c, max_iter=5000,
+        ))
+        param_grid = {
+            'logisticregression__C': [0.01, 0.1, 1.0, 10.0],
+            'logisticregression__l1_ratio': [0.1, 0.5, 0.9],
+        }
+    else:
+        raise ValueError(f'Unknown classifier: {classifier}')
+
+    return make_pipeline(*steps), param_grid
+
+
 def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
                               tmin, decode_tmin, feature_mode='pca_flip',
-                              times=None, svm_c=1.0, pseudo_trial_size=0,
-                              random_state=42):
+                              times=None, classifier='svm', svm_c=1.0,
+                              tune_hyperparams=False,
+                              pseudo_trial_size=0, random_state=42):
     """
     Run SVM decoding with a sliding window across time for one ROI.
 
@@ -151,8 +204,16 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
         epochs.times or eeg_dict['times'].  When provided, crop indices
         and window-center timestamps are derived from this vector rather
         than computed arithmetically from tmin and sfreq.
+    classifier : str
+        Classifier algorithm: 'svm' (LinearSVC), 'lda' (shrinkage LDA),
+        or 'logistic' (elastic-net LogisticRegression).
     svm_c : float
-        Regularization parameter C for LinearSVC (default 1.0).
+        Regularization parameter C for SVM/logistic (default 1.0).
+        Ignored when classifier='lda'.
+    tune_hyperparams : bool
+        When True, use nested CV (inner 3-fold GridSearchCV) to select
+        the best hyperparameters within each outer training fold.
+        Has no effect for classifier='lda' (no tunable hyperparams).
     pseudo_trial_size : int
         Number of same-class trials to average into each pseudo-trial
         within CV training folds.  0 disables pseudo-trial averaging.
@@ -217,33 +278,25 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
         )
 
     # Build classifier pipeline
-    if feature_mode == 'pca_flip':
-        clf = make_pipeline(StandardScaler(), LinearSVC(C=svm_c, max_iter=5000))
-    elif feature_mode == 'vertex_pca':
-        clf = make_pipeline(
-            StandardScaler(),
-            PCA(n_components=0.95),
-            LinearSVC(C=svm_c, max_iter=5000),
-        )
-    elif feature_mode == 'vertex_selectkbest':
-        n_select = min(200, n_features)
-        clf = make_pipeline(
-            StandardScaler(),
-            SelectKBest(f_classif, k=n_select),
-            LinearSVC(C=svm_c, max_iter=5000),
+    pipeline, param_grid = _build_classifier_pipeline(
+        classifier, feature_mode, n_features, svm_c,
+    )
+    if tune_hyperparams and param_grid is not None:
+        clf = GridSearchCV(
+            pipeline, param_grid, cv=3, scoring='accuracy', refit=True,
         )
     else:
-        raise ValueError(f'Unknown feature_mode: {feature_mode}')
+        clf = pipeline
 
     results = []
     for w in range(n_windows):
         X_win = X_windowed[:, :, w]
 
-        # Run repeated CV (matches existing pipeline: 5 repeats × 5 folds)
+        # Run repeated stratified CV (5 repeats × 5 folds)
         mean_list = []
         for rep in range(N_CV_REPEATS):
             seed = random_state + rep
-            kf = KFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=seed)
+            kf = StratifiedKFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=seed)
             rng = np.random.default_rng(seed)
 
             fold_scores = []

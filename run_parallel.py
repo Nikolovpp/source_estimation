@@ -29,7 +29,7 @@ from config import (
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
-from run_source_svm import process_subject
+from run_source_svm import process_subject, filter_roi_dict
 
 
 # Module-level globals set by the initializer so each worker can access them
@@ -50,13 +50,15 @@ def _worker(args):
     """Worker function for parallel processing."""
     (subj_id, task_cond, stim_class, method, feature_mode,
      sw_dur, sw_step, save_dir, skip_svm,
-     atlas, leakage_correction, pseudo_trial_size, svm_c) = args
+     atlas, leakage_correction, pseudo_trial_size, svm_c,
+     classifier, tune_hyperparams) = args
     return process_subject(
         subj_id, task_cond, stim_class, method, feature_mode,
         _fwd, _src, _roi_dict, sw_dur, sw_step, save_dir,
         skip_svm=skip_svm,
         atlas=atlas, leakage_correction=leakage_correction,
         pseudo_trial_size=pseudo_trial_size, svm_c=svm_c,
+        classifier=classifier, tune_hyperparams=tune_hyperparams,
     )
 
 
@@ -90,6 +92,14 @@ def parse_args():
                         help='Pseudo-trial group size; 0 = disabled (default: 0)')
     parser.add_argument('--svm-c', type=float, default=SVM_C,
                         help=f'SVM regularization parameter C (default: {SVM_C})')
+    parser.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
+                        help='Subset of ROI names to process (default: all). '
+                             'Case-insensitive, e.g., --roi-subset Temporal vSMC')
+    parser.add_argument('--classifier', default='svm',
+                        choices=['svm', 'lda', 'logistic'],
+                        help='Classifier algorithm (default: svm)')
+    parser.add_argument('--tune-hyperparams', action='store_true', default=False,
+                        help='Enable nested CV for hyperparameter tuning')
     return parser.parse_args()
 
 
@@ -106,9 +116,12 @@ def main():
     print(f'  Method:       {args.method}')
     print(f'  Atlas:        {args.atlas}')
     print(f'  Feature mode: {args.feature_mode}')
+    print(f'  Classifier:   {args.classifier}')
+    print(f'  Tune HP:      {args.tune_hyperparams}')
     print(f'  SVM C:        {args.svm_c}')
     print(f'  Pseudo-trial: {args.pseudo_trial_size if args.pseudo_trial_size > 0 else "disabled"}')
     print(f'  Leakage corr: {args.leakage_correction}')
+    print(f'  ROI subset:   {args.roi_subset if args.roi_subset else "all"}')
     print(f'  Workers:      {args.n_jobs}')
     print(f'  Subjects:     {len(subjects)}')
     print()
@@ -123,6 +136,9 @@ def main():
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=args.atlas)
 
+    if args.roi_subset:
+        roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
+
     print('\nBuilding forward solution...')
     first_epochs, _, _ = load_subject_epochs(
         subjects[0], args.task, args.stim_class
@@ -135,7 +151,7 @@ def main():
          args.feature_mode, args.sw_dur, args.sw_step, SVM_OUTPUT_ROOT,
          args.skip_svm,
          args.atlas, args.leakage_correction, args.pseudo_trial_size,
-         args.svm_c)
+         args.svm_c, args.classifier, args.tune_hyperparams)
         for subj_id in subjects
     ]
 

@@ -118,7 +118,59 @@ def parse_args():
         '--svm-c', type=float, default=SVM_C,
         help=f'SVM regularization parameter C (default: {SVM_C})'
     )
+    parser.add_argument(
+        '--roi-subset', nargs='+', default=None, metavar='ROI',
+        help='Subset of ROI names to process (default: all). '
+             'Case-insensitive match against ROI names in SPEECH_ROIS, '
+             'e.g., --roi-subset Temporal vSMC DLPFC'
+    )
+    parser.add_argument(
+        '--classifier', default='svm',
+        choices=['svm', 'lda', 'logistic'],
+        help='Classifier algorithm: svm (LinearSVC), lda (shrinkage LDA), '
+             'logistic (elastic-net LogisticRegression) (default: svm)'
+    )
+    parser.add_argument(
+        '--tune-hyperparams', action='store_true', default=False,
+        help='Enable nested CV (inner 3-fold GridSearchCV) for '
+             'hyperparameter selection. No effect for lda.'
+    )
     return parser.parse_args()
+
+
+def filter_roi_dict(roi_dict, roi_subset, atlas):
+    """Filter roi_dict to only include requested ROI names (case-insensitive).
+
+    Parameters
+    ----------
+    roi_dict : dict
+        Full ROI dictionary from build_roi_labels().
+    roi_subset : list of str
+        ROI names requested by the user (via --roi-subset).
+    atlas : str
+        Atlas name (for error messages).
+
+    Returns
+    -------
+    filtered : dict
+        Subset of roi_dict matching the requested names.
+    """
+    lower_map = {k.lower(): k for k in roi_dict}
+    filtered = {}
+    missing = []
+    for name in roi_subset:
+        actual = lower_map.get(name.lower())
+        if actual:
+            filtered[actual] = roi_dict[actual]
+        else:
+            missing.append(name)
+    if missing:
+        print(f'ERROR: ROIs not found in {atlas} atlas: {missing}')
+        print(f'Available ROIs: {sorted(roi_dict.keys())}')
+        sys.exit(1)
+    print(f'  ROI subset:   {list(filtered.keys())} '
+          f'({len(filtered)}/{len(roi_dict)} ROIs)')
+    return filtered
 
 
 def _load_cached_roi_data(npz_path, feature_mode):
@@ -152,7 +204,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
                     skip_svm=False, skip_save_timeseries=False,
                     overwrite_timeseries=False,
                     atlas='aparc', leakage_correction=False,
-                    pseudo_trial_size=0, svm_c=1.0):
+                    pseudo_trial_size=0, svm_c=1.0,
+                    classifier='svm', tune_hyperparams=False):
     """Process a single subject through the full pipeline."""
     subj_start = time.time()
     print(f'\n{"="*60}')
@@ -171,6 +224,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
         print(f'    Source: {cached_npz}')
         roi_data, y, times, sfreq = _load_cached_roi_data(cached_npz,
                                                            feature_mode)
+        # Filter to ROI subset (roi_dict may be filtered by --roi-subset)
+        roi_data = {k: v for k, v in roi_data.items() if k in roi_dict}
         tmin = times[0]
     else:
         print(f'\n  NO PRE-COMPUTED ROI SOURCE TIME SERIES FOUND '
@@ -254,7 +309,9 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
             results = sliding_window_svm_decode(
                 X_roi, y, sfreq, sw_dur, sw_step, tmin, decode_tmin,
                 feature_mode=feature_mode, times=times,
-                svm_c=svm_c, pseudo_trial_size=pseudo_trial_size,
+                classifier=classifier, svm_c=svm_c,
+                tune_hyperparams=tune_hyperparams,
+                pseudo_trial_size=pseudo_trial_size,
             )
             results_all_rois[roi_name] = results
 
@@ -269,7 +326,8 @@ def process_subject(subj_id, task_cond, stim_class, method, feature_mode,
                       sw_dur, sw_step, results_all_rois, save_dir,
                       atlas=atlas, svm_c=svm_c,
                       leakage_correction=leakage_correction,
-                      pseudo_trial_size=pseudo_trial_size)
+                      pseudo_trial_size=pseudo_trial_size,
+                      classifier=classifier)
 
     subj_time = (time.time() - subj_start) / 60.0
     print(f'\n  {subj_id} done in {subj_time:.1f} minutes')
@@ -334,7 +392,7 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
 def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                   sw_dur, sw_step, results_all_rois, save_dir,
                   atlas='aparc', svm_c=1.0, leakage_correction=False,
-                  pseudo_trial_size=0):
+                  pseudo_trial_size=0, classifier='svm'):
     """Save results in CSV format matching the existing pipeline."""
     # Create output directory (includes atlas and leakage tag for separation)
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
@@ -350,6 +408,13 @@ def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
         / f'{subj_id}_{task_cond}_{stim_class}_{sw_dur}_{sw_step}.csv'
     )
 
+    if classifier == 'lda':
+        best_params_str = 'lda(shrinkage=auto)'
+    elif classifier == 'logistic':
+        best_params_str = f'logistic(C={svm_c}, elasticnet)'
+    else:
+        best_params_str = f'svm(C={svm_c})'
+
     rows = []
     for roi_name, results in results_all_rois.items():
         # Sanitize ROI names: replace spaces with underscores for CSV compat
@@ -360,7 +425,7 @@ def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                 'ms': r['ms'],
                 'mean_list': r['mean_list'],
                 'SVM_acc': r['SVM_acc'],
-                'best_params': f'C={svm_c}',
+                'best_params': best_params_str,
             })
 
     df = pd.DataFrame(rows, columns=['key', 'ms', 'mean_list', 'SVM_acc', 'best_params'])
@@ -385,6 +450,8 @@ def main():
     leakage_correction = args.leakage_correction
     pseudo_trial_size = args.pseudo_trial_size
     svm_c = args.svm_c
+    classifier = args.classifier
+    tune_hyperparams = args.tune_hyperparams
 
     setup_logging(task_cond, stim_class, method, atlas, feature_mode,
                   runner_name='sequential')
@@ -395,12 +462,15 @@ def main():
     print(f'  Method:       {method}')
     print(f'  Atlas:        {atlas}')
     print(f'  Feature mode: {feature_mode}')
+    print(f'  Classifier:   {classifier}')
+    print(f'  Tune HP:      {tune_hyperparams}')
     print(f'  SW duration:  {sw_dur} ms')
     print(f'  SW step:      {sw_step} ms')
     print(f'  SVM C:        {svm_c}')
     print(f'  Pseudo-trial: {pseudo_trial_size if pseudo_trial_size > 0 else "disabled"}')
     print(f'  Leakage corr: {leakage_correction}')
     print(f'  Subjects:     {len(subjects)}')
+    print(f'  ROI subset:   {args.roi_subset if args.roi_subset else "all"}')
     print(f'  Skip SVM:     {skip_svm}')
     print(f'  Save .npz:    {not skip_save_timeseries}')
     print()
@@ -414,6 +484,9 @@ def main():
                                      composite_rois=SPEECH_ROIS[atlas])
     else:
         roi_dict = build_roi_labels(subjects_dir, atlas=atlas)
+
+    if args.roi_subset:
+        roi_dict = filter_roi_dict(roi_dict, args.roi_subset, atlas)
 
     # We need to build the forward solution using the first subject's info
     # to get the correct channel configuration. Since all subjects share
@@ -435,6 +508,8 @@ def main():
             leakage_correction=leakage_correction,
             pseudo_trial_size=pseudo_trial_size,
             svm_c=svm_c,
+            classifier=classifier,
+            tune_hyperparams=tune_hyperparams,
         )
 
     total_time = (time.time() - total_start) / 60.0
