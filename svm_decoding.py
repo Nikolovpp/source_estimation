@@ -4,10 +4,11 @@ SVM decoding in source space with sliding windows.
 Mirrors the existing sensor-space SVM pipeline but operates on
 source-estimated vertex time courses within cortical ROIs.
 
-Three feature-extraction strategies are supported:
+Four feature-extraction strategies are supported:
   1. 'pca_flip' — single virtual sensor per ROI (extract_label_time_course)
   2. 'vertex_pca' — all vertices in ROI, PCA within sklearn pipeline
-  3. 'vertex_selectkbest' — all vertices, supervised feature selection
+  3. 'vertex_selectkbest' — all vertices, SelectKBest(k=min(200, n_features))
+  4. 'vertex_selectkbest_all' — all vertices, no feature selection (pass-through)
 
 Output CSV format matches the existing pipeline:
   Key, ms, mean_list, SVM_acc, best_params
@@ -122,7 +123,8 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
     classifier : str
         'svm', 'lda', or 'logistic'.
     feature_mode : str
-        'pca_flip', 'vertex_pca', or 'vertex_selectkbest'.
+        'pca_flip', 'vertex_pca', 'vertex_selectkbest',
+        or 'vertex_selectkbest_all'.
     n_features : int
         Number of input features (for SelectKBest clamping).
     svm_c : float
@@ -140,6 +142,8 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
         steps.append(PCA(n_components=0.95))
     elif feature_mode == 'vertex_selectkbest':
         steps.append(SelectKBest(f_classif, k=min(200, n_features)))
+    elif feature_mode == 'vertex_selectkbest_all':
+        pass  # no feature selection — all vertices go to the classifier
 
     if classifier == 'svm':
         steps.append(LinearSVC(C=svm_c, max_iter=5000))
@@ -198,7 +202,8 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
     decode_tmin : float
         Start time for SVM decoding in seconds (baseline is excluded).
     feature_mode : str
-        'pca_flip', 'vertex_pca', or 'vertex_selectkbest'.
+        'pca_flip', 'vertex_pca', 'vertex_selectkbest',
+        or 'vertex_selectkbest_all'.
     times : np.ndarray, optional
         The exact time vector (in seconds) for the epoch, e.g. from
         epochs.times or eeg_dict['times'].  When provided, crop indices

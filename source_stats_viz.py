@@ -96,7 +96,8 @@ def parse_args():
     p.add_argument('--method', required=True,
                    choices=['dSPM', 'LCMV'])
     p.add_argument('--feature-mode', required=True,
-                   choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'])
+                   choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
+                            'vertex_selectkbest_all'])
     p.add_argument('--atlas', required=True,
                    choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
     p.add_argument('--leakage-correction', action='store_true', default=False)
