@@ -230,6 +230,11 @@ Interactive percent-format notebook for step-by-step exploration.
 | `pca_flip` | 1 | PCA-flipped summary time course (MNE `extract_label_time_course`) |
 | `vertex_pca` | All vertices, PCA-reduced | All vertex time courses with PCA (95% variance) in the sklearn pipeline |
 | `vertex_selectkbest` | All vertices, top-k selected | All vertex time courses with supervised feature selection (ANOVA F-test, k=200) |
+| `vertex_selectkbest_all` | All vertices, no selection | All vertex time courses passed straight to the classifier — relies on classifier regularization |
+
+> **Note on `vertex_selectkbest_all`**: with ~500 vertices and only ~70 training samples per CV fold, accuracy is sensitive to the regularization strength. Use `--classifier svm` or `--classifier logistic` with `--tune-hyperparams`. Avoid `--classifier lda` — with `n_features ≫ n_samples` the covariance estimate collapses toward naive Bayes even with shrinkage.
+>
+> All `vertex_*` modes share the same ROI timeseries cache (post-inverse payload is identical), so switching between them does not re-run the inverse. SVM result CSVs are kept in separate per-mode directories.
 
 ## ROIs
 
@@ -411,7 +416,7 @@ python run_source_svm.py \
     --task {perception,overtProd} \
     --stim-class {prodDiff,percDiff} \
     --method {dSPM,LCMV} \
-    [--feature-mode {pca_flip,vertex_pca,vertex_selectkbest}] \
+    [--feature-mode {pca_flip,vertex_pca,vertex_selectkbest,vertex_selectkbest_all}] \
     [--subjects EEGPROD4001 EEGPROD4003 ...] \
     [--sw-dur 40] [--sw-step 5]
 

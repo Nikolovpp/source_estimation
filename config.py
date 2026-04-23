@@ -450,19 +450,39 @@ DECODE_TMIN = {
 }
 
 
+def cache_feat_mode(feat_mode):
+    """Normalize a feature_mode to its cache-directory name.
+
+    All ``vertex_*`` modes share the same extracted payload
+    (``(n_epochs, n_vertices, n_times)`` per ROI), so they share one
+    cache directory. ``pca_flip`` remains separate.
+    """
+    if feat_mode.startswith('vertex'):
+        return 'vertex'
+    return feat_mode
+
+
 def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
                     subj, stim_class):
     """Return the path to a cached .npz ROI timeseries file, or None.
 
     Checks ROI_TIMESERIES_ROOT first, then ROI_TIMESERIES_EXTERNAL.
+    Also falls back to the legacy per-feat_mode directory name so
+    existing ``vertex_pca`` / ``vertex_selectkbest`` caches keep working.
     """
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
-    rel = Path(task) / method / atlas / feat_mode / leakage_tag / f'{subj}_{task}_{stim_class}.npz'
-    primary = ROI_TIMESERIES_ROOT / rel
-    if primary.exists():
-        return primary
+    filename = f'{subj}_{task}_{stim_class}.npz'
+    candidates = [cache_feat_mode(feat_mode)]
+    if feat_mode not in candidates:
+        candidates.append(feat_mode)
+
+    roots = [ROI_TIMESERIES_ROOT]
     if ROI_TIMESERIES_EXTERNAL is not None:
-        fallback = ROI_TIMESERIES_EXTERNAL / rel
-        if fallback.exists():
-            return fallback
+        roots.append(ROI_TIMESERIES_EXTERNAL)
+
+    for root in roots:
+        for name in candidates:
+            path = root / task / method / atlas / name / leakage_tag / filename
+            if path.exists():
+                return path
     return None

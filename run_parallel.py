@@ -74,7 +74,8 @@ def parse_args():
     parser.add_argument('--method', required=True,
                         choices=['dSPM', 'LCMV'])
     parser.add_argument('--feature-mode', default='pca_flip',
-                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'])
+                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
+                                 'vertex_selectkbest_all'])
     parser.add_argument('--subjects', nargs='+', default=None)
     parser.add_argument('--n-jobs', type=int, default=4,
                         help='Number of parallel workers (default: 4)')

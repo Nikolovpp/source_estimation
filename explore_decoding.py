@@ -82,7 +82,8 @@ def parse_args():
     parser.add_argument('--roi', required=True,
                         help='ROI name to decode (case-insensitive)')
     parser.add_argument('--feature-mode', default='pca_flip',
-                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'])
+                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
+                                 'vertex_selectkbest_all'])
     parser.add_argument('--subjects', nargs='+', default=None,
                         help='Subjects to process (default: all)')
     parser.add_argument('--classifiers', nargs='+',

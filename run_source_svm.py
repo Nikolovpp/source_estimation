@@ -15,6 +15,20 @@ Usage:
     python run_source_svm.py --task perception --stim-class percDiff --method LCMV
     python run_source_svm.py --task overtProd --stim-class prodDiff --method dSPM \
         --feature-mode vertex_pca --subjects EEGPROD4001 EEGPROD4003
+
+Feature-mode notes:
+    All 'vertex_*' feature modes share one ROI timeseries cache directory
+    (.../{atlas}/vertex/...) because the post-inverse payload is identical;
+    switching between them does not re-run the inverse. SVM result CSVs are
+    still kept in per-mode directories so results do not collide.
+
+    'vertex_selectkbest_all' passes every vertex to the classifier with no
+    feature selection. With ~500 vertices and ~70 training samples per CV
+    fold this mode is highly sensitive to the regularization strength —
+    pair it with --classifier svm or --classifier logistic plus
+    --tune-hyperparams. Avoid --classifier lda in this mode; the
+    covariance estimate collapses under n_features >> n_samples even with
+    Ledoit-Wolf shrinkage.
 """
 import argparse
 import gc
@@ -38,7 +52,7 @@ from config import (
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT, ROI_TIMESERIES_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     SVM_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
-    find_cached_npz,
+    find_cached_npz, cache_feat_mode,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
@@ -73,7 +87,8 @@ def parse_args():
     )
     parser.add_argument(
         '--feature-mode', default='pca_flip',
-        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest'],
+        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
+                 'vertex_selectkbest_all'],
         help='Feature extraction strategy for SVM (default: pca_flip)'
     )
     parser.add_argument(
@@ -361,7 +376,7 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     ts_dir = (
         ROI_TIMESERIES_ROOT / task_cond / method / atlas
-        / feature_mode / leakage_tag
+        / cache_feat_mode(feature_mode) / leakage_tag
     )
     ts_dir.mkdir(parents=True, exist_ok=True)
 
