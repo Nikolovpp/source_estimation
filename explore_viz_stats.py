@@ -84,29 +84,30 @@ def find_contiguous_clusters(mask):
 def _cluster_test(acc_matrix):
     """Run one-tailed cluster-based permutation test on (n_subj, n_times).
 
-    Accuracies are centered at chance (0.5) before testing.  Returns a
-    boolean significance mask over time, aggregated p-values per time
-    point, and the list of clusters with their p-values.
+    Verbatim port of the cluster test in
+    ``source_stats_viz.compute_stats`` — accuracies centered at chance
+    (0.5), ``threshold=None`` (MNE picks the default t-threshold),
+    ``tail=1``, ``out_type='mask'``, p < 0.05 to flag a cluster
+    significant.  Returns a per-time sig mask, per-time cluster
+    p-values, and the raw (mask, pv) pairs for caller inspection.
     """
     n_subj, n_times = acc_matrix.shape
     X = acc_matrix - 0.5
 
-    T_obs, clusters, pv, _ = permutation_cluster_1samp_test(
+    T_obs_c, clusters_c, pv_c, _ = permutation_cluster_1samp_test(
         X, threshold=None, n_permutations=N_PERMUTATIONS,
         tail=1, out_type='mask', verbose=False,
     )
 
-    sig_mask = np.zeros(n_times, dtype=bool)
-    p_per_time = np.ones(n_times)
-    for i, cpv in enumerate(pv):
-        idx = np.where(clusters[i])[0]
-        if len(idx) == 0:
-            continue
-        p_per_time[idx] = np.minimum(p_per_time[idx], cpv)
+    cluster_mask = np.zeros(n_times, dtype=bool)
+    cluster_pvals_arr = np.ones(n_times)
+    for ic, cpv in enumerate(pv_c):
+        cluster_points = np.where(clusters_c[ic])[0]
+        cluster_pvals_arr[cluster_points] = cpv
         if cpv < ALPHA:
-            sig_mask[idx] = True
+            cluster_mask[cluster_points] = True
 
-    return sig_mask, p_per_time, list(zip(clusters, pv))
+    return cluster_mask, cluster_pvals_arr, list(zip(clusters_c, pv_c))
 
 
 def _build_accuracy_matrix(df_subset, ms_values):
