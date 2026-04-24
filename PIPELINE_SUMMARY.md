@@ -31,6 +31,8 @@ when brain regions discriminate between stimulus classes.
 | `source_stats_viz.py` | Group-level statistics and visualization |
 | `validate_pipeline.py` | End-to-end validation / smoke test |
 | `visualize_rois.py` | Interactive and publication-ready ROI visualization on fsaverage surface |
+| `explore_decoding.py` | Exploratory sweep over classifiers, window durations, and tuning strategies for a single ROI (decoding only) |
+| `explore_viz_stats.py` | Cluster-permutation stats and comparison figures from `explore_decoding.py` output |
 
 ---
 
@@ -580,9 +582,29 @@ For each ROI independently:
 2. At each time window center:
    - Extract features for that window across all epochs
    - Run `RepeatedStratifiedKFold` (5 splits × 5 repeats = 25 fits)
-   - Classifier: `LinearSVC` (for `pca_flip`) or `Pipeline[PCA/SelectKBest → LinearSVC]` (for vertex modes)
+   - Classifier: one of three options (see below), wrapped in a `Pipeline`
+     with `StandardScaler` and the mode-specific feature reducer (`PCA` /
+     `SelectKBest` / none)
    - Record mean cross-validated accuracy
 3. Save results as CSV: columns `key` (ROI), `ms` (time), `SVM_acc` (accuracy)
+
+#### Classifier options (`--classifier`)
+
+| Classifier | sklearn class | Regularization | Tunable hyperparameters | When to prefer |
+|------------|---------------|----------------|-------------------------|-----------------|
+| `svm` (default) | `LinearSVC` | L2, controlled by `C` | `C ∈ {0.01, 0.1, 1.0, 10.0}` | General-purpose linear decoder; robust with low-variance features |
+| `lda` | `LinearDiscriminantAnalysis` (lsqr + Ledoit-Wolf shrinkage) | Analytic shrinkage toward diagonal | *none* — shrinkage chosen analytically | Best when features are approximately Gaussian and n_samples > n_features |
+| `logistic` | `LogisticRegression` (elastic-net, saga) | Mixed L1/L2 (`C`, `l1_ratio`) | `C ∈ {0.01, 0.1, 1.0, 10.0}`, `l1_ratio ∈ {0.1, 0.5, 0.9}` | Many correlated features; sparse solutions desired |
+
+#### Hyperparameter tuning (`--tune-hyperparams`)
+
+When enabled, an inner 3-fold `GridSearchCV` is nested inside each outer CV
+training fold to select the best hyperparameters. The outer 5×5 repeated CV
+continues to provide the unbiased generalization estimate. For `lda` this
+flag has no effect (no tunable hyperparameters). The cost is a ~3× runtime
+multiplier per window, times the grid size.
+
+---
 
 ### Step 6: Group-Level Statistics (`source_stats_viz.py`)
 
@@ -673,6 +695,167 @@ the 16 speech-network ROIs.
 
 ---
 
+## Exploratory Parameter Search (`explore_decoding.py`)
+
+The main pipeline (`run_source_svm.py`) is designed to run one fully-specified
+configuration across all subjects and ROIs. Before committing to that full
+sweep, `explore_decoding.py` runs a small, focused parameter search on a
+**single ROI** to evaluate which classifier, window duration, and tuning
+strategy is best suited to the signal in that region.
+
+### Motivation
+
+Choosing a decoder is a trade-off between inductive bias (how well the model
+assumes the data look), sample efficiency (how many trials are needed to fit
+stably), and computational cost. Different ROIs in the speech network carry
+information with very different spatiotemporal statistics — a brief,
+phase-locked response in early auditory cortex is best captured by a short
+window, while sustained articulatory planning in vSMC or IFG may need tens
+of ms to accumulate. Rather than guessing, this script quantifies the
+trade-off empirically on cached per-subject data and exports both numerical
+summaries and publication-ready comparison plots.
+
+### Configuration axes
+
+Each call sweeps the Cartesian product of three axes on one ROI:
+
+| Axis | CLI flag | Defaults | Typical range |
+|------|----------|----------|---------------|
+| Classifier | `--classifiers` | `svm lda logistic` | any subset of the three |
+| Sliding-window duration | `--sw-durs` | `20 40 60 80 100` (ms) | 10–200 ms |
+| Nested-CV tuning | `--tune-hyperparams` | off | on/off |
+
+With tuning enabled, each non-LDA classifier is run **twice** — once at the
+default hyperparameters, once with `GridSearchCV` — so the user sees the
+tuning lift directly.
+
+### Classifier trade-offs
+
+**`svm` (LinearSVC)** — hinge-loss SVM with L2 penalty.
+- *Pros*: well-tested baseline in neuroscience decoding; max-margin objective
+  is robust to outliers; fast to fit.
+- *Cons*: a single `C` must control both margin softness and effective
+  regularization strength; with very high-dimensional features (e.g.
+  `vertex_selectkbest_all`) the default `C=1.0` is often too weak.
+- *When it wins*: moderate feature counts (`pca_flip`, `vertex_pca`) and
+  tasks where the discriminative signal is a simple linear projection.
+
+**`lda` (shrinkage LDA)** — generative linear discriminant with Ledoit-Wolf
+shrinkage on the within-class covariance.
+- *Pros*: zero free hyperparameters (shrinkage is estimated analytically),
+  so no tuning overhead; statistically efficient when the class-conditional
+  distributions are approximately Gaussian; often the strongest single-ROI
+  baseline on `pca_flip` features with ~100–200 trials per class.
+- *Cons*: the shrinkage target is a scaled identity — when `n_features ≫
+  n_samples` (e.g. `vertex_selectkbest_all` with ~500 vertices and ~70
+  training samples per fold), the covariance estimate collapses and
+  performance degrades sharply. **Do not pair LDA with
+  `vertex_selectkbest_all`.** No tunable hyperparameters → `--tune-
+  hyperparams` is silently skipped for this classifier.
+- *When it wins*: `pca_flip` mode where features are low-dimensional,
+  roughly Gaussian, and the decision boundary is truly linear.
+
+**`logistic` (elastic-net LogisticRegression)** — regularized logistic
+regression mixing L1 and L2 penalties via `l1_ratio`.
+- *Pros*: the L1 component induces sparsity, which is well-suited to vertex
+  modes where only a subset of vertices are discriminative; probabilistic
+  outputs are calibrated; the elastic-net grid jointly sweeps regularization
+  strength and sparsity.
+- *Cons*: the `saga` solver is slower than `LinearSVC`; needs tuning to
+  exploit the elastic-net grid (the default `l1_ratio=0.5, C=1.0` is
+  rarely optimal), so runtime is higher if you care about peak accuracy.
+- *When it wins*: high-dimensional vertex modes where a sparse subset of
+  vertices carries the signal, and with `--tune-hyperparams` enabled.
+
+### Sliding-window duration trade-offs
+
+| `sw_dur` | Pros | Cons |
+|----------|------|------|
+| **20 ms** | Finest temporal resolution; isolates brief transient responses | Few samples per window → noisier features, wider accuracy variance across folds |
+| **40 ms** (default) | Standard neuroscience balance — roughly one gamma/high-beta cycle | Compromise; may smear short-lived transients |
+| **60–80 ms** | Smoother, higher-SNR features; good for sustained signals (motor planning, articulatory preparation) | Temporal uncertainty increases; onsets look later than they truly are |
+| **100 ms+** | Strongest SNR per window; closer to ERP-style analysis | Loses ability to resolve rapid stream dynamics; long windows overlap when `sw_step` is small |
+
+In practice the sweet spot is ROI-dependent: early auditory regions often
+peak at 20–40 ms windows, while IFG and vSMC prefer 60–80 ms. The sweep
+output makes this ROI-specific optimum visible at a glance.
+
+### Hyperparameter tuning trade-offs
+
+- *Pros*: nested CV prevents overfit optimism and finds per-window optima;
+  large lifts are common for `logistic` because the default `l1_ratio`
+  rarely matches the data; also useful when you do not know a priori
+  whether a feature mode wants strong or weak `C`.
+- *Cons*: grid size × inner folds → roughly 12× slower for `svm` (4 Cs × 3
+  folds), 36× for `logistic` (12 hyperparameter points × 3 folds); the
+  selected hyperparameters differ slightly across windows and folds, so
+  they should be treated as a stability check rather than a single
+  "best value" to transfer.
+- *When to skip*: for `lda` always (no hyperparameters); for a quick
+  first pass where you just want to rank classifiers; when runtime is
+  tight and defaults look reasonable.
+
+### Two-step workflow: decoding vs. visualization
+
+`explore_decoding.py` and `explore_viz_stats.py` are deliberately split
+so that stats and figures can be regenerated without re-running the SVM
+loop. Typical workflow:
+
+1. Run `explore_decoding.py` one or more times with different
+   `--classifiers` / `--sw-durs` / `--tune-hyperparams`. Each run
+   **merges** new rows into the existing CSVs, deduplicated on
+   `(subject, classifier, sw_dur, sw_step, tuned[, ms])`, so results
+   accumulate rather than overwrite.
+2. Run `explore_viz_stats.py` to compute cluster-based permutation
+   stats and render comparison figures from whatever is currently in
+   `explore_full.csv`. Re-run as often as needed — it never re-runs
+   decoding.
+
+### Outputs
+
+`explore_decoding.py` writes under
+`derivatives/SVM_source/explore/{task}/{method}/{atlas}/{feature_mode}/{stim_class}/{roi}/`:
+
+| File | Contents |
+|------|----------|
+| `explore_full.csv` | Accuracy at every time window for every `(subject × classifier × sw_dur × tuned)` cell — long format, good for custom plots. Merge-appended across runs. Tuned runs also carry `best_{param}` and `best_{param}_freq` columns (e.g. `best_C`, `best_C_freq`) = within-subject modal hyperparameter and selection frequency across the 25 outer folds at that time window. NaN for untuned rows and for LDA. |
+| `explore_summary.csv` | Per-subject peak accuracy, peak latency, and mean accuracy per configuration. Merge-appended across runs. |
+
+`explore_viz_stats.py` then writes, in the same directory:
+
+| File | Contents |
+|------|----------|
+| `explore_stats[_{suffix}].csv` | Group-level cluster-based permutation test (n ≥ 3 subjects) against chance: number of significant clusters, earliest onset, peak accuracy, peak latency, and `modal_hyperparams_at_peak` — for tuned configs, the mode (across subjects) of each subject's within-subject modal hyperparameter at the group peak window, with selection counts (e.g. `C=1.0 (7/10 subj); l1_ratio=0.5 (6/10 subj)`) |
+| `figures/clf_comparison_sw{D}ms[_{suffix}].svg` | Overlay of classifier accuracy curves at each window duration with significant-cluster shading per classifier |
+| `figures/sw_sweep_{classifier}[_tuned][_{suffix}].svg` | Window-duration sweep per classifier with per-`sw_dur` significance shading |
+| `figures/peak_accuracy_heatmap[_{suffix}].svg` | `(classifier × sw_dur)` heatmap of mean peak accuracy across subjects |
+
+The viz script uses `mne.stats.permutation_cluster_1samp_test` with
+1024 permutations (matching `source_stats_viz.py`) and one-tailed
+testing of *accuracy > chance*. Only the standard cluster test is
+computed here (not TFCE) — this is an exploratory comparison tool, so
+the simpler mass-univariate cluster test is used.
+
+The optional `--out-suffix` flag on `explore_viz_stats.py` appends a
+custom tag to every output filename so that different filter selections
+(e.g. `--classifiers svm lda` vs. `--classifiers svm logistic`) can be
+saved side by side without overwriting.
+
+### Caching and cost
+
+The script reuses the shared ROI timeseries cache (`find_cached_npz`) so
+that switching classifiers, windows, or tuning for an already-extracted
+ROI only re-runs the SVM loop — the inverse solution and vertex extraction
+are not recomputed. Across vertex modes the cache is even shared (see the
+`cache_feat_mode()` note in CLAUDE.md).
+
+Parallelism is **across subjects** (`--n-jobs`), with the forward model
+and ROI labels shared read-only through the pool initializer; this avoids
+per-worker MNE setup overhead. If every requested subject is already
+cached, the forward model is not built at all.
+
+---
+
 ## Command-Line Reference
 
 ```bash
@@ -703,6 +886,38 @@ python run_parallel_lowram.py \
 python validate_pipeline.py \
     [--subject EEGPROD4001] [--task overtProd] \
     [--stim-class prodDiff] [--skip-lcmv]
+
+# ── Exploratory parameter search (two-step: decoding + viz/stats) ──
+
+# 1. Run decoding (accumulates into explore_full.csv)
+python explore_decoding.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --roi Temporal --subjects EEGPROD4001 \
+    --classifiers svm lda logistic --sw-durs 20 40 60 80 100
+
+# Add more configurations later — merged in by subject/classifier/sw_dur/tuned
+python explore_decoding.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --roi Temporal --subjects EEGPROD4001 \
+    --classifiers svm logistic --sw-durs 40 60 80 --tune-hyperparams
+
+# 2. Render figures & run cluster-permutation stats (no re-decoding)
+python explore_viz_stats.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --roi Temporal
+
+# Re-plot a filtered subset without overwriting prior figures
+python explore_viz_stats.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --roi Temporal \
+    --classifiers svm lda --sw-durs 40 60 --out-suffix svm-vs-lda
+
+# Full sweep with nested-CV tuning on a vertex mode (parallel across subjects)
+python explore_decoding.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --roi vSMC --feature-mode vertex_pca \
+    --classifiers svm logistic --sw-durs 40 60 80 \
+    --tune-hyperparams --n-jobs 4
 
 # ── ROI Visualization ──
 

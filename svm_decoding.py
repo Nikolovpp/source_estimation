@@ -16,6 +16,7 @@ Output CSV format matches the existing pipeline:
 import numpy as np
 import statistics
 import time
+from collections import Counter
 
 from sklearn.svm import LinearSVC
 from sklearn.preprocessing import StandardScaler
@@ -293,12 +294,15 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
     else:
         clf = pipeline
 
+    track_best_params = tune_hyperparams and param_grid is not None
+
     results = []
     for w in range(n_windows):
         X_win = X_windowed[:, :, w]
 
         # Run repeated stratified CV (5 repeats × 5 folds)
         mean_list = []
+        best_params_list = []
         for rep in range(N_CV_REPEATS):
             seed = random_state + rep
             kf = StratifiedKFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=seed)
@@ -317,6 +321,9 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
 
                 clf.fit(X_train, y_train)
                 fold_scores.append(clf.score(X_test, y_test))
+
+                if track_best_params:
+                    best_params_list.append(dict(clf.best_params_))
 
             mean_list.append(np.mean(fold_scores))
 
@@ -338,10 +345,28 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
                                 + (window_start_sample / sfreq) * 1000.0
                                 + window_center_offset_ms)
 
-        results.append({
+        entry = {
             'ms': window_center_ms,
             'mean_list': mean_list,
             'SVM_acc': avg_acc,
-        })
+        }
+
+        # Summarize tuned hyperparameters over the 25 outer folds:
+        # modal selected value + fraction of folds that selected it.
+        # Pipeline-step prefix (e.g. 'linearsvc__') is stripped.
+        if track_best_params and best_params_list:
+            mode_dict, freq_dict = {}, {}
+            total = len(best_params_list)
+            all_keys = set().union(*best_params_list)
+            for key in all_keys:
+                values = [bp[key] for bp in best_params_list if key in bp]
+                mode_val, mode_count = Counter(values).most_common(1)[0]
+                short_name = key.split('__')[-1]
+                mode_dict[short_name] = mode_val
+                freq_dict[short_name] = mode_count / total
+            entry['best_params_mode'] = mode_dict
+            entry['best_params_freq'] = freq_dict
+
+        results.append(entry)
 
     return results
