@@ -3,8 +3,17 @@
 Exploratory analysis: compare classifiers, sliding window durations, and
 hyperparameter tuning strategies for a single ROI.
 
-Sweeps configurations and exports results for easy comparison.  Designed
-for rapid parameter testing before committing to full-pipeline runs.
+Runs the decoding sweep and writes per-time-window accuracy to CSV.
+Figures and group-level statistics are produced separately by
+``explore_viz_stats.py`` so the same decoding output can be re-plotted
+and re-analyzed without re-running the SVM loop.
+
+Results accumulate across runs: rerunning this script with different
+``--classifiers``, ``--sw-durs``, or ``--tune-hyperparams`` values
+merges new rows into the existing ``explore_full.csv`` /
+``explore_summary.csv`` files, deduplicated on
+(subject, classifier, sw_dur, sw_step, tuned [, ms]).  Running SVM first
+and LDA second leaves both classifiers in the CSV.
 
 Usage:
     # Quick comparison of classifiers on one subject
@@ -24,6 +33,10 @@ Usage:
         --method dSPM --atlas Schaefer200 --roi vSMC \
         --subjects EEGPROD4001 EEGPROD4003 EEGPROD4005
 
+    # Then produce figures and cluster-permutation stats:
+    python explore_viz_stats.py --task overtProd --stim-class prodDiff \
+        --method dSPM --atlas HCPMMP1 --roi Temporal
+
 Output:
     explore_full.csv    — accuracy at every time window for every config
     explore_summary.csv — peak/mean accuracy per (subject x config)
@@ -38,12 +51,6 @@ from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
-from scipy.stats import ttest_1samp
-from mne.stats import permutation_cluster_1samp_test
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 warnings.filterwarnings('ignore')
 os.environ['PYTHONWARNINGS'] = 'ignore'
@@ -51,7 +58,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT,
+    SUBJECT_IDS, SW_STEP_SIZE, SVM_OUTPUT_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     SVM_C, PSEUDO_TRIAL_SIZE,
     find_cached_npz,
@@ -202,7 +209,7 @@ def _process_subject(args):
         cfg_time = time.time() - cfg_start
 
         for r in results:
-            rows.append({
+            row = {
                 'subject': subj_id,
                 'classifier': clf_name,
                 'sw_dur': sw_dur,
@@ -210,7 +217,14 @@ def _process_subject(args):
                 'tuned': tuned,
                 'ms': r['ms'],
                 'accuracy': r['SVM_acc'],
-            })
+            }
+            # When tuning was active, flatten modal hyperparameters across
+            # the 25 outer folds into per-parameter columns (NaN for rows
+            # where tuning was not used, e.g. untuned or LDA).
+            for pname, pval in r.get('best_params_mode', {}).items():
+                row[f'best_{pname}'] = pval
+                row[f'best_{pname}_freq'] = r['best_params_freq'][pname]
+            rows.append(row)
 
         accs = [r['SVM_acc'] for r in results]
         peak_acc = max(accs)
@@ -224,208 +238,23 @@ def _process_subject(args):
 
 
 # ──────────────────────────────────────────────────────────────
-# Visualization
+# Merge helpers
 # ──────────────────────────────────────────────────────────────
-CLF_COLORS = {'svm': 'tab:blue', 'lda': 'tab:green', 'logistic': 'tab:orange'}
+def _merge_csv(df_new, csv_path, dedupe_keys):
+    """Merge new rows into existing CSV, deduping on the given keys.
 
-
-def plot_classifier_comparison(df, sw_dur, roi_name, n_subjects):
-    """Overlay classifier accuracy curves for one sw_dur value.
-
-    Shows group-mean accuracy with SEM bands (when n_subjects > 1).
+    New rows override matching rows from disk (``keep='last'``), so a
+    rerun with different code or parameters supersedes stale values for
+    the same (subject, classifier, sw_dur, sw_step, tuned [, ms]) cell.
     """
-    sub = df[df['sw_dur'] == sw_dur]
-
-    fig, ax = plt.subplots(figsize=(12, 7))
-
-    for (clf, tuned), grp in sub.groupby(['classifier', 'tuned']):
-        time_avg = grp.groupby('ms')['accuracy'].agg(['mean', 'std', 'count'])
-        time_avg = time_avg.reset_index()
-        time_avg['sem'] = time_avg['std'] / np.sqrt(time_avg['count'])
-
-        color = CLF_COLORS.get(clf, 'gray')
-        ls = '--' if tuned else '-'
-        label = clf + (' [tuned]' if tuned else '')
-
-        ax.plot(time_avg['ms'], time_avg['mean'], color=color,
-                linestyle=ls, linewidth=2, label=label)
-        if n_subjects > 1:
-            ax.fill_between(time_avg['ms'],
-                            time_avg['mean'] - time_avg['sem'],
-                            time_avg['mean'] + time_avg['sem'],
-                            alpha=0.2, color=color)
-
-    ax.axhline(0.5, color='black', linestyle='--', linewidth=0.8, label='chance')
-    ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
-    ax.set_xlabel('Time (ms)', fontsize=14)
-    ax.set_ylabel('Accuracy', fontsize=14)
-    ax.set_title(f'{roi_name} — Classifier Comparison '
-                 f'(sw_dur={sw_dur}ms, n={n_subjects})', fontsize=16)
-    ax.legend(loc='upper left', fontsize=12)
-    ax.grid(True, alpha=0.3)
-    ax.tick_params(labelsize=12)
-    plt.tight_layout()
-    return fig
-
-
-def plot_sw_dur_comparison(df, classifier, tuned, roi_name, n_subjects,
-                           sw_durs):
-    """Overlay accuracy curves for different sw_durs (one classifier)."""
-    sub = df[(df['classifier'] == classifier) & (df['tuned'] == tuned)]
-
-    cmap = plt.cm.viridis
-    colors = {sw: cmap(i / max(1, len(sw_durs) - 1))
-              for i, sw in enumerate(sw_durs)}
-
-    fig, ax = plt.subplots(figsize=(12, 7))
-
-    for sw_dur in sw_durs:
-        grp = sub[sub['sw_dur'] == sw_dur]
-        if grp.empty:
-            continue
-        time_avg = grp.groupby('ms')['accuracy'].agg(['mean', 'std', 'count'])
-        time_avg = time_avg.reset_index()
-        time_avg['sem'] = time_avg['std'] / np.sqrt(time_avg['count'])
-
-        ax.plot(time_avg['ms'], time_avg['mean'], color=colors[sw_dur],
-                linewidth=2, label=f'{sw_dur}ms')
-        if n_subjects > 1:
-            ax.fill_between(time_avg['ms'],
-                            time_avg['mean'] - time_avg['sem'],
-                            time_avg['mean'] + time_avg['sem'],
-                            alpha=0.15, color=colors[sw_dur])
-
-    ax.axhline(0.5, color='black', linestyle='--', linewidth=0.8, label='chance')
-    ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
-    ax.set_xlabel('Time (ms)', fontsize=14)
-    ax.set_ylabel('Accuracy', fontsize=14)
-    tuned_str = ' [tuned]' if tuned else ''
-    ax.set_title(f'{roi_name} — Window Duration Sweep '
-                 f'({classifier}{tuned_str}, n={n_subjects})', fontsize=16)
-    ax.legend(loc='upper left', fontsize=12)
-    ax.grid(True, alpha=0.3)
-    ax.tick_params(labelsize=12)
-    plt.tight_layout()
-    return fig
-
-
-def plot_peak_accuracy_heatmap(df_summary, roi_name, n_subjects):
-    """Heatmap of mean peak accuracy by (classifier x sw_dur)."""
-    avg = df_summary.groupby(
-        ['classifier', 'sw_dur', 'tuned']
-    )['peak_acc'].mean().reset_index()
-
-    avg['config'] = avg.apply(
-        lambda r: r['classifier'] + (' [tuned]' if r['tuned'] else ''),
-        axis=1,
-    )
-
-    pivot = avg.pivot(index='config', columns='sw_dur', values='peak_acc')
-
-    fig, ax = plt.subplots(
-        figsize=(max(8, len(pivot.columns) * 1.5),
-                 max(4, len(pivot) * 0.8 + 1)),
-    )
-    sns.heatmap(pivot, annot=True, fmt='.3f', cmap='YlOrRd', ax=ax,
-                vmin=0.48, linewidths=0.5,
-                cbar_kws={'label': 'Peak Accuracy'})
-    ax.set_xlabel('Sliding Window Duration (ms)', fontsize=13)
-    ax.set_ylabel('Configuration', fontsize=13)
-    ax.set_title(f'{roi_name} — Peak Accuracy by Configuration '
-                 f'(n={n_subjects})', fontsize=15)
-    plt.tight_layout()
-    return fig
-
-
-# ──────────────────────────────────────────────────────────────
-# Group-level statistics
-# ──────────────────────────────────────────────────────────────
-N_EXPLORE_PERMUTATIONS = 512
-
-
-def find_contiguous_clusters(mask):
-    """Find start/end indices of contiguous True runs."""
-    clusters = []
-    in_cluster = False
-    start = None
-    for i, val in enumerate(mask):
-        if val and not in_cluster:
-            start = i
-            in_cluster = True
-        elif not val and in_cluster:
-            clusters.append((start, i - 1))
-            in_cluster = False
-    if in_cluster:
-        clusters.append((start, len(mask) - 1))
-    return clusters
-
-
-def compute_explore_stats(df, subjects, roi_name):
-    """Cluster-based permutation test against chance for each config.
-
-    Requires >= 3 subjects.  Returns a stats DataFrame and a dict of
-    per-config cluster details for the summary log.
-    """
-    n_subjects = len(subjects)
-    if n_subjects < 3:
-        print('  Skipping stats: need at least 3 subjects for permutation test')
-        return None
-
-    stats_rows = []
-
-    for (clf, sw_dur, tuned), grp in df.groupby(
-        ['classifier', 'sw_dur', 'tuned']
-    ):
-        ms_values = np.array(sorted(grp['ms'].unique()))
-        n_times = len(ms_values)
-
-        # Build accuracy matrix: (n_subjects, n_times)
-        acc_matrix = np.full((n_subjects, n_times), np.nan)
-        for i, subj in enumerate(subjects):
-            subj_data = grp[grp['subject'] == subj].sort_values('ms')
-            if len(subj_data) == n_times:
-                acc_matrix[i] = subj_data['accuracy'].values
-
-        # Drop subjects with missing data
-        valid = ~np.isnan(acc_matrix).any(axis=1)
-        X = acc_matrix[valid] - 0.5  # center at chance
-        n_valid = X.shape[0]
-        if n_valid < 3:
-            continue
-
-        # Cluster-based permutation test (one-sided: accuracy > chance)
-        T_obs, clusters, pv, _ = permutation_cluster_1samp_test(
-            X, threshold=None, n_permutations=N_EXPLORE_PERMUTATIONS,
-            tail=1, out_type='mask', verbose=False,
-        )
-
-        n_sig = sum(1 for p in pv if p < 0.05)
-        mean_acc = acc_matrix[valid].mean(axis=0)
-        peak_acc = mean_acc.max()
-        peak_ms = ms_values[np.argmax(mean_acc)]
-        earliest_onset = None
-
-        if n_sig > 0:
-            for ic, cpv in enumerate(pv):
-                if cpv < 0.05:
-                    sig_idx = np.where(clusters[ic])[0]
-                    onset = ms_values[sig_idx[0]]
-                    if earliest_onset is None or onset < earliest_onset:
-                        earliest_onset = onset
-
-        tuned_str = 'Yes' if tuned else 'No'
-        stats_rows.append({
-            'classifier': clf,
-            'sw_dur': sw_dur,
-            'tuned': tuned_str,
-            'n_subjects': n_valid,
-            'n_sig_clusters': n_sig,
-            'earliest_onset_ms': earliest_onset,
-            'peak_acc': peak_acc,
-            'peak_ms': peak_ms,
-        })
-
-    return pd.DataFrame(stats_rows)
+    if csv_path.exists():
+        df_existing = pd.read_csv(csv_path)
+        combined = pd.concat([df_existing, df_new], ignore_index=True)
+        combined = combined.drop_duplicates(subset=dedupe_keys, keep='last')
+    else:
+        combined = df_new
+    combined.to_csv(csv_path, index=False)
+    return combined
 
 
 def main():
@@ -531,8 +360,8 @@ def main():
         print('\nNo results to save (all subjects skipped).')
         return
 
-    # ── Save results ────────────────────────────────────────────────
-    df = pd.DataFrame(all_rows)
+    # ── Save / merge results ───────────────────────────────────────
+    df_new = pd.DataFrame(all_rows)
 
     out_dir = (
         SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
@@ -541,12 +370,16 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     full_csv = out_dir / 'explore_full.csv'
-    df.to_csv(full_csv, index=False)
-    print(f'\nFull results: {full_csv}')
+    df_full = _merge_csv(
+        df_new, full_csv,
+        dedupe_keys=['subject', 'classifier', 'sw_dur', 'sw_step', 'tuned', 'ms'],
+    )
+    print(f'\nFull results: {full_csv} '
+          f'({len(df_full)} rows, {df_new["subject"].nunique()} subjects this run)')
 
-    # ── Summary ─────────────────────────────────────────────────────
+    # Per-subject/per-config summary: peak acc, peak ms, mean acc
     summary_rows = []
-    for (subj, clf, sw, tuned), grp in df.groupby(
+    for (subj, clf, sw, tuned), grp in df_new.groupby(
         ['subject', 'classifier', 'sw_dur', 'tuned']
     ):
         peak_idx = grp['accuracy'].idxmax()
@@ -561,19 +394,21 @@ def main():
             'mean_acc': grp['accuracy'].mean(),
         })
 
-    df_summary = pd.DataFrame(summary_rows)
+    df_summary_new = pd.DataFrame(summary_rows)
     summary_csv = out_dir / 'explore_summary.csv'
-    df_summary.to_csv(summary_csv, index=False)
-    print(f'Summary:      {summary_csv}')
+    df_summary = _merge_csv(
+        df_summary_new, summary_csv,
+        dedupe_keys=['subject', 'classifier', 'sw_dur', 'sw_step', 'tuned'],
+    )
+    print(f'Summary:      {summary_csv} ({len(df_summary)} rows total)')
 
-    # ── Print summary table ─────────────────────────────────────────
+    # ── Print per-run summary table ─────────────────────────────────
     print(f'\n{"="*60}')
-    print(f'Exploration Summary: {roi_name} ({args.atlas})')
+    print(f'Run Summary: {roi_name} ({args.atlas})')
     print(f'{"="*60}')
 
-    # Group-level averages if multiple subjects
-    if len(subjects) > 1:
-        group_avg = df_summary.groupby(
+    if df_new['subject'].nunique() > 1:
+        group_avg = df_summary_new.groupby(
             ['classifier', 'sw_dur', 'tuned']
         ).agg(
             mean_peak_acc=('peak_acc', 'mean'),
@@ -581,84 +416,34 @@ def main():
             mean_mean_acc=('mean_acc', 'mean'),
         ).reset_index()
 
-        print(f'\nGroup averages (n={len(subjects)}):')
+        print(f'\nGroup averages (n={df_new["subject"].nunique()}):')
         print(f'{"Classifier":<12} {"SW_dur":<8} {"Tuned":<7} '
-              f'{"Peak Acc":<12} {"Mean Acc":<10}')
-        print('-' * 55)
+              f'{"Peak Acc":<16} {"Mean Acc":<10}')
+        print('-' * 60)
         for _, row in group_avg.iterrows():
             tuned_str = 'Yes' if row['tuned'] else 'No'
+            std = row['std_peak_acc'] if not np.isnan(row['std_peak_acc']) else 0.0
             print(f'{row["classifier"]:<12} {int(row["sw_dur"]):<8} '
                   f'{tuned_str:<7} '
-                  f'{row["mean_peak_acc"]:.3f}+/-{row["std_peak_acc"]:.3f}  '
+                  f'{row["mean_peak_acc"]:.3f}+/-{std:.3f}  '
                   f'{row["mean_mean_acc"]:.3f}')
     else:
         print(f'\n{"Classifier":<12} {"SW_dur":<8} {"Tuned":<7} '
               f'{"Peak Acc":<10} {"Peak ms":<10} {"Mean Acc":<10}')
         print('-' * 60)
-        for _, row in df_summary.iterrows():
+        for _, row in df_summary_new.iterrows():
             tuned_str = 'Yes' if row['tuned'] else 'No'
             print(f'{row["classifier"]:<12} {int(row["sw_dur"]):<8} '
                   f'{tuned_str:<7} '
                   f'{row["peak_acc"]:<10.3f} {row["peak_ms"]:<10.1f} '
                   f'{row["mean_acc"]:<10.3f}')
 
-    # ── Figures ──────────────────────────────────────────────────────
-    n_subjects = df['subject'].nunique()
-    fig_dir = out_dir / 'figures'
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    # Classifier comparison (one figure per sw_dur)
-    for sw_dur in args.sw_durs:
-        fig = plot_classifier_comparison(df, sw_dur, roi_name, n_subjects)
-        fname = fig_dir / f'clf_comparison_sw{sw_dur}ms.svg'
-        fig.savefig(fname, dpi=150)
-        plt.close(fig)
-        print(f'  Saved: {fname}')
-
-    # SW duration sweep (one figure per classifier × tuned combo)
-    for clf_name in args.classifiers:
-        for tuned in [False] + ([True] if args.tune_hyperparams and clf_name != 'lda' else []):
-            fig = plot_sw_dur_comparison(df, clf_name, tuned, roi_name,
-                                         n_subjects, args.sw_durs)
-            t_str = '_tuned' if tuned else ''
-            fname = fig_dir / f'sw_sweep_{clf_name}{t_str}.svg'
-            fig.savefig(fname, dpi=150)
-            plt.close(fig)
-            print(f'  Saved: {fname}')
-
-    # Peak accuracy heatmap
-    fig = plot_peak_accuracy_heatmap(df_summary, roi_name, n_subjects)
-    fname = fig_dir / 'peak_accuracy_heatmap.svg'
-    fig.savefig(fname, dpi=150)
-    plt.close(fig)
-    print(f'  Saved: {fname}')
-
-    # ── Group stats ────────────────────────────────────────────────
-    if n_subjects >= 3:
-        print(f'\nRunning cluster-based permutation tests '
-              f'({N_EXPLORE_PERMUTATIONS} permutations)...')
-        df_stats = compute_explore_stats(df, subjects, roi_name)
-        if df_stats is not None and len(df_stats) > 0:
-            stats_csv = out_dir / 'explore_stats.csv'
-            df_stats.to_csv(stats_csv, index=False)
-            print(f'Stats:        {stats_csv}')
-
-            print(f'\n{"Classifier":<12} {"SW_dur":<8} {"Tuned":<7} '
-                  f'{"Sig Clusters":<14} {"Onset (ms)":<12} '
-                  f'{"Peak Acc":<10} {"Peak ms":<10}')
-            print('-' * 75)
-            for _, row in df_stats.iterrows():
-                onset_str = (f'{row["earliest_onset_ms"]:.1f}'
-                             if row['earliest_onset_ms'] is not None
-                             else '—')
-                print(f'{row["classifier"]:<12} {int(row["sw_dur"]):<8} '
-                      f'{row["tuned"]:<7} '
-                      f'{row["n_sig_clusters"]:<14} {onset_str:<12} '
-                      f'{row["peak_acc"]:<10.3f} {row["peak_ms"]:<10.1f}')
-    else:
-        print('\nSkipping group stats (need >= 3 subjects for permutation test)')
-
     print(f'\nDone in {total_time:.1f} minutes')
+    print('\nTo produce figures and cluster-based permutation stats, run:')
+    print(f'  python explore_viz_stats.py \\\n'
+          f'      --task {args.task} --stim-class {args.stim_class} \\\n'
+          f'      --method {args.method} --atlas {args.atlas} \\\n'
+          f'      --feature-mode {args.feature_mode} --roi {roi_name}')
 
 
 if __name__ == '__main__':
