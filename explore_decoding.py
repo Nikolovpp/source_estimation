@@ -439,11 +439,19 @@ def main():
                   f'{row["mean_acc"]:<10.3f}')
 
     print(f'\nDone in {total_time:.1f} minutes')
-    print('\nTo produce figures and cluster-based permutation stats, run:')
-    print(f'  python explore_viz_stats.py \\\n'
-          f'      --task {args.task} --stim-class {args.stim_class} \\\n'
-          f'      --method {args.method} --atlas {args.atlas} \\\n'
-          f'      --feature-mode {args.feature_mode} --roi {roi_name}')
+    clf_str = ' '.join(args.classifiers)
+    sw_str = ' '.join(str(s) for s in args.sw_durs)
+    hint_lines = [
+        '',
+        'To produce figures and cluster-based permutation stats, run:',
+        f'  python explore_viz_stats.py \\',
+        f'      --task {args.task} --stim-class {args.stim_class} \\',
+        f'      --method {args.method} --atlas {args.atlas} \\',
+        f'      --feature-mode {args.feature_mode} --roi {roi_name} \\',
+        f'      --classifiers {clf_str} \\',
+        f'      --sw-durs {sw_str}',
+    ]
+    print('\n'.join(hint_lines))
 
 
 if __name__ == '__main__':
