@@ -84,12 +84,16 @@ def find_contiguous_clusters(mask):
 def _cluster_test(acc_matrix):
     """Run one-tailed cluster-based permutation test on (n_subj, n_times).
 
-    Verbatim port of the cluster test in
-    ``source_stats_viz.compute_stats`` — accuracies centered at chance
-    (0.5), ``threshold=None`` (MNE picks the default t-threshold),
-    ``tail=1``, ``out_type='mask'``, p < 0.05 to flag a cluster
-    significant.  Returns a per-time sig mask, per-time cluster
-    p-values, and the raw (mask, pv) pairs for caller inspection.
+    MNE 1.10 ignores ``out_type='mask'`` and returns each cluster as a
+    ``(slice(...),)`` tuple, so we index into the output arrays with the
+    raw cluster object (same pattern as
+    ``source_stats_viz.compute_stats``) rather than ``np.where`` — the
+    latter on a tuple-of-slice silently collapses to ``array([0])`` and
+    reports every cluster as a single point at time 0.
+
+    Returns a per-time significance mask, per-time cluster p-values, and
+    a list of ``(bool_mask, pv)`` pairs (normalized to boolean masks so
+    callers don't have to re-parse slice tuples).
     """
     n_subj, n_times = acc_matrix.shape
     X = acc_matrix - 0.5
@@ -101,13 +105,16 @@ def _cluster_test(acc_matrix):
 
     cluster_mask = np.zeros(n_times, dtype=bool)
     cluster_pvals_arr = np.ones(n_times)
+    bool_masks = []
     for ic, cpv in enumerate(pv_c):
-        cluster_points = np.where(clusters_c[ic])[0]
-        cluster_pvals_arr[cluster_points] = cpv
+        cmask_bool = np.zeros(n_times, dtype=bool)
+        cmask_bool[clusters_c[ic]] = True
+        cluster_pvals_arr[cmask_bool] = cpv
         if cpv < ALPHA:
-            cluster_mask[cluster_points] = True
+            cluster_mask[cmask_bool] = True
+        bool_masks.append(cmask_bool)
 
-    return cluster_mask, cluster_pvals_arr, list(zip(clusters_c, pv_c))
+    return cluster_mask, cluster_pvals_arr, list(zip(bool_masks, pv_c))
 
 
 def _build_accuracy_matrix(df_subset, ms_values):
