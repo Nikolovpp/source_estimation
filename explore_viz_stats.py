@@ -317,13 +317,19 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
         return None
 
     n_subjects = sub['subject'].nunique()
-    cmap = plt.cm.viridis
-    colors = {sw: cmap(i / max(1, len(sw_durs) - 1))
-              for i, sw in enumerate(sw_durs)}
+    # Qualitative palette so adjacent sw_durs are clearly distinguishable
+    # (viridis put neighbors at near-identical hues). tab10 covers up to 10
+    # durations; fall back to husl for larger sweeps.
+    if len(sw_durs) <= 10:
+        palette = list(plt.get_cmap('tab10').colors)
+    else:
+        palette = sns.color_palette('husl', n_colors=len(sw_durs))
+    colors = {sw: palette[i] for i, sw in enumerate(sw_durs)}
+    linestyles = ['-', '--', '-.', ':']
 
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    for sw_dur in sw_durs:
+    for i, sw_dur in enumerate(sw_durs):
         grp = sub[sub['sw_dur'] == sw_dur]
         if grp.empty:
             continue
@@ -337,18 +343,19 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
                np.sqrt(acc_matrix.shape[0])
                if acc_matrix.shape[0] > 1 else np.zeros_like(mean_acc))
 
+        ls = linestyles[i % len(linestyles)]
         ax.plot(ms_values, mean_acc, color=colors[sw_dur],
-                linewidth=2, label=f'{sw_dur}ms')
+                linewidth=2, linestyle=ls, label=f'{sw_dur}ms')
         if n_subjects > 1:
             ax.fill_between(ms_values, mean_acc - sem, mean_acc + sem,
-                            alpha=0.15, color=colors[sw_dur])
+                            alpha=0.18, color=colors[sw_dur])
 
         sig = sig_lookup.get((classifier, int(sw_dur), bool(tuned)))
         if sig is not None:
             _, sig_mask, _ = sig
             for s, e in find_contiguous_clusters(sig_mask):
                 ax.axvspan(ms_values[s], ms_values[e],
-                           alpha=0.15, color=colors[sw_dur], zorder=0)
+                           alpha=0.22, color=colors[sw_dur], zorder=0)
 
     ax.axhline(0.5, color='black', linestyle='--', linewidth=0.8, label='chance')
     ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
