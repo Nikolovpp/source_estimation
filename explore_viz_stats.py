@@ -52,7 +52,11 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import SVM_OUTPUT_ROOT, SW_STEP_SIZE
+from config import (
+    SVM_OUTPUT_ROOT, SW_STEP_SIZE,
+    SVM_C, PSEUDO_TRIAL_SIZE,
+    explore_run_segment,
+)
 
 
 N_PERMUTATIONS = 1024   # matches source_stats_viz.py standard cluster test
@@ -427,15 +431,31 @@ def parse_args():
     parser.add_argument('--out-suffix', default='',
                         help='Suffix appended to every output filename (use to '
                              'keep multiple filter selections side by side)')
+    # Run-time params that affect the explore_decoding output path.
+    # Must match the values used when explore_decoding.py was run, or
+    # the explore_full.csv lookup will not find the data.
+    parser.add_argument('--leakage-correction', action='store_true', default=False,
+                        help='Match the --leakage-correction flag passed to '
+                             'explore_decoding (part of the output path)')
+    parser.add_argument('--pseudo-trial-size', type=int, default=PSEUDO_TRIAL_SIZE,
+                        help='Match the --pseudo-trial-size passed to '
+                             'explore_decoding (part of the output path)')
+    parser.add_argument('--svm-c', type=float, default=SVM_C,
+                        help='Match the --svm-c passed to explore_decoding '
+                             '(part of the output path)')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
+    run_seg = explore_run_segment(
+        args.leakage_correction, args.pseudo_trial_size, args.svm_c,
+    )
     out_dir = (
         SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
-        / args.atlas / args.feature_mode / args.stim_class / args.roi
+        / args.atlas / args.feature_mode / args.stim_class
+        / run_seg / args.roi
     )
     full_csv = out_dir / 'explore_full.csv'
     if not full_csv.exists():

@@ -486,3 +486,17 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
             if path.exists():
                 return path
     return None
+
+
+def explore_run_segment(leakage_correction, pseudo_trial_size, svm_c):
+    """Path segment encoding the run-time params that change accuracies
+    but aren't otherwise represented in the explore_decoding output path.
+
+    Without this, switching --leakage-correction, --pseudo-trial-size,
+    or --svm-c silently overwrites previous results in the same CSV.
+
+    Format: ``lc{0,1}_pt{N}_C{c}`` — e.g. ``lc0_pt0_C1`` for defaults,
+    ``lc1_pt5_C0.1`` for non-default settings.  ``:g`` formatting on C
+    strips trailing zeros (1.0 → C1, 0.01 → C0.01).
+    """
+    return f'lc{int(bool(leakage_correction))}_pt{int(pseudo_trial_size)}_C{svm_c:g}'

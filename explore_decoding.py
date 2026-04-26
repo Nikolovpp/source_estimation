@@ -84,7 +84,7 @@ from config import (
     SUBJECT_IDS, SW_STEP_SIZE, SVM_OUTPUT_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     SVM_C, PSEUDO_TRIAL_SIZE,
-    find_cached_npz,
+    find_cached_npz, explore_run_segment,
 )
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
@@ -384,9 +384,13 @@ def _merge_csv(df_new, csv_path, dedupe_keys):
 
 def _save_results_for_roi(df_roi, args, roi_name):
     """Write per-ROI explore_full.csv and explore_summary.csv."""
+    run_seg = explore_run_segment(
+        args.leakage_correction, args.pseudo_trial_size, args.svm_c,
+    )
     out_dir = (
         SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
-        / args.atlas / args.feature_mode / args.stim_class / roi_name
+        / args.atlas / args.feature_mode / args.stim_class
+        / run_seg / roi_name
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -570,6 +574,14 @@ def main():
     # ── Replayable hint for explore_viz_stats ────────────────────────
     clf_str = ' '.join(args.classifiers)
     sw_str = ' '.join(str(s) for s in args.sw_durs)
+    extra = []
+    if args.leakage_correction:
+        extra.append('--leakage-correction')
+    if args.pseudo_trial_size != PSEUDO_TRIAL_SIZE:
+        extra.append(f'--pseudo-trial-size {args.pseudo_trial_size}')
+    if args.svm_c != SVM_C:
+        extra.append(f'--svm-c {args.svm_c}')
+    extra_str = (' \\\n      ' + ' '.join(extra)) if extra else ''
     print('\nTo produce figures and cluster-based permutation stats, run:')
     for roi_name in roi_names:
         print(f'  python explore_viz_stats.py \\')
@@ -577,7 +589,7 @@ def main():
         print(f'      --method {args.method} --atlas {args.atlas} \\')
         print(f'      --feature-mode {args.feature_mode} --roi {roi_name} \\')
         print(f'      --classifiers {clf_str} \\')
-        print(f'      --sw-durs {sw_str}')
+        print(f'      --sw-durs {sw_str}{extra_str}')
 
 
 if __name__ == '__main__':
