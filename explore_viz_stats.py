@@ -62,7 +62,29 @@ from config import (
 N_PERMUTATIONS = 1024   # matches source_stats_viz.py standard cluster test
 ALPHA = 0.05
 
-CLF_COLORS = {'svm': 'tab:blue', 'lda': 'tab:green', 'logistic': 'tab:orange'}
+# Hand-picked high-contrast palette (ColorBrewer Set1 sans low-luminance
+# yellow, plus a couple of complements). Keep ordering stable so the same
+# series gets the same color across re-runs.
+DISTINCT_COLORS = [
+    '#e41a1c',  # red
+    '#377eb8',  # blue
+    '#4daf4a',  # green
+    '#984ea3',  # purple
+    '#ff7f00',  # orange
+    '#a65628',  # brown
+    '#f781bf',  # pink
+    '#17becf',  # cyan
+    '#bcbd22',  # olive
+    '#7f7f7f',  # gray
+]
+
+
+def _assign_colors(keys):
+    """Map an ordered list of keys to maximally distinct colors."""
+    if len(keys) <= len(DISTINCT_COLORS):
+        return {k: DISTINCT_COLORS[i] for i, k in enumerate(keys)}
+    palette = sns.color_palette('husl', n_colors=len(keys))
+    return {k: palette[i] for i, k in enumerate(keys)}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -265,6 +287,14 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
     sub = df[df['sw_dur'] == sw_dur]
     n_subjects = sub['subject'].nunique()
 
+    # One distinct color per (classifier, tuned) pair present.
+    series_keys = sorted(
+        {(clf, bool(t)) for clf, t in
+         sub[['classifier', 'tuned']].drop_duplicates().itertuples(index=False)},
+        key=lambda x: (x[0], x[1]),
+    )
+    color_map = _assign_colors(series_keys)
+
     fig, ax = plt.subplots(figsize=(12, 7))
 
     for (clf, tuned), grp in sub.groupby(['classifier', 'tuned']):
@@ -278,15 +308,14 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
                np.sqrt(acc_matrix.shape[0])
                if acc_matrix.shape[0] > 1 else np.zeros_like(mean_acc))
 
-        color = CLF_COLORS.get(clf, 'gray')
-        ls = '--' if tuned else '-'
+        color = color_map[(clf, bool(tuned))]
         label = clf + (' [tuned]' if tuned else '')
 
-        ax.plot(ms_values, mean_acc, color=color, linestyle=ls,
+        ax.plot(ms_values, mean_acc, color=color,
                 linewidth=2, label=label)
         if n_subjects > 1:
             ax.fill_between(ms_values, mean_acc - sem, mean_acc + sem,
-                            alpha=0.2, color=color)
+                            alpha=0.18, color=color)
 
         # Significance shading (from cluster test on this config)
         sig = sig_lookup.get((clf, int(sw_dur), bool(tuned)))
@@ -294,7 +323,7 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
             _, sig_mask, _ = sig
             for s, e in find_contiguous_clusters(sig_mask):
                 ax.axvspan(ms_values[s], ms_values[e],
-                           alpha=0.20, color=color, zorder=0)
+                           alpha=0.22, color=color, zorder=0)
 
     ax.axhline(0.5, color='black', linestyle='--', linewidth=0.8, label='chance')
     ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
@@ -317,19 +346,11 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
         return None
 
     n_subjects = sub['subject'].nunique()
-    # Qualitative palette so adjacent sw_durs are clearly distinguishable
-    # (viridis put neighbors at near-identical hues). tab10 covers up to 10
-    # durations; fall back to husl for larger sweeps.
-    if len(sw_durs) <= 10:
-        palette = list(plt.get_cmap('tab10').colors)
-    else:
-        palette = sns.color_palette('husl', n_colors=len(sw_durs))
-    colors = {sw: palette[i] for i, sw in enumerate(sw_durs)}
-    linestyles = ['-', '--', '-.', ':']
+    colors = _assign_colors(list(sw_durs))
 
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    for i, sw_dur in enumerate(sw_durs):
+    for sw_dur in sw_durs:
         grp = sub[sub['sw_dur'] == sw_dur]
         if grp.empty:
             continue
@@ -343,9 +364,8 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
                np.sqrt(acc_matrix.shape[0])
                if acc_matrix.shape[0] > 1 else np.zeros_like(mean_acc))
 
-        ls = linestyles[i % len(linestyles)]
         ax.plot(ms_values, mean_acc, color=colors[sw_dur],
-                linewidth=2, linestyle=ls, label=f'{sw_dur}ms')
+                linewidth=2, label=f'{sw_dur}ms')
         if n_subjects > 1:
             ax.fill_between(ms_values, mean_acc - sem, mean_acc + sem,
                             alpha=0.18, color=colors[sw_dur])
@@ -433,6 +453,14 @@ def parse_args():
                              '(default: all present)')
     parser.add_argument('--sw-durs', nargs='+', type=int, default=None,
                         help='Restrict to these sliding-window durations')
+    parser.add_argument('--combos', nargs='+', default=None,
+                        metavar='CLF:SW[:tuned|:untuned]',
+                        help='Plot only these specific classifier:sw_dur '
+                             'combinations instead of the full cross-product. '
+                             'Optional :tuned or :untuned third field selects '
+                             'one variant. Examples: "svm:40 lda:60", '
+                             '"svm:40:tuned logistic:80:untuned". '
+                             'Overrides --classifiers/--sw-durs/--tuned.')
     parser.add_argument('--tuned', choices=['any', 'only', 'exclude'],
                         default='any',
                         help='"any"=both tuned and untuned, "only"=tuned only, '
@@ -481,14 +509,53 @@ def main():
     print(f'  Tuned flags:  {sorted(df["tuned"].unique())}')
 
     # ── Apply filters ───────────────────────────────────────────────
-    if args.classifiers:
-        df = df[df['classifier'].isin(args.classifiers)]
-    if args.sw_durs:
-        df = df[df['sw_dur'].isin(args.sw_durs)]
-    if args.tuned == 'only':
-        df = df[df['tuned'] == True]   # noqa: E712
-    elif args.tuned == 'exclude':
-        df = df[df['tuned'] == False]  # noqa: E712
+    if args.combos:
+        # Specific (classifier, sw_dur[, tuned]) selections — overrides the
+        # cross-product filters. Each combo: "clf:sw" or "clf:sw:tuned" /
+        # "clf:sw:untuned".
+        triples = []
+        for combo in args.combos:
+            parts = combo.split(':')
+            if len(parts) not in (2, 3):
+                raise SystemExit(
+                    f'Invalid --combos entry "{combo}"; expected '
+                    f'CLF:SW or CLF:SW:tuned/untuned'
+                )
+            clf = parts[0].strip()
+            try:
+                sw = int(parts[1])
+            except ValueError:
+                raise SystemExit(
+                    f'Invalid sw_dur in --combos entry "{combo}"'
+                )
+            if len(parts) == 3:
+                t_str = parts[2].strip().lower()
+                if t_str not in ('tuned', 'untuned'):
+                    raise SystemExit(
+                        f'Invalid tuned flag in --combos entry "{combo}"; '
+                        f'expected "tuned" or "untuned"'
+                    )
+                tuned_filter = (t_str == 'tuned')
+            else:
+                tuned_filter = None
+            triples.append((clf, sw, tuned_filter))
+
+        keep = pd.Series(False, index=df.index)
+        for clf, sw, tuned_filter in triples:
+            mask = (df['classifier'] == clf) & (df['sw_dur'] == sw)
+            if tuned_filter is not None:
+                mask &= (df['tuned'] == tuned_filter)
+            keep |= mask
+        df = df[keep]
+    else:
+        if args.classifiers:
+            df = df[df['classifier'].isin(args.classifiers)]
+        if args.sw_durs:
+            df = df[df['sw_dur'].isin(args.sw_durs)]
+        if args.tuned == 'only':
+            df = df[df['tuned'] == True]   # noqa: E712
+        elif args.tuned == 'exclude':
+            df = df[df['tuned'] == False]  # noqa: E712
 
     if df.empty:
         raise SystemExit('No rows left after filtering; adjust CLI flags.')
