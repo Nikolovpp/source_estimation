@@ -256,7 +256,7 @@ def compute_stats(df):
 # ──────────────────────────────────────────────────────────────
 # Plotting
 # ──────────────────────────────────────────────────────────────
-def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup):
+def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
     """Overlay classifier accuracy curves for one sw_dur, shade sig clusters.
 
     When ``n_subjects > 1`` SEM bands are shown; significance shading
@@ -300,7 +300,7 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup):
     ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
     ax.set_xlabel('Time (ms)', fontsize=14)
     ax.set_ylabel('Accuracy', fontsize=14)
-    ax.set_title(f'{roi_name} — Classifier Comparison '
+    ax.set_title(f'{roi_name} [{stim_class}] — Classifier Comparison '
                  f'(sw_dur={sw_dur}ms, n={n_subjects})', fontsize=16)
     ax.legend(loc='upper left', fontsize=12)
     ax.grid(True, alpha=0.3)
@@ -310,7 +310,7 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup):
 
 
 def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
-                           sig_lookup):
+                           sig_lookup, stim_class):
     """Overlay accuracy curves for different sw_durs (one classifier)."""
     sub = df[(df['classifier'] == classifier) & (df['tuned'] == tuned)]
     if sub.empty:
@@ -362,7 +362,7 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
     ax.set_xlabel('Time (ms)', fontsize=14)
     ax.set_ylabel('Accuracy', fontsize=14)
     tuned_str = ' [tuned]' if tuned else ''
-    ax.set_title(f'{roi_name} — Window Duration Sweep '
+    ax.set_title(f'{roi_name} [{stim_class}] — Window Duration Sweep '
                  f'({classifier}{tuned_str}, n={n_subjects})', fontsize=16)
     ax.legend(loc='upper left', fontsize=12)
     ax.grid(True, alpha=0.3)
@@ -371,7 +371,7 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
     return fig
 
 
-def plot_peak_accuracy_heatmap(df, roi_name):
+def plot_peak_accuracy_heatmap(df, roi_name, stim_class):
     """Heatmap of mean peak accuracy across subjects by (config x sw_dur)."""
     per_subj = df.groupby(
         ['subject', 'classifier', 'sw_dur', 'tuned']
@@ -388,6 +388,7 @@ def plot_peak_accuracy_heatmap(df, roi_name):
 
     pivot = avg.pivot(index='config', columns='sw_dur', values='accuracy')
     n_subjects = df['subject'].nunique()
+    classifiers_in_fig = sorted(df['classifier'].unique().tolist())
 
     fig, ax = plt.subplots(
         figsize=(max(8, len(pivot.columns) * 1.5),
@@ -398,7 +399,8 @@ def plot_peak_accuracy_heatmap(df, roi_name):
                 cbar_kws={'label': 'Peak Accuracy'})
     ax.set_xlabel('Sliding Window Duration (ms)', fontsize=13)
     ax.set_ylabel('Configuration', fontsize=13)
-    ax.set_title(f'{roi_name} — Peak Accuracy by Configuration '
+    ax.set_title(f'{roi_name} [{stim_class}] — Peak Accuracy by Configuration '
+                 f'[{", ".join(classifiers_in_fig)}] '
                  f'(n={n_subjects})', fontsize=15)
     plt.tight_layout()
     return fig
@@ -545,7 +547,8 @@ def main():
 
     # Classifier comparison (one figure per sw_dur)
     for sw_dur in sw_durs_present:
-        fig = plot_classifier_comparison(df, sw_dur, args.roi, sig_lookup)
+        fig = plot_classifier_comparison(df, sw_dur, args.roi, sig_lookup,
+                                         args.stim_class)
         fname = fig_dir / f'clf_comparison_sw{sw_dur}ms{suffix}.svg'
         fig.savefig(fname, dpi=150)
         plt.close(fig)
@@ -559,7 +562,7 @@ def main():
         for tuned in tuned_flags:
             fig = plot_sw_dur_comparison(
                 df, clf_name, bool(tuned), args.roi,
-                sw_durs_present, sig_lookup,
+                sw_durs_present, sig_lookup, args.stim_class,
             )
             if fig is None:
                 continue
@@ -569,9 +572,11 @@ def main():
             plt.close(fig)
             print(f'  Saved: {fname}')
 
-    # Peak accuracy heatmap
-    fig = plot_peak_accuracy_heatmap(df, args.roi)
-    fname = fig_dir / f'peak_accuracy_heatmap{suffix}.svg'
+    # Peak accuracy heatmap — encode classifiers in filename so partial
+    # runs (e.g. --classifiers svm) don't overwrite full-set heatmaps.
+    clf_tag = '-'.join(classifiers_present)
+    fig = plot_peak_accuracy_heatmap(df, args.roi, args.stim_class)
+    fname = fig_dir / f'peak_accuracy_heatmap_{clf_tag}{suffix}.svg'
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print(f'  Saved: {fname}')
