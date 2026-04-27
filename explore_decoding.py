@@ -581,7 +581,7 @@ def main():
         extra.append(f'--pseudo-trial-size {args.pseudo_trial_size}')
     if args.svm_c != SVM_C:
         extra.append(f'--svm-c {args.svm_c}')
-    extra_str = (' \\\n      ' + ' '.join(extra)) if extra else ''
+    extra_str = (' ' + ' '.join(extra)) if extra else ''
     print('\nTo produce figures and cluster-based permutation stats, run:')
     for roi_name in roi_names:
         print(f'  python explore_viz_stats.py \\')
