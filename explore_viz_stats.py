@@ -10,14 +10,18 @@ cheap to re-execute whenever you want to re-plot or change the stats.
 
 Figures written into ``<output_dir>/figures/``:
 
-    * ``clf_comparison_sw{sw}ms_{classifiers}[_{suffix}].svg``
+    * ``clf_comparison_sw{sw}ms_{classifiers}[_{primary}-vs-{compare}][_{suffix}].svg``
         Classifier overlay at a single sliding-window duration, with
-        significant-cluster time windows shaded per classifier.
+        significant-cluster time windows shaded per classifier.  When
+        ``--compare-stim-class`` is supplied the second stim class is
+        overlaid as dashed lines (color still encodes the classifier).
     * ``sw_sweep_{classifier}[_tuned][_{suffix}].svg``
         Sliding-window-duration sweep for one classifier, with
-        significance shading per sw_dur.
+        significance shading per sw_dur.  Always uses the primary
+        ``--stim-class`` only.
     * ``peak_accuracy_heatmap[_{suffix}].svg``
         (classifier x sw_dur) heatmap of group-mean peak accuracy.
+        Always uses the primary ``--stim-class`` only.
 
 Use ``--out-suffix`` to append a custom tag to every figure (and to the
 stats CSV) when you want to compare two filter selections side by side
@@ -213,11 +217,11 @@ def compute_stats(df):
     summary_rows = []
     sig_lookup = {}
 
-    grouped = df.groupby(['classifier', 'sw_dur', 'tuned'])
+    grouped = df.groupby(['classifier', 'sw_dur', 'tuned', 'stim_class'])
     print(f'Running cluster-based permutation tests '
           f'(n_permutations={N_PERMUTATIONS}) on {len(grouped)} configs...')
 
-    for (clf, sw_dur, tuned), grp in grouped:
+    for (clf, sw_dur, tuned, stim), grp in grouped:
         ms_values = np.array(sorted(grp['ms'].unique()))
         acc_matrix, kept = _build_accuracy_matrix(grp, ms_values)
         n_valid = acc_matrix.shape[0]
@@ -249,7 +253,7 @@ def compute_stats(df):
             peak_acc = float(mean_acc.max())
             peak_ms = float(ms_values[np.argmax(mean_acc)])
 
-        sig_lookup[(clf, int(sw_dur), bool(tuned))] = (
+        sig_lookup[(clf, int(sw_dur), bool(tuned), stim)] = (
             ms_values, sig_mask, p_per_time,
         )
 
@@ -264,6 +268,7 @@ def compute_stats(df):
             'classifier': clf,
             'sw_dur': int(sw_dur),
             'tuned': tuned_str,
+            'stim_class': stim,
             'n_subjects': int(n_valid),
             'n_sig_clusters': int(n_sig),
             'earliest_onset_ms': earliest_onset,
@@ -278,11 +283,15 @@ def compute_stats(df):
 # ──────────────────────────────────────────────────────────────
 # Plotting
 # ──────────────────────────────────────────────────────────────
-def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
+def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup,
+                               primary_stim, compare_stim=None):
     """Overlay classifier accuracy curves for one sw_dur, shade sig clusters.
 
     When ``n_subjects > 1`` SEM bands are shown; significance shading
-    uses the cluster test's per-classifier mask.
+    uses the cluster test's per-classifier mask.  When ``compare_stim``
+    is provided, both stim classes are drawn on the same axes — primary
+    as solid lines, compared as dashed — with classifier color preserved
+    so contrasts read cleanly.
     """
     sub = df[df['sw_dur'] == sw_dur]
     n_subjects = sub['subject'].nunique()
@@ -295,9 +304,15 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
     )
     color_map = _assign_colors(series_keys)
 
+    linestyle_map = {primary_stim: '-'}
+    if compare_stim is not None:
+        linestyle_map[compare_stim] = '--'
+
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    for (clf, tuned), grp in sub.groupby(['classifier', 'tuned']):
+    for (clf, tuned, stim), grp in sub.groupby(
+        ['classifier', 'tuned', 'stim_class']
+    ):
         ms_values = np.array(sorted(grp['ms'].unique()))
         acc_matrix, _ = _build_accuracy_matrix(grp, ms_values)
         if acc_matrix.shape[0] == 0:
@@ -309,27 +324,32 @@ def plot_classifier_comparison(df, sw_dur, roi_name, sig_lookup, stim_class):
                if acc_matrix.shape[0] > 1 else np.zeros_like(mean_acc))
 
         color = color_map[(clf, bool(tuned))]
-        label = clf + (' [tuned]' if tuned else '')
+        linestyle = linestyle_map.get(stim, '-')
+        stim_suffix = f' ({stim})' if compare_stim is not None else ''
+        label = clf + (' [tuned]' if tuned else '') + stim_suffix
 
         ax.plot(ms_values, mean_acc, color=color,
-                linewidth=2, label=label)
+                linewidth=2, linestyle=linestyle, label=label)
         if n_subjects > 1:
             ax.fill_between(ms_values, mean_acc - sem, mean_acc + sem,
                             alpha=0.18, color=color)
 
         # Significance shading (from cluster test on this config)
-        sig = sig_lookup.get((clf, int(sw_dur), bool(tuned)))
+        sig = sig_lookup.get((clf, int(sw_dur), bool(tuned), stim))
         if sig is not None:
             _, sig_mask, _ = sig
+            shade_alpha = 0.15 if compare_stim is not None else 0.22
             for s, e in find_contiguous_clusters(sig_mask):
                 ax.axvspan(ms_values[s], ms_values[e],
-                           alpha=0.22, color=color, zorder=0)
+                           alpha=shade_alpha, color=color, zorder=0)
 
     ax.axhline(0.5, color='black', linestyle='--', linewidth=0.8, label='chance')
     ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
     ax.set_xlabel('Time (ms)', fontsize=14)
     ax.set_ylabel('Accuracy', fontsize=14)
-    ax.set_title(f'{roi_name} [{stim_class}] — Classifier Comparison '
+    title_stim = (f'[{primary_stim} vs {compare_stim}]'
+                  if compare_stim is not None else f'[{primary_stim}]')
+    ax.set_title(f'{roi_name} {title_stim} — Classifier Comparison '
                  f'(sw_dur={sw_dur}ms, n={n_subjects})', fontsize=16)
     ax.legend(loc='upper left', fontsize=12)
     ax.grid(True, alpha=0.3)
@@ -370,7 +390,9 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
             ax.fill_between(ms_values, mean_acc - sem, mean_acc + sem,
                             alpha=0.18, color=colors[sw_dur])
 
-        sig = sig_lookup.get((classifier, int(sw_dur), bool(tuned)))
+        sig = sig_lookup.get(
+            (classifier, int(sw_dur), bool(tuned), stim_class)
+        )
         if sig is not None:
             _, sig_mask, _ = sig
             for s, e in find_contiguous_clusters(sig_mask):
@@ -437,6 +459,14 @@ def parse_args():
                         choices=['perception', 'overtProd'])
     parser.add_argument('--stim-class', required=True,
                         choices=['prodDiff', 'percDiff'])
+    parser.add_argument('--compare-stim-class', default=None,
+                        choices=['prodDiff', 'percDiff'],
+                        help='Overlay this second stim class on the '
+                             'classifier-comparison plot (dashed lines). '
+                             'Must differ from --stim-class. The sw_sweep '
+                             'and heatmap figures still use the primary '
+                             'stim class only. Output files are written '
+                             'under the primary --stim-class directory.')
     parser.add_argument('--method', required=True,
                         choices=['dSPM', 'LCMV'])
     parser.add_argument('--atlas', default='aparc',
@@ -483,17 +513,28 @@ def parse_args():
     return parser.parse_args()
 
 
+def _explore_csv_path(stim_class, args, run_seg):
+    return (
+        SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
+        / args.atlas / args.feature_mode / stim_class
+        / run_seg / args.roi
+    )
+
+
 def main():
     args = parse_args()
+
+    if args.compare_stim_class is not None and (
+        args.compare_stim_class == args.stim_class
+    ):
+        raise SystemExit(
+            '--compare-stim-class must differ from --stim-class'
+        )
 
     run_seg = explore_run_segment(
         args.leakage_correction, args.pseudo_trial_size, args.svm_c,
     )
-    out_dir = (
-        SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
-        / args.atlas / args.feature_mode / args.stim_class
-        / run_seg / args.roi
-    )
+    out_dir = _explore_csv_path(args.stim_class, args, run_seg)
     full_csv = out_dir / 'explore_full.csv'
     if not full_csv.exists():
         raise SystemExit(
@@ -502,11 +543,28 @@ def main():
         )
 
     df = pd.read_csv(full_csv)
+    df['stim_class'] = args.stim_class
     print(f'Loaded {len(df)} rows from {full_csv}')
+
+    if args.compare_stim_class is not None:
+        cmp_dir = _explore_csv_path(args.compare_stim_class, args, run_seg)
+        cmp_csv = cmp_dir / 'explore_full.csv'
+        if not cmp_csv.exists():
+            raise SystemExit(
+                f'explore_full.csv for --compare-stim-class not found at '
+                f'{cmp_csv}\nRun explore_decoding.py for that stim class '
+                f'first with matching arguments.'
+            )
+        df_cmp = pd.read_csv(cmp_csv)
+        df_cmp['stim_class'] = args.compare_stim_class
+        print(f'Loaded {len(df_cmp)} rows from {cmp_csv}')
+        df = pd.concat([df, df_cmp], ignore_index=True)
+
     print(f'  Subjects:    {sorted(df["subject"].unique())}')
     print(f'  Classifiers: {sorted(df["classifier"].unique())}')
     print(f'  SW durations: {sorted(df["sw_dur"].unique())}')
     print(f'  Tuned flags:  {sorted(df["tuned"].unique())}')
+    print(f'  Stim classes: {sorted(df["stim_class"].unique())}')
 
     # ── Apply filters ───────────────────────────────────────────────
     if args.combos:
@@ -568,6 +626,7 @@ def main():
           f'{len(sw_durs_present)} sw_durs')
 
     suffix = f'_{args.out_suffix}' if args.out_suffix else ''
+    comparing = args.compare_stim_class is not None
 
     # ── Stats ──────────────────────────────────────────────────────
     if n_subjects >= 3:
@@ -576,17 +635,20 @@ def main():
         stats_df.to_csv(stats_csv, index=False)
         print(f'\nStats: {stats_csv}')
 
+        stim_col_hdr = f'{"Stim":<10} ' if comparing else ''
         print(f'\n{"Classifier":<12} {"SW_dur":<8} {"Tuned":<7} '
-              f'{"Sig Clusters":<14} {"Onset (ms)":<12} '
+              f'{stim_col_hdr}{"Sig Clusters":<14} {"Onset (ms)":<12} '
               f'{"Peak Acc":<10} {"Peak ms":<10}')
-        print('-' * 75)
+        print('-' * (75 + (10 if comparing else 0)))
         for _, row in stats_df.iterrows():
             onset_str = (f'{row["earliest_onset_ms"]:.1f}'
                          if row['earliest_onset_ms'] is not None
                          and not pd.isna(row['earliest_onset_ms'])
                          else '—')
+            stim_col = f'{row["stim_class"]:<10} ' if comparing else ''
             print(f'{row["classifier"]:<12} {int(row["sw_dur"]):<8} '
                   f'{row["tuned"]:<7} '
+                  f'{stim_col}'
                   f'{row["n_sig_clusters"]:<14} {onset_str:<12} '
                   f'{row["peak_acc"]:<10.3f} {row["peak_ms"]:<10.1f}')
 
@@ -595,11 +657,14 @@ def main():
             print('\nModal tuned hyperparameters at peak window '
                   '(mode over 25 outer folds per subject; '
                   'mode over subjects at the group peak ms):')
+            stim_col_hdr = f'{"Stim":<10} ' if comparing else ''
             print(f'{"Classifier":<12} {"SW_dur":<8} '
-                  f'{"Peak ms":<10} {"Modal hyperparams":<50}')
-            print('-' * 80)
+                  f'{stim_col_hdr}{"Peak ms":<10} {"Modal hyperparams":<50}')
+            print('-' * (80 + (10 if comparing else 0)))
             for _, row in tuned_rows.iterrows():
+                stim_col = f'{row["stim_class"]:<10} ' if comparing else ''
                 print(f'{row["classifier"]:<12} {int(row["sw_dur"]):<8} '
+                      f'{stim_col}'
                       f'{row["peak_ms"]:<10.1f} '
                       f'{row["modal_hyperparams_at_peak"]:<50}')
     else:
@@ -612,14 +677,27 @@ def main():
     fig_dir = out_dir / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
 
+    # sw_sweep + heatmap operate on the primary stim class only — they
+    # have no clean way to encode a second stim class.
+    df_primary = df[df['stim_class'] == args.stim_class]
+
     # Classifier comparison (one figure per sw_dur) — encode classifier set
     # in filename so partial runs (e.g. --classifiers svm lda) don't
     # overwrite figures from other classifier-set runs at the same sw_dur.
+    # When comparing two stim classes, also tag the filename so the two
+    # variants don't collide with single-stim runs.
     clf_tag = '-'.join(classifiers_present)
+    stim_tag = (f'_{args.stim_class}-vs-{args.compare_stim_class}'
+                if comparing else '')
     for sw_dur in sw_durs_present:
-        fig = plot_classifier_comparison(df, sw_dur, args.roi, sig_lookup,
-                                         args.stim_class)
-        fname = fig_dir / f'clf_comparison_sw{sw_dur}ms_{clf_tag}{suffix}.svg'
+        fig = plot_classifier_comparison(
+            df, sw_dur, args.roi, sig_lookup,
+            args.stim_class, args.compare_stim_class,
+        )
+        fname = (
+            fig_dir
+            / f'clf_comparison_sw{sw_dur}ms_{clf_tag}{stim_tag}{suffix}.svg'
+        )
         fig.savefig(fname, dpi=150)
         plt.close(fig)
         print(f'  Saved: {fname}')
@@ -627,11 +705,12 @@ def main():
     # SW duration sweep (one figure per classifier x tuned combo present)
     for clf_name in classifiers_present:
         tuned_flags = sorted(
-            df[df['classifier'] == clf_name]['tuned'].unique().tolist()
+            df_primary[df_primary['classifier'] == clf_name]['tuned']
+            .unique().tolist()
         )
         for tuned in tuned_flags:
             fig = plot_sw_dur_comparison(
-                df, clf_name, bool(tuned), args.roi,
+                df_primary, clf_name, bool(tuned), args.roi,
                 sw_durs_present, sig_lookup, args.stim_class,
             )
             if fig is None:
@@ -644,7 +723,7 @@ def main():
 
     # Peak accuracy heatmap — encode classifiers in filename so partial
     # runs (e.g. --classifiers svm) don't overwrite full-set heatmaps.
-    fig = plot_peak_accuracy_heatmap(df, args.roi, args.stim_class)
+    fig = plot_peak_accuracy_heatmap(df_primary, args.roi, args.stim_class)
     fname = fig_dir / f'peak_accuracy_heatmap_{clf_tag}{suffix}.svg'
     fig.savefig(fname, dpi=150)
     plt.close(fig)
