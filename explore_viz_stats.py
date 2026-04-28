@@ -10,7 +10,7 @@ cheap to re-execute whenever you want to re-plot or change the stats.
 
 Figures written into ``<output_dir>/figures/``:
 
-    * ``clf_comparison_sw{sw}ms[_{suffix}].svg``
+    * ``clf_comparison_sw{sw}ms_{classifiers}[_{suffix}].svg``
         Classifier overlay at a single sliding-window duration, with
         significant-cluster time windows shaded per classifier.
     * ``sw_sweep_{classifier}[_tuned][_{suffix}].svg``
@@ -612,11 +612,14 @@ def main():
     fig_dir = out_dir / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    # Classifier comparison (one figure per sw_dur)
+    # Classifier comparison (one figure per sw_dur) — encode classifier set
+    # in filename so partial runs (e.g. --classifiers svm lda) don't
+    # overwrite figures from other classifier-set runs at the same sw_dur.
+    clf_tag = '-'.join(classifiers_present)
     for sw_dur in sw_durs_present:
         fig = plot_classifier_comparison(df, sw_dur, args.roi, sig_lookup,
                                          args.stim_class)
-        fname = fig_dir / f'clf_comparison_sw{sw_dur}ms{suffix}.svg'
+        fname = fig_dir / f'clf_comparison_sw{sw_dur}ms_{clf_tag}{suffix}.svg'
         fig.savefig(fname, dpi=150)
         plt.close(fig)
         print(f'  Saved: {fname}')
@@ -641,7 +644,6 @@ def main():
 
     # Peak accuracy heatmap — encode classifiers in filename so partial
     # runs (e.g. --classifiers svm) don't overwrite full-set heatmaps.
-    clf_tag = '-'.join(classifiers_present)
     fig = plot_peak_accuracy_heatmap(df, args.roi, args.stim_class)
     fname = fig_dir / f'peak_accuracy_heatmap_{clf_tag}{suffix}.svg'
     fig.savefig(fname, dpi=150)
