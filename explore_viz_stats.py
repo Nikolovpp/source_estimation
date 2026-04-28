@@ -20,8 +20,11 @@ Figures written into ``<output_dir>/figures/``:
         significance shading per sw_dur.  Always uses the primary
         ``--stim-class`` only.
     * ``peak_accuracy_heatmap[_{suffix}].svg``
-        (classifier x sw_dur) heatmap of group-mean peak accuracy.
-        Always uses the primary ``--stim-class`` only.
+        (classifier x sw_dur) heatmap of the mean *per-subject* peak
+        accuracy — i.e. ``mean_subj(max_t acc)``.  This is biased upward
+        relative to the line-plot's ``max_t(mean_subj acc)`` peak because
+        each subject's peak can occur at a different latency.  Always
+        uses the primary ``--stim-class`` only.
 
 Use ``--out-suffix`` to append a custom tag to every figure (and to the
 stats CSV) when you want to compare two filter selections side by side
@@ -414,7 +417,16 @@ def plot_sw_dur_comparison(df, classifier, tuned, roi_name, sw_durs,
 
 
 def plot_peak_accuracy_heatmap(df, roi_name, stim_class):
-    """Heatmap of mean peak accuracy across subjects by (config x sw_dur)."""
+    """Heatmap of mean per-subject peak accuracy by (config x sw_dur).
+
+    Each cell is computed as ``mean_subj(max_t(acc))`` — for every subject
+    we take that subject's best time point, then average those per-subject
+    peaks across subjects.  This is *not* the same as the line-plot's
+    peak, which is ``max_t(mean_subj(acc))`` (peak of the group-mean
+    curve).  The per-subject-peak estimator is biased upward because each
+    subject's peak can occur at a different latency, so the colorbar is
+    labeled accordingly.
+    """
     per_subj = df.groupby(
         ['subject', 'classifier', 'sw_dur', 'tuned']
     )['accuracy'].max().reset_index()
@@ -438,12 +450,17 @@ def plot_peak_accuracy_heatmap(df, roi_name, stim_class):
     )
     sns.heatmap(pivot, annot=True, fmt='.3f', cmap='YlOrRd', ax=ax,
                 vmin=0.48, linewidths=0.5,
-                cbar_kws={'label': 'Peak Accuracy'})
+                cbar_kws={'label': 'Mean per-subject peak accuracy'})
     ax.set_xlabel('Sliding Window Duration (ms)', fontsize=13)
     ax.set_ylabel('Configuration', fontsize=13)
-    ax.set_title(f'{roi_name} [{stim_class}] — Peak Accuracy by Configuration '
-                 f'[{", ".join(classifiers_in_fig)}] '
-                 f'(n={n_subjects})', fontsize=15)
+    ax.set_title(
+        f'{roi_name} [{stim_class}] — Mean per-subject peak accuracy '
+        f'by Configuration  '
+        f'[{", ".join(classifiers_in_fig)}] (n={n_subjects})\n'
+        f'mean_subj(max_t acc) — biased above the line-plot peak '
+        f'max_t(mean_subj acc)',
+        fontsize=13,
+    )
     plt.tight_layout()
     return fig
 
