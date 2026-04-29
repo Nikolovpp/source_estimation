@@ -82,6 +82,46 @@ def _stim_dir(stim_class, args, run_seg):
     )
 
 
+def _suggest_alternatives(args, stim_class):
+    """List existing (feature_mode, run_seg) combos that have ROI data.
+
+    When the constructed stim_dir is missing, the silent culprit is
+    almost always ``--feature-mode``, ``--leakage-correction``,
+    ``--pseudo-trial-size``, or ``--svm-c`` not matching what was
+    written by ``explore_decoding.py``.  Walk the
+    ``task/method/atlas`` parent and print every path under it that
+    actually contains ROI subdirs with ``explore_full.csv`` so the
+    user sees which flag combos are live.
+    """
+    parent = (
+        SVM_OUTPUT_ROOT / 'explore' / args.task
+        / args.method / args.atlas
+    )
+    if not parent.exists():
+        return f'  (parent {parent} does not exist either)'
+    candidates = []
+    for feat_dir in sorted(p for p in parent.iterdir() if p.is_dir()):
+        stim_subdir = feat_dir / stim_class
+        if not stim_subdir.is_dir():
+            continue
+        for run_dir in sorted(p for p in stim_subdir.iterdir() if p.is_dir()):
+            roi_dirs = [
+                p for p in run_dir.iterdir()
+                if p.is_dir() and (p / 'explore_full.csv').exists()
+                and not p.name.startswith('_')
+            ]
+            if roi_dirs:
+                candidates.append(
+                    f'  --feature-mode {feat_dir.name}  '
+                    f'(run_seg={run_dir.name}, '
+                    f'{len(roi_dirs)} ROI(s): '
+                    f'{", ".join(sorted(p.name for p in roi_dirs))})'
+                )
+    if not candidates:
+        return f'  (no ROI data under {parent} for stim_class={stim_class})'
+    return '\n'.join(candidates)
+
+
 def _discover_rois(stim_dir):
     """Return sorted list of ROI subdirs that have explore_full.csv."""
     if not stim_dir.exists():
@@ -390,7 +430,19 @@ def main():
     )
     stim_dir = _stim_dir(args.stim_class, args, run_seg)
     if not stim_dir.exists():
-        raise SystemExit(f'Stim directory not found: {stim_dir}')
+        raise SystemExit(
+            f'Stim directory not found:\n  {stim_dir}\n\n'
+            f'You passed: --feature-mode {args.feature_mode}, '
+            f'--leakage-correction={args.leakage_correction}, '
+            f'--pseudo-trial-size {args.pseudo_trial_size}, '
+            f'--svm-c {args.svm_c}\n'
+            f'(these flags must match what explore_decoding.py was run '
+            f'with — they are part of the output path).\n\n'
+            f'Existing combos with ROI data under '
+            f'{args.task}/{args.method}/{args.atlas} '
+            f'for stim_class={args.stim_class}:\n'
+            f'{_suggest_alternatives(args, args.stim_class)}'
+        )
 
     if len(args.rois) == 1 and args.rois[0].lower() == 'auto':
         rois = _discover_rois(stim_dir)
@@ -409,8 +461,15 @@ def main():
         print(f'Skipped {len(missing)} ROI(s) with no tuned data: {missing}')
     if not records:
         raise SystemExit(
-            'No tuned rows found across the requested ROIs. Did you run '
-            'explore_decoding.py with --tune-hyperparams?'
+            f'No tuned rows found across the requested ROIs under '
+            f'{stim_dir}.\n'
+            f'Did you run explore_decoding.py with --tune-hyperparams '
+            f'and matching --feature-mode / --leakage-correction / '
+            f'--pseudo-trial-size / --svm-c?\n\n'
+            f'Existing combos with ROI data under '
+            f'{args.task}/{args.method}/{args.atlas} '
+            f'for stim_class={args.stim_class}:\n'
+            f'{_suggest_alternatives(args, args.stim_class)}'
         )
 
     rec_df = pd.DataFrame(records)
