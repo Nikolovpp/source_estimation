@@ -16,19 +16,305 @@ configurations on cached source-estimated ROI time courses:
 | Subjects | up to 20 |
 | ROIs per atlas | 1 (iteration) — 16 (production) |
 | Classifiers | `svm`, `lda`, `logistic` (1–3) |
-| Sliding-window durations | `20 40 60 80 100` ms (1–5) |
+| Sliding-window durations | `40 60 80` ms default (1–3); `--sw-durs` overrides |
 | Tuned variants | `False` always; `True` for `svm`/`logistic` (×2) |
 | Time windows per config | ~80 (decode region / sw_step) |
-| CV inside each window | 5 repeats × 5 outer folds = 25 fits (×27 inner fits if tuned) |
+| CV inside each window | 5 repeats × 5 outer folds = 25 outer fits (× 13 inner fits if tuned for either svm or logistic; see §1.1) |
 
-For the full sweep, the per-subject work is roughly:
+For the full default sweep, the per-subject work is roughly:
 
-- Untuned configs: 3 classifiers × 5 sw_durs = **15 configs × 80 windows × 25 fits ≈ 30 000 sklearn fits**
-- Tuned configs: 2 classifiers × 5 sw_durs = **10 configs × 80 windows × 25 outer × 27 inner ≈ 540 000 sklearn fits**
+- Untuned configs: 3 classifiers × 3 sw_durs = **9 configs × 80 windows × 25 fits ≈ 18 000 sklearn fits**
+- Tuned configs: tuned-svm = 3 sw_durs × 80 windows × 25 outer × 13 inner ≈ **78 000 fits**; tuned-logistic = 3 × 80 × 25 × 13 ≈ **78 000 fits** — together **~156 000 sklearn fits**
 
-So tuned work outweighs untuned by **~18×**, and a single subject's
-full sweep is on the order of half a million sklearn fits. Across 20
-subjects, ~10 million fits.
+So tuned work outweighs untuned by **~9×**, and a single subject's
+full sweep is on the order of ~175 000 sklearn fits. Across 20
+subjects, ~3–4 million fits.
+
+---
+
+## 1.1 How nested CV (tuning) works
+
+When `--tune-hyperparams` is on, every per-window fit in
+`decode_one_window` runs a **nested cross-validation**: an *outer* CV
+that produces the reported accuracy, and an *inner* CV that picks
+hyperparameters separately for each outer training fold.
+
+### Outer vs. inner — what each layer does
+
+**Outer CV** — `5 repeats × 5 StratifiedKFold = 25 outer iterations`
+per window (`N_CV_REPEATS × N_CV_FOLDS` from `config.py`). Each outer
+iteration:
+
+1. Split `(X_win, y)` into `(X_train, y_train)` and `(X_test, y_test)`.
+2. Apply pseudo-trial averaging to `X_train` only (training-only — no
+   leakage of the test fold into pseudo-trial groups).
+3. Wrap the classifier pipeline in
+   `GridSearchCV(pipeline, param_grid, cv=3, refit=True)` and call
+   `.fit(X_train, y_train)`. **This is where the inner CV runs.**
+4. Score the refit pipeline on `X_test`; append to the per-window
+   scores list.
+
+The 25 outer scores are averaged into the value the line plots show
+and the value reported in the `accuracy` column of `explore_full.csv`.
+
+**Inner CV** — `cv=3` `StratifiedKFold` inside `GridSearchCV`. For
+every hyperparameter point in `param_grid`, `X_train` is split 3 ways;
+the pipeline is fit on each 2/3 and scored on the remaining 1/3, and
+the 3 fold-scores are averaged. After all grid points have been
+scored, `refit=True` does **one final fit on the full `X_train`** with
+the winning hyperparameters — that fit is the model used to score the
+outer test fold in step 4 above.
+
+So:
+- **Outer CV is *evaluation*** — the 25 accuracies it produces are
+  what is reported.
+- **Inner CV is *model selection*** — it picks hyperparameters and
+  never contributes to the reported accuracy directly. Its only
+  output is "which grid point won."
+
+### Per-classifier grids
+
+| Classifier | `param_grid` | Grid pts | Inner-CV fits / outer iter | + refit | Total fits / outer iter |
+|---|---|---:|---:|---:|---:|
+| `svm`      | `C ∈ {0.01, 0.1, 1.0, 10.0}` | 4 | 4 × 3 = 12 | 1 | **13** |
+| `logistic` | `C ∈ {0.01, 0.1, 1.0, 10.0}` (`l1_ratio` hard-coded to 0.1) | 4 | 4 × 3 = 12 | 1 | **13** |
+| `lda`      | none — `shrinkage='auto'` is analytic (Ledoit-Wolf) | — | — | — | (no nested CV) |
+
+`lda`'s shrinkage is computed in closed form during `.fit`, so
+`--tune-hyperparams` is a no-op for LDA — the tuned and untuned LDA
+results are bit-identical, and `param_grid` is `None` in
+`_build_classifier_pipeline`.
+
+### Per-window fit counts (one window, all 25 outer iterations)
+
+| Mode | Fits per window |
+|---|---:|
+| Any untuned (`svm`, `lda`, `logistic`) | 25 outer × 1 = **25** |
+| `svm` tuned     | 25 × 13 = **325** |
+| `logistic` tuned | 25 × 13 = **325** |
+
+So tuned svm and tuned logistic each do ~13× the work of an untuned
+classifier per window. This is what makes "tuned configs dominate
+wall time" in §2.3.
+
+### Per-subject fit counts (default sweep, 3 sw_durs × ~80 windows)
+
+| Classifier | Tuned? | Fits per subject |
+|---|---|---:|
+| svm      | no  | 3 × 80 × 25  = **6 000** |
+| svm      | yes | 3 × 80 × 325 = **78 000** |
+| lda      | (n/a) | 3 × 80 × 25 = **6 000** |
+| logistic | no  | 3 × 80 × 25  = **6 000** |
+| logistic | yes | 3 × 80 × 325 = **78 000** |
+| **Total per subject** | — | **≈ 174 000** |
+
+### What `best_params_mode` reports
+
+For tuned configs, every outer iteration's chosen hyperparameter
+point is recorded. At the end of a window the **mode** across the 25
+outer iterations becomes `best_params_mode`, with `best_params_freq`
+giving the fraction of outer iterations that picked that point. In
+`explore_viz_stats` this is then aggregated again — taking the mode
+across subjects at the group peak window — and printed as the
+`Modal hyperparameters at peak window` table.
+
+### Why the inner CV uses 3 folds (not 5)
+
+Inner CV only needs to **rank** grid points, not produce a
+publication-quality accuracy. With ~70 training samples per outer
+training fold, a 3-fold inner split gives ~47 train + ~23 val per
+inner fold — enough to discriminate between C values that differ by
+10×, at 3/5 the cost of a 5-fold inner CV. Using 5-fold inner would
+roughly multiply tuned-classifier work by 5/3 with marginal gains in
+hyperparameter-selection quality.
+
+### Pseudo-trials × nested CV
+
+Pseudo-trial averaging (`--pseudo-trial-size N`) runs **once per
+outer iteration**, on `X_train` only, before `GridSearchCV.fit`. This
+means the inner 3-fold CV operates on already-averaged trials — it
+does not re-average inside each inner fold. The deliberate
+consequence: the inner CV sees the same data distribution as the
+final refit, so the hyperparameters chosen are the ones best suited
+to the pseudo-trial-averaged signal that will actually be scored.
+
+### Refit semantics
+
+`refit=True` (the default) means after picking the best param set,
+`GridSearchCV` retrains a single pipeline on the full `X_train` (not
+just 2/3) with those params. That refit pipeline is what
+`clf.score(X_test, y_test)` uses. So the outer-fold accuracy reflects
+performance with hyperparameters chosen by inner CV but a model
+trained on more data than any single inner training fold saw — which
+is the standard nested-CV evaluation protocol.
+
+---
+
+## 1.2 Classifier choices in detail
+
+Three classifiers are exposed via `--classifier {svm,lda,logistic}`
+in **both** `explore_decoding.py` and `run_parallel_lowram.py`. Each
+one is wrapped in the same outer pipeline
+`StandardScaler → [feature reduction] → classifier`; the differences
+live in the classifier block itself, summarized below
+(`_build_classifier_pipeline` in `svm_decoding.py`).
+
+### `svm` — `LinearSVC` (squared-hinge, L2)
+
+```python
+LinearSVC(C=svm_c, max_iter=5000)
+```
+
+| Property | Value |
+|---|---|
+| Loss               | squared hinge: `max(0, 1 − y·(w·x + b))²` |
+| Regularization     | L2 only: `½‖w‖²` |
+| Solver             | liblinear coordinate descent |
+| Multiclass         | one-vs-rest (built into liblinear) |
+| Decision output    | sign of `w·x + b` (no probabilities; use `decision_function` for margin scores) |
+| Tunable grid       | `C ∈ {0.01, 0.1, 1.0, 10.0}` (4 pts) |
+| Untuned cost / fit | ~30 ms |
+
+**Strengths.** Fastest tuned classifier here — liblinear's
+coordinate descent on a few hundred features × ~70 samples is
+nearly instant. L2 shrinkage handles high-dimensional features
+gracefully without divergence. Strong default choice when you don't
+need probabilistic output or built-in feature selection.
+
+**Caveats.** Isotropic L2 shrinks all weights equally — it cannot
+zero out irrelevant vertices. No calibrated probabilities (Platt
+scaling is possible but not enabled here).
+
+### `lda` — `LinearDiscriminantAnalysis` with Ledoit-Wolf shrinkage
+
+```python
+LinearDiscriminantAnalysis(solver='lsqr', shrinkage='auto')
+```
+
+| Property | Value |
+|---|---|
+| Decision rule        | fit class-conditional Gaussians with a shared covariance Σ; classify by Mahalanobis distance to class means |
+| Solver               | `lsqr` (least squares; no eigendecomposition) |
+| Shrinkage            | `'auto'` = Ledoit-Wolf analytic optimum: `Σ̂ ← (1−α)·Σ_emp + α·(tr Σ_emp / p)·I` with `α` chosen in closed form |
+| Multiclass           | native (single fit, all classes) |
+| Decision output      | `predict_proba` available (Gaussian generative model) |
+| Tunable grid         | **none** — `param_grid is None`; `--tune-hyperparams` is a no-op |
+| Untuned cost / fit   | ~15 ms |
+
+**Strengths.** Cheapest classifier per fit. The Ledoit-Wolf scalar
+is computed in closed form from `X_train`, so no inner CV is
+required to set the regularization — this is why tuned-LDA and
+untuned-LDA are bit-identical. LDA is also the only classifier here
+with a generative probability model.
+
+**Caveats.** The shared-covariance assumption requires Σ̂ to be
+invertible. With `vertex_selectkbest_all` (n_features ≫ n_samples),
+Ledoit-Wolf shrinks aggressively toward the diagonal — the model
+collapses to **diagonal LDA / naive Bayes** and loses all
+between-feature correlation information. Stick to `pca_flip` or
+`vertex_pca` (where retained components ≪ samples) when using LDA.
+
+### `logistic` — elastic-net `LogisticRegression` (saga)
+
+```python
+LogisticRegression(
+    penalty='elasticnet', solver='saga',
+    l1_ratio=0.1, C=svm_c, max_iter=5000,
+)
+```
+
+| Property | Value |
+|---|---|
+| Loss                 | logistic / cross-entropy (negative log-likelihood) |
+| Regularization       | elastic-net: `l1_ratio·‖w‖₁ + (1 − l1_ratio)·½‖w‖²` |
+| Solver               | `saga` (stochastic average gradient descent — the only sklearn solver that supports elastic-net) |
+| Multiclass           | multinomial (softmax) by default |
+| Decision output      | `predict_proba` (calibrated by the log-likelihood objective) |
+| Tunable grid         | `C ∈ {0.01, 0.1, 1.0, 10.0}` (4 pts) — `l1_ratio` is hard-coded at `0.1` |
+| Untuned cost / fit   | ~150 ms |
+
+**`l1_ratio = 0.1` is fixed.** The exploratory sweep (mode of best
+hyperparameters across 25 outer folds × 20 subjects) selected
+`l1_ratio = 0.1` for ≥17/20 subjects in every (sw_dur, stim_class,
+ROI) cell tested. Removing it from the grid cuts tuned-logistic
+cost by 3× (13 inner-CV fits/outer iter instead of 37 — same shape
+as the SVM grid) without measurable accuracy change. Untuned
+logistic also uses `l1_ratio = 0.1` so untuned and tuned share the
+same regularization geometry, only `C` differs.
+
+**Strengths.** Elastic-net at `l1_ratio = 0.1` is mostly L2 (ridge)
+with a small L1 term — enough to lightly sparsify weights for
+genuinely irrelevant vertices while preserving the smoothness that
+makes ridge logistic regression robust at small `n`. Best fit for
+high-dimensional modes (`vertex_selectkbest_all`, large
+`vertex_selectkbest`) where built-in feature selection is desired
+plus calibrated probabilities matter.
+
+**Caveats.** ~5× slower than `svm` untuned and ~10× slower than
+`lda` per fit; tuned-logistic is the dominant cost in any sweep
+(~1.5 s per outer iter — see §4.1). The saga solver also converges
+more slowly than liblinear on small problems, so the cost is only
+justified when you need elastic-net's selection behavior or
+calibrated probabilities. If `l1_ratio` ever needs to vary across
+data (e.g. a new task where 0.1 isn't dominant), reintroduce it to
+the grid in `_build_classifier_pipeline`.
+
+### Side-by-side summary
+
+| Classifier | Loss | Regularization | Tunable | Probability | ~Untuned ms | ~Tuned ms / outer iter |
+|---|---|---|---|---|---:|---:|
+| `svm`      | sq. hinge | L2          | `C` (4 pts)              | none           |  30 |  250 |
+| `lda`      | Gaussian likelihood | Ledoit-Wolf shrinkage (analytic) | (none) | yes (Gaussian)        |  15 |   15 |
+| `logistic` | log loss  | elastic-net (`l1_ratio=0.1` fixed) | `C` (4 pts) | yes (calibrated) | 150 | 1500 |
+
+The "outer iter" column already includes the +1 refit; for the
+fit-count breakdown see §1.1.
+
+### When to pick which
+
+| Situation | Pick | Why |
+|---|---|---|
+| Fast iteration, sensible default | `svm` | Speed + L2 covers most cases; widely used in EEG decoding literature. |
+| Few features (`pca_flip`, `vertex_pca`) and want probabilities | `lda` | Closed-form shrinkage, no tuning, gives `predict_proba`. |
+| Many features, want sparsity / built-in selection | `logistic --tune-hyperparams` | Elastic-net (`l1_ratio = 0.1` fixed) lightly sparsifies; `C` is tuned per fold. |
+| Replicating prior speech-decoding work | `svm` | Linear SVM is the field-standard baseline. |
+| Tight wall-time budget (full pipeline, all subjects × ROIs) | `svm` or `lda` | Tuned-logistic is ~10× untuned-logistic and ~50× untuned-svm per outer iteration; the production runner's coarser parallelism amplifies this. |
+
+### Using `logistic` in `run_parallel_lowram.py`
+
+**Yes, this is fully supported.** `run_parallel_lowram.py` accepts
+the same `--classifier {svm,lda,logistic}` and `--tune-hyperparams`
+flags as `explore_decoding.py`, because both runners delegate to the
+same `sliding_window_svm_decode` / `decode_one_window` primitives in
+`svm_decoding.py`. Example:
+
+```bash
+python run_parallel_lowram.py --task overtProd --stim-class prodDiff \
+    --method dSPM --atlas HCPMMP1 --feature-mode vertex_selectkbest \
+    --classifier logistic --tune-hyperparams --n-jobs 2
+```
+
+**Cost note.** The two runners parallelize differently:
+
+- `explore_decoding.py` runs subjects sequentially in the main
+  process and parallelises **(roi × config × window)** across 64
+  cores (§3.4). A tuned-logistic full sweep is ~10–15 min/subject.
+- `run_parallel_lowram.py` parallelises **across subjects** (each
+  worker processes one subject end-to-end) and runs windows
+  serially within a subject. With `--n-jobs 2` (the documented
+  default), only 2 cores work at a time — the rest of the box sits
+  idle. A tuned-logistic full sweep is therefore much slower per
+  subject than in `explore_decoding`, and the wall-clock time scales
+  roughly as `ceil(n_subjects / n_jobs) × tuned_subject_cost`.
+
+The practical workflow is to use `explore_decoding.py` to
+**discover** the best `(classifier, sw_dur, tuning)` combination on
+a few ROIs/subjects, then lock that config in and run the
+production sweep across all subjects × all ROIs with
+`run_parallel_lowram.py`. Switching the production run to
+`--classifier logistic --tune-hyperparams` is supported but expect
+several hours of wall time at `--n-jobs 2`; bumping `--n-jobs`
+trades RAM headroom (each worker loads a 7 GB cache) for throughput.
 
 ---
 
@@ -78,7 +364,8 @@ inner 9-point × 3-fold grid (27 fits per outer fit) also ran serially.
 
 With ~30 configurations and N workers, parallelism was bounded by
 config count — and configs are wildly heterogeneous: a tuned config is
-~25× the cost of an untuned config. The slowest tuned config dominates
+~10–15× the cost of an untuned config (with the current grids; pre-refactor
+the imbalance was even larger when `l1_ratio` was also tuned). The slowest tuned config dominates
 wall time, leaving cores idle:
 
 ```
@@ -138,19 +425,19 @@ redundant windowing work.
 
 The unit of work submitted to the joblib pool is a single
 **(roi, classifier, sw_dur, tuned, window_index)** cell — i.e. a 25-fit
-(or 25 × 27 = 675-fit if tuned) repeated stratified CV on one
+(or 25 × 13 = 325-fit if tuned) repeated stratified CV on one
 pre-windowed slice.
 
-Per-subject task count for a typical sweep:
+Per-subject task count for a typical sweep (default 3 sw_durs):
 
 | Sweep | Configs | Windows | ROIs | Tasks |
 |---|---|---|---|---|
-| Single ROI, untuned | 15 | 80 | 1 | 1 200 |
-| Single ROI, untuned + tuned | 25 | 80 | 1 | 2 000 |
-| 4 ROIs, untuned + tuned | 25 | 80 | 4 | 8 000 |
-| 4 ROIs, narrowed sweep + tuned | 6 | 80 | 4 | 1 920 |
+| Single ROI, untuned                   |  9 | 80 | 1 |   720 |
+| Single ROI, untuned + tuned           | 15 | 80 | 1 | 1 200 |
+| 4 ROIs, untuned + tuned               | 15 | 80 | 4 | 4 800 |
+| 4 ROIs, narrowed sweep (1 sw, 2 clf, both tuned) + tuned | 4 | 80 | 4 | 1 280 |
 
-With 64 cores, 1 200–8 000 tasks gives 19–125 tasks per core — plenty
+With 64 cores, 720–4 800 tasks gives 11–75 tasks per core — plenty
 of headroom for the scheduler to keep workers fed.
 
 ### 3.5 Joblib auto-memmap for shared `X_windowed`
@@ -199,25 +486,26 @@ features):
 | `LinearSVC.fit` (untuned, ~70 trials × ~500 features) | ~30 ms |
 | `LinearDiscriminantAnalysis.fit` (shrinkage) | ~15 ms |
 | `LogisticRegression.fit` (elastic-net, saga) | ~150 ms |
-| `GridSearchCV` outer fit (svm, 9-point × 3 inner) | ~600 ms |
-| `GridSearchCV` outer fit (logistic, 12-point × 3 inner) | ~5 000 ms |
+| `GridSearchCV` outer iteration (svm, 4-point × 3 inner = 13 fits incl. refit) | ~250 ms |
+| `GridSearchCV` outer iteration (logistic, 4-point × 3 inner = 13 fits incl. refit) | ~1 500 ms |
 
 ### 4.2 Wall-time estimates per subject
 
-For the full sweep `--classifiers svm lda logistic --sw-durs 20 40 60
-80 100 --tune-hyperparams` on one subject:
+For the default sweep `--classifiers svm lda logistic --sw-durs 40 60 80
+--tune-hyperparams` on one subject:
 
 | Approach | Wall-time | Cores used |
 |---|---|---|
-| **Old** (config-serial, 1 thread) | ~12 h | 1 of 64 |
-| **Old** (subject-parallel, 8 workers) | ~12 h per batch of 8 subjects | 8 of 64 |
-| **New** (config × window parallel, 64 cores) | ~15–25 min | 60–64 of 64 |
+| **Old** (config-serial, 1 thread) | ~7 h | 1 of 64 |
+| **Old** (subject-parallel, 8 workers) | ~7 h per batch of 8 subjects | 8 of 64 |
+| **New** (config × window parallel, 64 cores) | ~10–15 min | 60–64 of 64 |
 
 The new design's wall-time floor is **the slowest single tuned-window
-CV** (≈5 s for tuned logistic) × `ceil(n_tasks / n_jobs)`. With ~2 000
-tasks and 64 cores, that's roughly ~32 batches × 5 s ≈ 2.5 min for
-tuned logistic + similar for tuned svm in parallel. Pre/post overhead
-(load, window, write) adds ~2–3 min/subject, giving the 15–25 min
+CV** (≈1.5 s for tuned logistic / ~250 ms for tuned svm) ×
+`ceil(n_tasks / n_jobs)`. With ~1 200 tasks and 64 cores, that's
+roughly ~19 batches × ~1.5 s ≈ 30 s for tuned logistic, plus a shorter
+contribution for tuned svm running in parallel. Pre/post overhead
+(load, window, write) adds ~2–3 min/subject, giving the 10–15 min
 estimate.
 
 ### 4.3 Multi-ROI throughput gain
@@ -365,7 +653,7 @@ Stick with CPU.
 
 | Scenario | Mode | Why |
 |---|---|---|
-| Discovering candidate classifier/window configs | `--roi <one>` | Fast feedback (~15–25 min/run) lets you iterate on hypotheses without committing hours. |
+| Discovering candidate classifier/window configs | `--roi <one>` | Fast feedback (~10–15 min/run) lets you iterate on hypotheses without committing hours. |
 | Confirming candidates generalize across regions | `--rois <4–8>` | Amortizes loads, exploits load balancing, single CSV-rewrite per ROI. |
 | Final characterization of a fixed config across all 16 ROIs | `--rois <all 16>` (or use the main pipeline `run_parallel_lowram.py`) | Once configs are settled, you don't need the explore_decoding sweep — switch back to the production runner. |
 
@@ -407,5 +695,5 @@ picklable and produces the expected output shape with the new key set
 'mean_list'}`).
 
 End-to-end timing on a real subject is the next validation step;
-expected to land in the 15–25 min/subject range for the full sweep on
+expected to land in the 10–15 min/subject range for the full sweep on
 64 cores with `--tune-hyperparams`.

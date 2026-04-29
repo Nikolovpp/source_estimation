@@ -594,7 +594,7 @@ For each ROI independently:
 |------------|---------------|----------------|-------------------------|-----------------|
 | `svm` (default) | `LinearSVC` | L2, controlled by `C` | `C ∈ {0.01, 0.1, 1.0, 10.0}` | General-purpose linear decoder; robust with low-variance features |
 | `lda` | `LinearDiscriminantAnalysis` (lsqr + Ledoit-Wolf shrinkage) | Analytic shrinkage toward diagonal | *none* — shrinkage chosen analytically | Best when features are approximately Gaussian and n_samples > n_features |
-| `logistic` | `LogisticRegression` (elastic-net, saga) | Mixed L1/L2 (`C`, `l1_ratio`) | `C ∈ {0.01, 0.1, 1.0, 10.0}`, `l1_ratio ∈ {0.1, 0.5, 0.9}` | Many correlated features; sparse solutions desired |
+| `logistic` | `LogisticRegression` (elastic-net, saga, `l1_ratio=0.1` fixed) | Elastic-net (mostly L2 with light L1), controlled by `C` | `C ∈ {0.01, 0.1, 1.0, 10.0}` (`l1_ratio` hard-coded at 0.1) | Many correlated features; sparse solutions desired |
 
 #### Hyperparameter tuning (`--tune-hyperparams`)
 
@@ -722,7 +722,7 @@ Each call sweeps the Cartesian product of three axes on one ROI:
 | Axis | CLI flag | Defaults | Typical range |
 |------|----------|----------|---------------|
 | Classifier | `--classifiers` | `svm lda logistic` | any subset of the three |
-| Sliding-window duration | `--sw-durs` | `20 40 60 80 100` (ms) | 10–200 ms |
+| Sliding-window duration | `--sw-durs` | `40 60 80` (ms) | 10–200 ms |
 | Nested-CV tuning | `--tune-hyperparams` | off | on/off |
 
 With tuning enabled, each non-LDA classifier is run **twice** — once at the
@@ -755,15 +755,18 @@ shrinkage on the within-class covariance.
 - *When it wins*: `pca_flip` mode where features are low-dimensional,
   roughly Gaussian, and the decision boundary is truly linear.
 
-**`logistic` (elastic-net LogisticRegression)** — regularized logistic
-regression mixing L1 and L2 penalties via `l1_ratio`.
-- *Pros*: the L1 component induces sparsity, which is well-suited to vertex
-  modes where only a subset of vertices are discriminative; probabilistic
-  outputs are calibrated; the elastic-net grid jointly sweeps regularization
-  strength and sparsity.
-- *Cons*: the `saga` solver is slower than `LinearSVC`; needs tuning to
-  exploit the elastic-net grid (the default `l1_ratio=0.5, C=1.0` is
-  rarely optimal), so runtime is higher if you care about peak accuracy.
+**`logistic` (elastic-net LogisticRegression, `l1_ratio=0.1` fixed)** —
+regularized logistic regression with mostly-L2 plus a light L1 component.
+- *Pros*: the small L1 term lightly sparsifies weights to zero out
+  genuinely irrelevant vertices while preserving ridge-like smoothness;
+  probabilistic outputs are calibrated. `l1_ratio` is hard-coded at 0.1
+  because the explore-decoding sweep selected it as the modal best for
+  ≥17/20 subjects in every (sw_dur, stim_class, ROI) cell tested — so
+  tuning over it added cost with no measurable accuracy gain.
+- *Cons*: the `saga` solver is slower than `LinearSVC`; tuning still
+  helps because `C` varies across data, but the savings from dropping
+  `l1_ratio` from the grid bring tuned-logistic cost down to the same
+  shape as tuned-svm (4 C-values × 3 inner folds = 13 fits/outer iter).
 - *When it wins*: high-dimensional vertex modes where a sparse subset of
   vertices carries the signal, and with `--tune-hyperparams` enabled.
 
@@ -783,11 +786,10 @@ output makes this ROI-specific optimum visible at a glance.
 ### Hyperparameter tuning trade-offs
 
 - *Pros*: nested CV prevents overfit optimism and finds per-window optima;
-  large lifts are common for `logistic` because the default `l1_ratio`
-  rarely matches the data; also useful when you do not know a priori
-  whether a feature mode wants strong or weak `C`.
-- *Cons*: grid size × inner folds → roughly 12× slower for `svm` (4 Cs × 3
-  folds), 36× for `logistic` (12 hyperparameter points × 3 folds); the
+  useful when you do not know a priori whether a feature mode wants strong
+  or weak `C`.
+- *Cons*: grid size × inner folds → roughly 13× slower (per outer iter)
+  for both `svm` and `logistic` (4 Cs × 3 inner folds + 1 refit); the
   selected hyperparameters differ slightly across windows and folds, so
   they should be treated as a stability check rather than a single
   "best value" to transfer.
@@ -825,7 +827,7 @@ loop. Typical workflow:
 
 | File | Contents |
 |------|----------|
-| `explore_stats[_{suffix}].csv` | Group-level cluster-based permutation test (n ≥ 3 subjects) against chance: number of significant clusters, earliest onset, peak accuracy, peak latency, and `modal_hyperparams_at_peak` — for tuned configs, the mode (across subjects) of each subject's within-subject modal hyperparameter at the group peak window, with selection counts (e.g. `C=1.0 (7/10 subj); l1_ratio=0.5 (6/10 subj)`) |
+| `explore_stats[_{suffix}].csv` | Group-level cluster-based permutation test (n ≥ 3 subjects) against chance: number of significant clusters, earliest onset, peak accuracy, peak latency, and `modal_hyperparams_at_peak` — for tuned configs, the mode (across subjects) of each subject's within-subject modal hyperparameter at the group peak window, with selection counts (e.g. `C=1.0 (7/10 subj)`) |
 | `figures/clf_comparison_sw{D}ms[_{suffix}].svg` | Overlay of classifier accuracy curves at each window duration with significant-cluster shading per classifier |
 | `figures/sw_sweep_{classifier}[_tuned][_{suffix}].svg` | Window-duration sweep per classifier with per-`sw_dur` significance shading |
 | `figures/peak_accuracy_heatmap[_{suffix}].svg` | `(classifier × sw_dur)` heatmap of mean peak accuracy across subjects |
@@ -893,7 +895,7 @@ python validate_pipeline.py \
 python explore_decoding.py \
     --task overtProd --stim-class prodDiff --method dSPM \
     --atlas HCPMMP1 --roi Temporal --subjects EEGPROD4001 \
-    --classifiers svm lda logistic --sw-durs 20 40 60 80 100
+    --classifiers svm lda logistic --sw-durs 40 60 80
 
 # Add more configurations later — merged in by subject/classifier/sw_dur/tuned
 python explore_decoding.py \
