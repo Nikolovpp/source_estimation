@@ -155,13 +155,17 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
         ))
         param_grid = None  # shrinkage estimated analytically (Ledoit-Wolf)
     elif classifier == 'logistic':
+        # l1_ratio=0.1 is fixed: empirically the modal best across subjects
+        # and (sw_dur, stim_class) configs in the explore sweep was 0.1
+        # for ≥17/20 subjects in every cell. Removing it from the grid
+        # cuts tuned-logistic cost by 3× (13 fits/outer iter, same as svm)
+        # without measurably changing accuracy.
         steps.append(LogisticRegression(
-            penalty='elasticnet', solver='saga', l1_ratio=0.5,
+            penalty='elasticnet', solver='saga', l1_ratio=0.1,
             C=svm_c, max_iter=5000,
         ))
         param_grid = {
             'logisticregression__C': [0.01, 0.1, 1.0, 10.0],
-            'logisticregression__l1_ratio': [0.1, 0.5, 0.9],
         }
     else:
         raise ValueError(f'Unknown classifier: {classifier}')

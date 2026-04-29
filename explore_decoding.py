@@ -124,7 +124,7 @@ def parse_args():
                         default=['svm', 'lda', 'logistic'],
                         choices=['svm', 'lda', 'logistic'])
     parser.add_argument('--sw-durs', nargs='+', type=int,
-                        default=[20, 40, 60, 80, 100],
+                        default=[40, 60, 80],
                         help='Sliding window durations in ms')
     parser.add_argument('--sw-step', type=int, default=SW_STEP_SIZE,
                         help=f'Sliding window step in ms (default: {SW_STEP_SIZE})')

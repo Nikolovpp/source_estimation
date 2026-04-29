@@ -225,16 +225,145 @@ Interactive percent-format notebook for step-by-step exploration.
 
 ## Feature Modes
 
-| Mode | Features per ROI | Description |
-|------|-----------------|-------------|
-| `pca_flip` | 1 | PCA-flipped summary time course (MNE `extract_label_time_course`) |
-| `vertex_pca` | All vertices, PCA-reduced | All vertex time courses with PCA (95% variance) in the sklearn pipeline |
-| `vertex_selectkbest` | All vertices, top-k selected | All vertex time courses with supervised feature selection (ANOVA F-test, k=200) |
-| `vertex_selectkbest_all` | All vertices, no selection | All vertex time courses passed straight to the classifier — relies on classifier regularization |
+The feature mode controls **what gets passed to the classifier as
+features per sliding window**. All four modes share the same upstream
+steps (forward → inverse → ROI restriction → sliding-window average);
+they only differ in how the ROI's vertex data is reduced before the
+classifier sees it.
 
-> **Note on `vertex_selectkbest_all`**: with ~500 vertices and only ~70 training samples per CV fold, accuracy is sensitive to the regularization strength. Use `--classifier svm` or `--classifier logistic` with `--tune-hyperparams`. Avoid `--classifier lda` — with `n_features ≫ n_samples` the covariance estimate collapses toward naive Bayes even with shrinkage.
->
-> All `vertex_*` modes share the same ROI timeseries cache (post-inverse payload is identical), so switching between them does not re-run the inverse. SVM result CSVs are kept in separate per-mode directories.
+### Quick reference
+
+| Mode | Features per window per ROI | Where the reduction runs | Supervised? |
+|---|---|---|---|
+| `pca_flip`               | 1                    | `mne.extract_label_time_course` (per epoch, pre-cache) | No |
+| `vertex_pca`             | ≤ n_vertices         | sklearn pipeline (refit per CV fold) | No |
+| `vertex_selectkbest`     | min(200, n_vertices) | sklearn pipeline (refit per CV fold) | Yes (ANOVA F) |
+| `vertex_selectkbest_all` | n_vertices           | (no reduction — pass-through)         | — |
+
+`n_vertices` depends on atlas + ROI on fsaverage ico-5 source space:
+HCPMMP1 parcels are ~50–200 vertices, Schaefer-200 parcels are
+~80–300, composite aparc ROIs can reach ~500–1500.
+
+### How the universal CV pipeline guards against leakage
+
+For every per-window CV split (5 repeats × 5 outer folds), a fresh
+sklearn pipeline is built and `.fit(X_train, ...)` is called:
+
+```
+StandardScaler() → [feature reduction] → classifier
+```
+
+Because `StandardScaler`, `PCA`, and `SelectKBest` all live **inside**
+the pipeline, they are refit on every outer training fold (and
+re-refit on every inner fold during `--tune-hyperparams`). Test-fold
+data never participates in fitting any preprocessing step, so there
+is no leakage from preprocessing into evaluation.
+
+`pca_flip` is the apparent exception, but isn't actually a leak:
+MNE's `_pca_flip` runs an SVD **per epoch** on that epoch's
+`(vertices × time)` matrix and projects onto the leading temporal
+component. Each epoch's basis is independent of every other epoch,
+so the reduction is class-blind by construction.
+
+### Mode-by-mode
+
+#### `pca_flip` — 1 virtual sensor per ROI
+
+`mne.extract_label_time_course(mode='pca_flip')` collapses each ROI's
+vertices to **one time course per epoch**: SVD on the epoch's
+`(vertices × time)` matrix, project onto the top temporal component,
+sign-flipped against an MNE-supplied normal-vector flip vector so the
+average vertex correlates positively with the component, scaled by
+`||s|| / sqrt(n_vertices)` to preserve power.
+
+- **Pros**: tiny feature count (1 per ROI), tiny cache (a few MB per
+  subject), fast to load and decode, low overfitting risk.
+- **Cons**: discards within-ROI spatial structure. If the
+  class-discriminative signal lives in a sub-region or in the
+  *relative pattern* across vertices, the per-epoch top component
+  may not align with it (PCA picks variance, not class information).
+  Per-epoch SVD is also slightly noisier than a basis estimated
+  jointly, but this is rarely the limiting factor.
+- **Use when**: doing fast atlas-comparison sweeps, working with
+  composite aparc ROIs whose vertex resolution is already coarse,
+  or pairing with `--classifier lda` (which needs few features).
+
+#### `vertex_pca` — data-driven dimensionality reduction
+
+Keeps **all vertices** in the cache, then in the sklearn pipeline
+applies `PCA(n_components=0.95)` — the smallest number of components
+needed to retain 95% of the training-fold variance. The component
+count varies per fold (typically ~5–30).
+
+- **Pros**: preserves multi-vertex structure, automatically adapts
+  the dimensionality to the data, no fixed-k cutoff to set.
+- **Cons**: **unsupervised** — components are ranked by variance,
+  not class-discriminability. Vertices near inverse-leakage hotspots
+  (high source-amplitude estimates) can dominate the leading
+  components even when they carry no class signal. PCA is also fit
+  per fold, so component definitions are not directly interpretable
+  across folds.
+- **Use when**: you suspect class-relevant signal is distributed
+  across many vertices, want adaptive feature count, and don't have
+  a strong hypothesis about which sub-region matters most.
+
+#### `vertex_selectkbest` — supervised top-k filter
+
+Inside the pipeline, `SelectKBest(f_classif, k=min(200, n_features))`
+runs ANOVA F-tests per vertex against `y` on the training fold and
+keeps the top 200 vertices (or all if the ROI has fewer than 200).
+Class labels guide the selection.
+
+- **Pros**: supervised — keeps vertices that **individually**
+  discriminate the classes, including ones whose total variance is
+  small but class-relevant.
+- **Cons**: **univariate** — F-tests treat each vertex independently
+  and miss joint structure (e.g. two vertices whose *difference* is
+  discriminative but neither vertex is alone). The k=200 cap is
+  fixed, so it may keep low-rank noise when the ROI is small or
+  cap discriminative signal when the ROI is large.
+- **Use when**: you suspect a small, identifiable subset of vertices
+  carries the signal and want aggressive supervised filtering.
+
+#### `vertex_selectkbest_all` — pass-through (no reduction)
+
+Despite the name, this mode performs **no** SelectKBest step. The
+pipeline is just `StandardScaler → classifier`; all ~50–500 vertices
+flow into the classifier and the classifier's own regularization
+(SVM `C`, logistic elastic-net `C` with `l1_ratio=0.1` fixed) does
+the work of suppressing irrelevant dimensions.
+
+- **Pros**: no preprocessing-stage information loss; the classifier
+  decides which vertices and which vertex combinations matter.
+- **Cons**: with `n_features ≫ n_samples` (e.g. 200 vertices vs ~70
+  training samples per outer fold), accuracy is highly sensitive to
+  regularization strength. Almost always needs `--tune-hyperparams`
+  to find a workable `C`.
+- **Use when**: comparing against vertex-reduced modes to check
+  whether the reduction is helping or hurting; benchmarking a
+  carefully-tuned regularized classifier as the reference.
+
+### Which classifier works with which mode
+
+| Mode | `lda` viable? | `svm` / `logistic` viable? |
+|---|---|---|
+| `pca_flip`               | Yes — 1 feature per ROI is well-conditioned for LDA. | Yes (works fine, but SVM/logistic gain little over LDA at 1 feature). |
+| `vertex_pca`             | Usually — the 95% cap typically lands at ~5–30 features (≪ samples). | Yes. |
+| `vertex_selectkbest`     | Borderline — k=200 vs ~70 samples is at the edge; Ledoit-Wolf shrinkage keeps the covariance pseudo-stable but discriminability suffers. | Yes — preferred. |
+| `vertex_selectkbest_all` | **Avoid** — `n_features ≫ n_samples` collapses LDA's covariance toward naive Bayes even with shrinkage. | Yes, but **must** combine with `--tune-hyperparams`. |
+
+### Cache sharing
+
+All three `vertex_*` modes share the **same** post-inverse ROI
+time-series cache under `…/atlas/vertex/…` (see
+`config.cache_feat_mode()`), because the cached payload is identical
+— only the in-pipeline reduction differs. Switching between vertex
+modes therefore does **not** re-run forward/inverse/ROI extraction.
+SVM result CSVs are still kept in per-mode directories so accuracies
+from different modes don't collide.
+
+`pca_flip` has its own much smaller cache (one time course per ROI
+per epoch) and is not interchangeable with the vertex caches.
 
 ## ROIs
 
