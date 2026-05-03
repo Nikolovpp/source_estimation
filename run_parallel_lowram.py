@@ -28,17 +28,20 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, SVM_OUTPUT_ROOT,
+    SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     BASELINE_WINDOWS, DECODE_TMIN, SPEECH_ROIS,
-    SVM_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
+    DEFAULT_C, PSEUDO_TRIAL_SIZE, LEAKAGE_CORRECTION,
     find_cached_npz,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
 from inverse_pipelines import run_dspm_lowram, run_lcmv_lowram
-from svm_decoding import sliding_window_svm_decode
-from run_source_svm import _save_results, _save_roi_timeseries, filter_roi_dict
+from decoding import sliding_window_decode
+from decoding_io import (
+    _save_results, _save_roi_timeseries, filter_roi_dict,
+    _load_cached_roi_data,
+)
 from plotting import save_sensor_erp, save_source_erp, save_svm_results
 
 
@@ -61,11 +64,9 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
                             skip_svm=False, skip_save_timeseries=False,
                             overwrite_timeseries=False,
                             atlas='aparc', leakage_correction=False,
-                            pseudo_trial_size=0, svm_c=1.0,
+                            pseudo_trial_size=0, c=1.0,
                             classifier='svm', tune_hyperparams=False):
     """Process a single subject using low-RAM inverse pipeline."""
-    from run_source_svm import _load_cached_roi_data
-
     subj_start = time.time()
     print(f'\n{"="*60}')
     print(f'[low-RAM] Processing: {subj_id} | {task_cond} | {stim_class} | {method}')
@@ -169,10 +170,10 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
     if not skip_svm:
         for roi_name in roi_names:
             print(f'\n  Decoding ROI: {roi_name} ({feature_mode})')
-            results = sliding_window_svm_decode(
+            results = sliding_window_decode(
                 roi_data[roi_name], y, sfreq, sw_dur, sw_step,
                 tmin_epoch, decode_tmin, feature_mode=feature_mode,
-                times=times, classifier=classifier, svm_c=svm_c,
+                times=times, classifier=classifier, c=c,
                 tune_hyperparams=tune_hyperparams,
                 pseudo_trial_size=pseudo_trial_size,
             )
@@ -189,10 +190,10 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
                          leakage_correction=leakage_correction,
                          pseudo_trial_size=pseudo_trial_size)
 
-        # Save SVM results CSV
+        # Save decoding-accuracy CSV (writes column 'decode_acc')
         _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                       sw_dur, sw_step, results_all_rois, save_dir,
-                      atlas=atlas, svm_c=svm_c,
+                      atlas=atlas, c=c,
                       leakage_correction=leakage_correction,
                       pseudo_trial_size=pseudo_trial_size,
                       classifier=classifier)
@@ -210,7 +211,7 @@ def _worker(args):
     (subj_id, task_cond, stim_class, method, feature_mode,
      sw_dur, sw_step, save_dir, skip_svm,
      skip_save_timeseries, overwrite_timeseries,
-     atlas, leakage_correction, pseudo_trial_size, svm_c,
+     atlas, leakage_correction, pseudo_trial_size, c,
      classifier, tune_hyperparams) = args
     try:
         return _process_subject_lowram(
@@ -219,7 +220,7 @@ def _worker(args):
             skip_save_timeseries=skip_save_timeseries,
             overwrite_timeseries=overwrite_timeseries,
             atlas=atlas, leakage_correction=leakage_correction,
-            pseudo_trial_size=pseudo_trial_size, svm_c=svm_c,
+            pseudo_trial_size=pseudo_trial_size, c=c,
             classifier=classifier, tune_hyperparams=tune_hyperparams,
         )
     except Exception as e:
@@ -260,8 +261,11 @@ def parse_args():
                         help='Apply leakage correction (orthogonalization for pca_flip, regression for vertex modes)')
     parser.add_argument('--pseudo-trial-size', type=int, default=PSEUDO_TRIAL_SIZE,
                         help='Pseudo-trial group size; 0 = disabled (default: 0)')
-    parser.add_argument('--svm-c', type=float, default=SVM_C,
-                        help=f'SVM regularization parameter C (default: {SVM_C})')
+    parser.add_argument('--c', type=float, default=None,
+                        help='Regularization parameter C for svm/logistic. '
+                             'When omitted, use the per-classifier default '
+                             f'from config.DEFAULT_C ({DEFAULT_C}).  '
+                             'Ignored when classifier=lda.')
     parser.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
                         help='Subset of ROI names to process (default: all). '
                              'Case-insensitive, e.g., --roi-subset Temporal vSMC')
@@ -280,7 +284,12 @@ def main():
     setup_logging(args.task, args.stim_class, args.method, args.atlas,
                   args.feature_mode, runner_name='parallel_lowram')
 
-    print(f'Low-RAM parallel source-space SVM decoding')
+    # Resolve effective C: explicit --c wins, else per-classifier default
+    # (lda has no tunable C, so any value is harmless).
+    effective_c = args.c if args.c is not None else DEFAULT_C.get(args.classifier, 1.0)
+    c_source = 'explicit' if args.c is not None else f'default for {args.classifier}'
+
+    print(f'Low-RAM parallel source-space decoding')
     print(f'  Task:         {args.task}')
     print(f'  Stim class:   {args.stim_class}')
     print(f'  Method:       {args.method}')
@@ -288,7 +297,7 @@ def main():
     print(f'  Feature mode: {args.feature_mode}')
     print(f'  Classifier:   {args.classifier}')
     print(f'  Tune HP:      {args.tune_hyperparams}')
-    print(f'  SVM C:        {args.svm_c}')
+    print(f'  C:            {effective_c} ({c_source})')
     print(f'  Pseudo-trial: {args.pseudo_trial_size if args.pseudo_trial_size > 0 else "disabled"}')
     print(f'  Leakage corr: {args.leakage_correction}')
     print(f'  ROI subset:   {args.roi_subset if args.roi_subset else "all"}')
@@ -332,10 +341,10 @@ def main():
     # Build parameter list for workers
     worker_args = [
         (subj_id, args.task, args.stim_class, args.method,
-         args.feature_mode, args.sw_dur, args.sw_step, SVM_OUTPUT_ROOT,
+         args.feature_mode, args.sw_dur, args.sw_step, DECODE_OUTPUT_ROOT,
          args.skip_svm, args.skip_save_timeseries, args.overwrite_timeseries,
          args.atlas, args.leakage_correction, args.pseudo_trial_size,
-         args.svm_c, args.classifier, args.tune_hyperparams)
+         effective_c, args.classifier, args.tune_hyperparams)
         for subj_id in subjects
     ]
 

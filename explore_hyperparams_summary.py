@@ -14,7 +14,7 @@ For each (classifier, sw_dur) with ``tuned=True`` rows, this script:
        window.
     3. At each ROI's peak window, records each subject's modal ``best_C``
        (already a within-subject mode over 25 outer folds, written by
-       ``svm_decoding.py``).
+       ``decoding.py``).
     4. Pools those modes across (ROI x subject) to produce a count matrix.
 
 Two figures are written:
@@ -64,7 +64,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    SVM_OUTPUT_ROOT, SVM_C, PSEUDO_TRIAL_SIZE,
+    DECODE_OUTPUT_ROOT, PSEUDO_TRIAL_SIZE,
     explore_run_segment,
 )
 
@@ -77,7 +77,7 @@ POOLED_LABEL = 'ALL ROIs (pooled)'
 # ──────────────────────────────────────────────────────────────
 def _stim_dir(stim_class, args, run_seg):
     return (
-        SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
+        DECODE_OUTPUT_ROOT / 'explore' / args.task / args.method
         / args.atlas / args.feature_mode / stim_class / run_seg
     )
 
@@ -87,14 +87,14 @@ def _suggest_alternatives(args, stim_class):
 
     When the constructed stim_dir is missing, the silent culprit is
     almost always ``--feature-mode``, ``--leakage-correction``,
-    ``--pseudo-trial-size``, or ``--svm-c`` not matching what was
+    ``--pseudo-trial-size``, or ``--c`` not matching what was
     written by ``explore_decoding.py``.  Walk the
     ``task/method/atlas`` parent and print every path under it that
     actually contains ROI subdirs with ``explore_full.csv`` so the
     user sees which flag combos are live.
     """
     parent = (
-        SVM_OUTPUT_ROOT / 'explore' / args.task
+        DECODE_OUTPUT_ROOT / 'explore' / args.task
         / args.method / args.atlas
     )
     if not parent.exists():
@@ -419,14 +419,17 @@ def parse_args():
                         default=False)
     parser.add_argument('--pseudo-trial-size', type=int,
                         default=PSEUDO_TRIAL_SIZE)
-    parser.add_argument('--svm-c', type=float, default=SVM_C)
+    parser.add_argument('--c', type=float, default=None,
+                        help='Match the --c passed to explore_decoding '
+                             '(part of the output path).  Omit if you ran '
+                             'explore_decoding without --c (default Cdef).')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     run_seg = explore_run_segment(
-        args.leakage_correction, args.pseudo_trial_size, args.svm_c,
+        args.leakage_correction, args.pseudo_trial_size, args.c,
     )
     stim_dir = _stim_dir(args.stim_class, args, run_seg)
     if not stim_dir.exists():
@@ -435,7 +438,7 @@ def main():
             f'You passed: --feature-mode {args.feature_mode}, '
             f'--leakage-correction={args.leakage_correction}, '
             f'--pseudo-trial-size {args.pseudo_trial_size}, '
-            f'--svm-c {args.svm_c}\n'
+            f'--c {args.c}\n'
             f'(these flags must match what explore_decoding.py was run '
             f'with — they are part of the output path).\n\n'
             f'Existing combos with ROI data under '
@@ -465,7 +468,7 @@ def main():
             f'{stim_dir}.\n'
             f'Did you run explore_decoding.py with --tune-hyperparams '
             f'and matching --feature-mode / --leakage-correction / '
-            f'--pseudo-trial-size / --svm-c?\n\n'
+            f'--pseudo-trial-size / --c?\n\n'
             f'Existing combos with ROI data under '
             f'{args.task}/{args.method}/{args.atlas} '
             f'for stim_class={args.stim_class}:\n'

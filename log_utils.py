@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from config import SVM_OUTPUT_ROOT
+from config import DECODE_OUTPUT_ROOT
 
 
 class TeeStream:
@@ -55,7 +55,7 @@ def setup_logging(task, stim_class, method, atlas, feature_mode,
     log_path : Path
         Absolute path to the log file that was created.
     """
-    log_dir = SVM_OUTPUT_ROOT / 'logs'
+    log_dir = DECODE_OUTPUT_ROOT / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

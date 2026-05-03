@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))
                 if '__file__' in dir() else os.getcwd())
 
 from config import (
-    SUBJECT_IDS, SVM_OUTPUT_ROOT, SPEECH_ROIS,
+    SUBJECT_IDS, DECODE_OUTPUT_ROOT, SPEECH_ROIS,
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
     ROI_TIMESERIES_ROOT, find_cached_npz,
 )
@@ -139,7 +139,7 @@ def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
     subj_dfs = []
     for subj in subjects:
         csv_path = (
-            SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+            DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
             / leakage_tag / pseudo_tag / sw_tag / stim_class
             / f'{subj}_{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}.csv'
         )
@@ -215,13 +215,13 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
     ref_df = subj_dfs[0][['key', 'ms']].copy()
     n_obs = len(ref_df)
 
-    acc_matrix = np.column_stack([s['SVM_acc'].values[:n_obs] for s in subj_dfs])
+    acc_matrix = np.column_stack([s['decode_acc'].values[:n_obs] for s in subj_dfs])
 
     mean_acc = acc_matrix.mean(axis=1)
     sem_acc = np.std(acc_matrix, axis=1, ddof=1) / np.sqrt(n_subj)
 
     mean_df = ref_df.copy()
-    mean_df['SVM_acc'] = mean_acc
+    mean_df['decode_acc'] = mean_acc
 
     sem_df = ref_df.copy()
     sem_df['SVM_sem'] = sem_acc
@@ -305,7 +305,7 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
 
     # Save CSVs
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
-    out_dir = (SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+    out_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
                / leakage_tag / pseudo_tag / sw_tag / stim_class)
     out_dir.mkdir(parents=True, exist_ok=True)
     base = f'{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}_{n_subj}subjAvg'
@@ -341,7 +341,7 @@ def plot_svm_accuracy_single_roi(roi_key, all_data, stim_classes, method,
         d = all_data[sc]
         mask = d['mean']['key'] == roi_key
         ms = d['mean'].loc[mask, 'ms'].values
-        acc = d['mean'].loc[mask, 'SVM_acc'].values
+        acc = d['mean'].loc[mask, 'decode_acc'].values
         sem = d['sem'].loc[mask, 'SVM_sem'].values
         sig = d['stats'].loc[mask, sig_column].values.astype(bool)
         ms_all.append(ms)
@@ -399,7 +399,7 @@ def plot_svm_accuracy_tfce_single_roi(roi_key, all_data, stim_classes, method,
         d = all_data[sc]
         mask = d['mean']['key'] == roi_key
         ms = d['mean'].loc[mask, 'ms'].values
-        acc = d['mean'].loc[mask, 'SVM_acc'].values
+        acc = d['mean'].loc[mask, 'decode_acc'].values
         sem = d['sem'].loc[mask, 'SVM_sem'].values
         sig_tfce = d['stats'].loc[mask, 'sig_tfce'].values.astype(bool)
         tfce_score = d['stats'].loc[mask, 'tfce_score'].values
@@ -480,7 +480,7 @@ def plot_multi_roi_panel(all_data, stim_classes, task, method, feat_mode,
             d = all_data[sc]
             mask = d['mean']['key'] == roi_key
             ms = d['mean'].loc[mask, 'ms'].values
-            acc = d['mean'].loc[mask, 'SVM_acc'].values
+            acc = d['mean'].loc[mask, 'decode_acc'].values
             sem = d['sem'].loc[mask, 'SVM_sem'].values
             sig = d['stats'].loc[mask, sig_column].values.astype(bool)
 
@@ -791,7 +791,7 @@ def main():
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
 
     figures_dir = (
-        SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+        DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
         / leakage_tag / pseudo_tag / sw_tag / 'figures'
     )
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -913,7 +913,7 @@ def main():
                 d = all_data[sc]
                 mask = d['mean']['key'] == roi_key
                 ms = d['mean'].loc[mask, 'ms'].values
-                acc = d['mean'].loc[mask, 'SVM_acc'].values
+                acc = d['mean'].loc[mask, 'decode_acc'].values
 
                 sig_c = d['stats'].loc[mask, 'sig_cluster'].values.astype(bool)
                 clusters_c = find_contiguous_clusters(sig_c)
@@ -926,7 +926,7 @@ def main():
                                                  label=f'{sc} TFCE'))
 
         # Write log file next to the stats CSVs
-        log_dir = (SVM_OUTPUT_ROOT / task / method / atlas / feat_mode
+        log_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
                    / leakage_tag / pseudo_tag / sw_tag)
         log_file = log_dir / f'{task}_{method}_cluster_summary.log'
         log_file.write_text('\n'.join(log_lines) + '\n')

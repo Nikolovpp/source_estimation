@@ -138,7 +138,7 @@ def save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
     for i, (roi_name, results) in enumerate(results_all_rois.items()):
         ax = axes[i // n_cols, i % n_cols]
         ms_vals = [r['ms'] for r in results]
-        acc_vals = [r['SVM_acc'] for r in results]
+        acc_vals = [r['decode_acc'] for r in results]
 
         ax.plot(ms_vals, acc_vals, 'b-', linewidth=1)
         ax.axhline(0.5, color='k', linestyle='--', linewidth=0.8, label='Chance')
