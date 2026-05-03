@@ -60,8 +60,8 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    SVM_OUTPUT_ROOT, SW_STEP_SIZE,
-    SVM_C, PSEUDO_TRIAL_SIZE,
+    DECODE_OUTPUT_ROOT, SW_STEP_SIZE,
+    PSEUDO_TRIAL_SIZE,
     explore_run_segment,
 )
 
@@ -177,7 +177,7 @@ def _summarize_tuned_params_at_peak(grp, peak_ms):
     """Aggregate modal hyperparameters at the group-level peak window.
 
     Each subject's row at the peak window already carries its within-subject
-    modal value (over 25 outer folds, from svm_decoding).  Here we take the
+    modal value (over 25 outer folds, from decoding).  Here we take the
     mode across subjects and report "X selected by K/N subjects" for each
     hyperparameter column present in the group.
 
@@ -524,15 +524,16 @@ def parse_args():
     parser.add_argument('--pseudo-trial-size', type=int, default=PSEUDO_TRIAL_SIZE,
                         help='Match the --pseudo-trial-size passed to '
                              'explore_decoding (part of the output path)')
-    parser.add_argument('--svm-c', type=float, default=SVM_C,
-                        help='Match the --svm-c passed to explore_decoding '
-                             '(part of the output path)')
+    parser.add_argument('--c', type=float, default=None,
+                        help='Match the --c passed to explore_decoding '
+                             '(part of the output path).  Omit if you ran '
+                             'explore_decoding without --c (default Cdef).')
     return parser.parse_args()
 
 
 def _explore_csv_path(stim_class, args, run_seg):
     return (
-        SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
+        DECODE_OUTPUT_ROOT / 'explore' / args.task / args.method
         / args.atlas / args.feature_mode / stim_class
         / run_seg / args.roi
     )
@@ -549,7 +550,7 @@ def main():
         )
 
     run_seg = explore_run_segment(
-        args.leakage_correction, args.pseudo_trial_size, args.svm_c,
+        args.leakage_correction, args.pseudo_trial_size, args.c,
     )
     out_dir = _explore_csv_path(args.stim_class, args, run_seg)
     full_csv = out_dir / 'explore_full.csv'

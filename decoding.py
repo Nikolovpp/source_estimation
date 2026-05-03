@@ -1,8 +1,9 @@
 """
-SVM decoding in source space with sliding windows.
+Sliding-window decoding in source space.
 
 Mirrors the existing sensor-space SVM pipeline but operates on
-source-estimated vertex time courses within cortical ROIs.
+source-estimated vertex time courses within cortical ROIs.  Supports
+SVM (LinearSVC), shrinkage LDA, and elastic-net logistic regression.
 
 Four feature-extraction strategies are supported:
   1. 'pca_flip' — single virtual sensor per ROI (extract_label_time_course)
@@ -10,8 +11,8 @@ Four feature-extraction strategies are supported:
   3. 'vertex_selectkbest' — all vertices, SelectKBest(k=min(200, n_features))
   4. 'vertex_selectkbest_all' — all vertices, no feature selection (pass-through)
 
-Output CSV format matches the existing pipeline:
-  Key, ms, mean_list, SVM_acc, best_params
+Output CSV format:
+  key, ms, mean_list, decode_acc, best_params
 """
 import numpy as np
 import statistics
@@ -116,7 +117,7 @@ def _apply_sliding_window_average(data_2d, sfreq, sw_dur_ms, sw_step_ms):
     return windowed
 
 
-def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
+def _build_classifier_pipeline(classifier, feature_mode, n_features, c):
     """Build sklearn pipeline and optional hyperparameter grid.
 
     Parameters
@@ -128,7 +129,7 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
         or 'vertex_selectkbest_all'.
     n_features : int
         Number of input features (for SelectKBest clamping).
-    svm_c : float
+    c : float
         Regularization parameter C (used by svm and logistic).
 
     Returns
@@ -147,7 +148,7 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
         pass  # no feature selection — all vertices go to the classifier
 
     if classifier == 'svm':
-        steps.append(LinearSVC(C=svm_c, max_iter=5000))
+        steps.append(LinearSVC(C=c, max_iter=5000))
         param_grid = {'linearsvc__C': [0.01, 0.1, 1.0, 10.0]}
     elif classifier == 'lda':
         steps.append(LinearDiscriminantAnalysis(
@@ -162,7 +163,7 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, svm_c):
         # without measurably changing accuracy.
         steps.append(LogisticRegression(
             penalty='elasticnet', solver='saga', l1_ratio=0.1,
-            C=svm_c, max_iter=5000,
+            C=c, max_iter=5000,
         ))
         param_grid = {
             'logisticregression__C': [0.01, 0.1, 1.0, 10.0],
@@ -186,7 +187,7 @@ def prepare_windowed_data(X_roi, sfreq, sw_dur_ms, sw_step_ms,
     X_roi : np.ndarray
         (n_epochs, n_features, n_times) or (n_epochs, n_times).
     sfreq, sw_dur_ms, sw_step_ms, tmin, decode_tmin, times :
-        See sliding_window_svm_decode.
+        See sliding_window_decode.
     verbose : bool
         When True, print the diagnostic conversion summary.
 
@@ -256,29 +257,29 @@ def prepare_windowed_data(X_roi, sfreq, sw_dur_ms, sw_step_ms,
 
 
 def decode_one_window(X_win, y, classifier, feature_mode, n_features,
-                      svm_c=1.0, tune_hyperparams=False,
+                      c=1.0, tune_hyperparams=False,
                       pseudo_trial_size=0, random_state=42):
     """Run repeated stratified CV on a single already-windowed slice.
 
     Returns the per-window result dict (without 'ms' — the caller
-    attaches the timestamp).  Used by sliding_window_svm_decode and by
+    attaches the timestamp).  Used by sliding_window_decode and by
     explore_decoding's per-window parallel worker.
 
     Parameters
     ----------
     X_win : np.ndarray, shape (n_epochs, n_features)
     y : np.ndarray
-    classifier, feature_mode, n_features, svm_c, tune_hyperparams,
+    classifier, feature_mode, n_features, c, tune_hyperparams,
     pseudo_trial_size, random_state :
-        See sliding_window_svm_decode.
+        See sliding_window_decode.
 
     Returns
     -------
-    entry : dict with keys 'mean_list', 'SVM_acc', and optionally
+    entry : dict with keys 'mean_list', 'decode_acc', and optionally
         'best_params_mode' / 'best_params_freq' when tuning is active.
     """
     pipeline, param_grid = _build_classifier_pipeline(
-        classifier, feature_mode, n_features, svm_c,
+        classifier, feature_mode, n_features, c,
     )
     if tune_hyperparams and param_grid is not None:
         clf = GridSearchCV(
@@ -317,7 +318,7 @@ def decode_one_window(X_win, y, classifier, feature_mode, n_features,
 
     entry = {
         'mean_list': mean_list,
-        'SVM_acc': statistics.mean(mean_list),
+        'decode_acc': statistics.mean(mean_list),
     }
 
     if track_best_params and best_params_list:
@@ -336,11 +337,11 @@ def decode_one_window(X_win, y, classifier, feature_mode, n_features,
     return entry
 
 
-def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
-                              tmin, decode_tmin, feature_mode='pca_flip',
-                              times=None, classifier='svm', svm_c=1.0,
-                              tune_hyperparams=False,
-                              pseudo_trial_size=0, random_state=42):
+def sliding_window_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
+                          tmin, decode_tmin, feature_mode='pca_flip',
+                          times=None, classifier='svm', c=1.0,
+                          tune_hyperparams=False,
+                          pseudo_trial_size=0, random_state=42):
     """
     Run SVM decoding with a sliding window across time for one ROI.
 
@@ -380,7 +381,7 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
     classifier : str
         Classifier algorithm: 'svm' (LinearSVC), 'lda' (shrinkage LDA),
         or 'logistic' (elastic-net LogisticRegression).
-    svm_c : float
+    c : float
         Regularization parameter C for SVM/logistic (default 1.0).
         Ignored when classifier='lda'.
     tune_hyperparams : bool
@@ -396,8 +397,7 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
     Returns
     -------
     results : list of dict
-        Each dict has keys: 'ms', 'mean_list', 'SVM_acc'.
-        Matches the existing pipeline output format.
+        Each dict has keys: 'ms', 'mean_list', 'decode_acc'.
     """
     X_windowed, window_center_ms, n_features = prepare_windowed_data(
         X_roi, sfreq, sw_dur_ms, sw_step_ms,
@@ -409,7 +409,7 @@ def sliding_window_svm_decode(X_roi, y, sfreq, sw_dur_ms, sw_step_ms,
     for w in range(n_windows):
         entry = decode_one_window(
             X_windowed[:, :, w], y, classifier, feature_mode, n_features,
-            svm_c=svm_c, tune_hyperparams=tune_hyperparams,
+            c=c, tune_hyperparams=tune_hyperparams,
             pseudo_trial_size=pseudo_trial_size, random_state=random_state,
         )
         entry['ms'] = window_center_ms[w]

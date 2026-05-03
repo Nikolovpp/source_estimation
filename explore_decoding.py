@@ -81,15 +81,15 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    SUBJECT_IDS, SW_STEP_SIZE, SVM_OUTPUT_ROOT,
+    SUBJECT_IDS, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
-    SVM_C, PSEUDO_TRIAL_SIZE,
+    DEFAULT_C, PSEUDO_TRIAL_SIZE,
     find_cached_npz, explore_run_segment,
 )
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
 from inverse_pipelines import run_dspm, run_lcmv
-from svm_decoding import (
+from decoding import (
     extract_roi_data_vertices,
     extract_roi_data_pca_flip,
     prepare_windowed_data,
@@ -130,7 +130,11 @@ def parse_args():
                         help=f'Sliding window step in ms (default: {SW_STEP_SIZE})')
     parser.add_argument('--tune-hyperparams', action='store_true', default=False,
                         help='Add nested-CV-tuned variant for each non-LDA config')
-    parser.add_argument('--svm-c', type=float, default=SVM_C)
+    parser.add_argument('--c', type=float, default=None,
+                        help='Regularization C for svm/logistic.  When '
+                             'omitted, each classifier uses its default '
+                             f'from config.DEFAULT_C ({DEFAULT_C}); the '
+                             'output run-segment is then encoded as Cdef.')
     parser.add_argument('--leakage-correction', action='store_true', default=False)
     parser.add_argument('--pseudo-trial-size', type=int, default=PSEUDO_TRIAL_SIZE)
     parser.add_argument('--n-jobs', type=int, default=64,
@@ -265,7 +269,7 @@ def _build_configs(classifiers, sw_durs, tune_hyperparams):
 
 def _decode_window_task(roi_name, classifier, sw_dur, tuned, w_idx, ms,
                         X_windowed, y, feature_mode, n_features,
-                        svm_c, pseudo_trial_size, random_state):
+                        c, pseudo_trial_size, random_state):
     """Joblib worker: decode one (roi, config, window) cell.
 
     X_windowed is the full per-(roi, sw_dur) array; only column ``w_idx``
@@ -274,7 +278,7 @@ def _decode_window_task(roi_name, classifier, sw_dur, tuned, w_idx, ms,
     """
     entry = decode_one_window(
         X_windowed[:, :, w_idx], y, classifier, feature_mode, n_features,
-        svm_c=svm_c, tune_hyperparams=tuned,
+        c=c, tune_hyperparams=tuned,
         pseudo_trial_size=pseudo_trial_size, random_state=random_state,
     )
     entry.update({
@@ -314,16 +318,19 @@ def _process_subject(subj_id, subject_data, configs, args, decode_tmin):
             )
             windowed[(roi_name, sw_dur)] = (X_w, ms_arr, n_feats)
 
-    # Build flat (roi × cfg × window) task list
+    # Build flat (roi × cfg × window) task list.  When --c is omitted,
+    # each classifier gets its DEFAULT_C; lda has no tunable C so the
+    # value is harmless.
     tasks = []
     for roi_name in rois_data:
         for clf, sw_dur, tuned in configs:
+            c_val = args.c if args.c is not None else DEFAULT_C.get(clf, 1.0)
             X_w, ms_arr, n_feats = windowed[(roi_name, sw_dur)]
             n_windows = X_w.shape[2]
             for w in range(n_windows):
                 tasks.append((
                     roi_name, clf, sw_dur, tuned, w, ms_arr[w],
-                    X_w, y, args.feature_mode, n_feats, args.svm_c,
+                    X_w, y, args.feature_mode, n_feats, c_val,
                     args.pseudo_trial_size, args.random_state,
                 ))
 
@@ -350,7 +357,7 @@ def _process_subject(subj_id, subject_data, configs, args, decode_tmin):
             'sw_step': args.sw_step,
             'tuned': entry['tuned'],
             'ms': entry['ms'],
-            'accuracy': entry['SVM_acc'],
+            'accuracy': entry['decode_acc'],
         }
         for pname, pval in entry.get('best_params_mode', {}).items():
             row[f'best_{pname}'] = pval
@@ -385,10 +392,10 @@ def _merge_csv(df_new, csv_path, dedupe_keys):
 def _save_results_for_roi(df_roi, args, roi_name):
     """Write per-ROI explore_full.csv and explore_summary.csv."""
     run_seg = explore_run_segment(
-        args.leakage_correction, args.pseudo_trial_size, args.svm_c,
+        args.leakage_correction, args.pseudo_trial_size, args.c,
     )
     out_dir = (
-        SVM_OUTPUT_ROOT / 'explore' / args.task / args.method
+        DECODE_OUTPUT_ROOT / 'explore' / args.task / args.method
         / args.atlas / args.feature_mode / args.stim_class
         / run_seg / roi_name
     )
@@ -579,8 +586,8 @@ def main():
         extra.append('--leakage-correction')
     if args.pseudo_trial_size != PSEUDO_TRIAL_SIZE:
         extra.append(f'--pseudo-trial-size {args.pseudo_trial_size}')
-    if args.svm_c != SVM_C:
-        extra.append(f'--svm-c {args.svm_c}')
+    if args.c is not None:
+        extra.append(f'--c {args.c}')
     extra_str = (' ' + ' '.join(extra)) if extra else ''
     print('\nTo produce figures and cluster-based permutation stats, run:')
     for roi_name in roi_names:

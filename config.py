@@ -19,8 +19,8 @@ load_dotenv(Path(__file__).resolve().parent / 'config.env')
 # ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(os.environ['EEG_PROJECT_ROOT'])
 EEGLAB_DIR = PROJECT_ROOT / 'derivatives' / 'EEGLAB'
-SVM_OUTPUT_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SVM_source'
-ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SVM_source_timeseries'
+DECODE_OUTPUT_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'DECODE_source_space'
+ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'DECODE_source_space_timeseries'
 FIGURES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SOURCE_ESTIMATION'
 CODE_DIR = PROJECT_ROOT / 'code' / 'source_estimation'
 
@@ -403,9 +403,14 @@ SPEECH_ROIS = {
 SPEECH_ROI_NAMES = list(SPEECH_ROIS['aparc'].keys())
 
 # ─────────────────────────────────────────────────────────────────────
-# SVM enhancement parameters
+# Decoding enhancement parameters
 # ─────────────────────────────────────────────────────────────────────
-SVM_C = 1.0                # regularization parameter for LinearSVC
+# Per-classifier default C, selected as the modal pick across the full
+# explore_decoding hyperparameter sweep (6 ROIs × 20 subjects × 3 sw_durs
+# × 2 contrasts, HCPMMP1 / vertex_selectkbest, May 2026):
+#   - svm:      C=0.01  (51% modal share, 2.6× the next contender)
+#   - logistic: C=0.1   (35% pooled, narrowly beats C=10 at 33%)
+DEFAULT_C = {'svm': 0.01, 'logistic': 0.1}
 PSEUDO_TRIAL_SIZE = 0      # 0 = disabled; 5 or 10 recommended when enabled
 LEAKAGE_CORRECTION = False # orthogonalization (pca_flip) or regression (vertex modes)
 
@@ -488,15 +493,17 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
     return None
 
 
-def explore_run_segment(leakage_correction, pseudo_trial_size, svm_c):
+def explore_run_segment(leakage_correction, pseudo_trial_size, c):
     """Path segment encoding the run-time params that change accuracies
     but aren't otherwise represented in the explore_decoding output path.
 
     Without this, switching --leakage-correction, --pseudo-trial-size,
-    or --svm-c silently overwrites previous results in the same CSV.
+    or --c silently overwrites previous results in the same CSV.
 
-    Format: ``lc{0,1}_pt{N}_C{c}`` — e.g. ``lc0_pt0_C1`` for defaults,
-    ``lc1_pt5_C0.1`` for non-default settings.  ``:g`` formatting on C
-    strips trailing zeros (1.0 → C1, 0.01 → C0.01).
+    Format: ``lc{0,1}_pt{N}_C{c}`` — e.g. ``lc0_pt0_C0.01`` for an
+    explicit value, ``lc1_pt5_Cdef`` when ``c`` is None and per-classifier
+    defaults from DEFAULT_C are in effect.  ``:g`` formatting on C strips
+    trailing zeros (1.0 → C1, 0.01 → C0.01).
     """
-    return f'lc{int(bool(leakage_correction))}_pt{int(pseudo_trial_size)}_C{svm_c:g}'
+    c_tag = 'def' if c is None else f'{c:g}'
+    return f'lc{int(bool(leakage_correction))}_pt{int(pseudo_trial_size)}_C{c_tag}'
