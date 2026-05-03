@@ -81,10 +81,14 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
     if cached_npz is not None and not overwrite_timeseries:
         print(f'\n  SUCCESSFULLY LOADED Pre-computed ROI source time series!')
         print(f'    Source: {cached_npz}')
-        roi_data, y, times, sfreq = _load_cached_roi_data(cached_npz,
-                                                           feature_mode)
-        # Filter to ROI subset (_roi_dict may be filtered by --roi-subset)
-        roi_data = {k: v for k, v in roi_data.items() if k in _roi_dict}
+        # Pass the active ROI set so _load_cached_roi_data only
+        # decompresses what we'll actually decode (peak RAM scales
+        # with len(_roi_dict), not the full ~16-ROI cache).
+        roi_data, y, times, sfreq = _load_cached_roi_data(
+            cached_npz, feature_mode, roi_subset=list(_roi_dict.keys()),
+        )
+        if roi_data is None:
+            return None
         tmin_epoch = times[0]
         roi_names = list(roi_data.keys())
     else:
@@ -164,22 +168,29 @@ def _process_subject_lowram(subj_id, task_cond, stim_class, method,
                                  overwrite=overwrite_timeseries, atlas=atlas,
                                  leakage_correction=leakage_correction)
 
-    # Step 3: SVM decoding per ROI
+    # Step 3: Decoding per ROI.  Stream-pop each ROI's array out of
+    # roi_data after we're done with it so peak RAM during decoding
+    # stays at ~1 ROI worth (instead of len(roi_names) × per-ROI size).
+    # For HCPMMP1 vertex_selectkbest this drops the working set from
+    # ~11 GB to ~0.7 GB per worker.
     results_all_rois = {}
 
     if not skip_svm:
         for roi_name in roi_names:
             print(f'\n  Decoding ROI: {roi_name} ({feature_mode})')
+            X_roi = roi_data.pop(roi_name)
             results = sliding_window_decode(
-                roi_data[roi_name], y, sfreq, sw_dur, sw_step,
+                X_roi, y, sfreq, sw_dur, sw_step,
                 tmin_epoch, decode_tmin, feature_mode=feature_mode,
                 times=times, classifier=classifier, c=c,
                 tune_hyperparams=tune_hyperparams,
                 pseudo_trial_size=pseudo_trial_size,
             )
             results_all_rois[roi_name] = results
+            del X_roi
+            gc.collect()
 
-    # Free ROI data
+    # Free any remaining ROI data (e.g. when --skip-svm)
     del roi_data
     gc.collect()
 

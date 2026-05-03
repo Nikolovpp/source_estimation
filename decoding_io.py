@@ -42,20 +42,49 @@ def filter_roi_dict(roi_dict, roi_subset, atlas):
     return filtered
 
 
-def _load_cached_roi_data(npz_path, feature_mode):
+def _load_cached_roi_data(npz_path, feature_mode, roi_subset=None):
     """Load cached ROI timeseries from an .npz file.
 
-    Returns (roi_data, y, times, sfreq) matching the format produced by
-    the inverse + ROI-extraction steps.
+    The .npz is a zip archive — ``data[name]`` only reads that array's
+    bytes from the zip.  When ``roi_subset`` is provided, only those
+    ROIs are decompressed (the other ROIs in the file are not touched).
+    For a 7 GB / ~16-ROI cache that is ~17× less data per ROI loaded
+    (matches explore_decoding._load_rois_from_cache).
+
+    Parameters
+    ----------
+    npz_path : Path
+    feature_mode : str
+    roi_subset : iterable of str, optional
+        Only materialize these ROI names (case-sensitive — must match
+        the canonical names stored in ``roi_names``).  When None, every
+        ROI in the file is loaded (legacy behavior).
+
+    Returns
+    -------
+    roi_data, y, times, sfreq
+        ``roi_data`` is a dict {roi_name: array}.  Returns
+        ``(None, None, None, None)`` if any requested ROI is missing
+        from the file (caller should treat as "skip subject").
     """
     data = np.load(npz_path, allow_pickle=True)
-    roi_names = list(data['roi_names'])
-    y = data['y']
-    times = data['times']
+    available = set(data['roi_names'].tolist())
+    if roi_subset is None:
+        names_to_load = list(data['roi_names'])
+    else:
+        names_to_load = list(roi_subset)
+        missing = [r for r in names_to_load if r not in available]
+        if missing:
+            data.close()
+            print(f'  WARNING: ROIs missing from cache {npz_path.name}: {missing}')
+            return None, None, None, None
+
+    y = np.array(data['y'])
+    times = np.array(data['times'])
     sfreq = float(data['sfreq'])
     roi_data = {}
-    for name in roi_names:
-        arr = data[name]
+    for name in names_to_load:
+        arr = np.array(data[name])
         if feature_mode == 'pca_flip':
             # saved as (n_epochs, n_times, 1) → (n_epochs, n_times)
             if arr.ndim == 3 and arr.shape[2] == 1:
@@ -65,6 +94,7 @@ def _load_cached_roi_data(npz_path, feature_mode):
             if arr.ndim == 3:
                 arr = arr.transpose(0, 2, 1)
         roi_data[name] = arr
+    data.close()
     return roi_data, y, times, sfreq
 
 
