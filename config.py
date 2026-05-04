@@ -24,13 +24,13 @@ ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'DECO
 FIGURES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SOURCE_ESTIMATION'
 CODE_DIR = PROJECT_ROOT / 'code' / 'source_estimation'
 
-# Optional external location for ROI timeseries (e.g. external HDD).
-# Set ROI_TIMESERIES_EXTERNAL in config.env to enable.
-# When loading cached .npz files, the pipeline checks ROI_TIMESERIES_ROOT
-# first, then falls back to this path.  New files are always saved to
-# ROI_TIMESERIES_ROOT.
+# Optional external locations for ROI timeseries (e.g. external HDDs).
+# Set ROI_TIMESERIES_EXTERNAL in config.env to one or more colon-
+# separated paths.  When loading cached .npz files, the pipeline checks
+# ROI_TIMESERIES_ROOT first, then each external root in order.  New
+# files are always saved to ROI_TIMESERIES_ROOT.
 _ext = os.environ.get('ROI_TIMESERIES_EXTERNAL', '')
-ROI_TIMESERIES_EXTERNAL = Path(_ext) if _ext else None
+ROI_TIMESERIES_EXTERNAL = [Path(p) for p in _ext.split(':') if p.strip()]
 
 # ─────────────────────────────────────────────────────────────────────
 # Subjects
@@ -471,9 +471,10 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
                     subj, stim_class):
     """Return the path to a cached .npz ROI timeseries file, or None.
 
-    Checks ROI_TIMESERIES_ROOT first, then ROI_TIMESERIES_EXTERNAL.
-    Also falls back to the legacy per-feat_mode directory name so
-    existing ``vertex_pca`` / ``vertex_selectkbest`` caches keep working.
+    Checks ROI_TIMESERIES_ROOT first, then each path in
+    ROI_TIMESERIES_EXTERNAL in order.  Also falls back to the legacy
+    per-feat_mode directory name so existing ``vertex_pca`` /
+    ``vertex_selectkbest`` caches keep working.
     """
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     filename = f'{subj}_{task}_{stim_class}.npz'
@@ -481,9 +482,7 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
     if feat_mode not in candidates:
         candidates.append(feat_mode)
 
-    roots = [ROI_TIMESERIES_ROOT]
-    if ROI_TIMESERIES_EXTERNAL is not None:
-        roots.append(ROI_TIMESERIES_EXTERNAL)
+    roots = [ROI_TIMESERIES_ROOT, *ROI_TIMESERIES_EXTERNAL]
 
     for root in roots:
         for name in candidates:
