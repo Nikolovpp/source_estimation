@@ -14,9 +14,19 @@ Usage:
     python run_parallel_lowram.py --task overtProd --stim-class prodDiff --method dSPM \
         --n-jobs 2 --feature-mode vertex_pca
 """
+import os
+# Pin BLAS threads to 1 BEFORE numpy import — otherwise each worker
+# spawns ~N_CORES BLAS threads and the box thrashes (especially when
+# multiple instances of this runner are launched concurrently).  The
+# child processes spawned by multiprocessing.Pool inherit these env vars.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('BLIS_NUM_THREADS', '1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+
 import argparse
 import gc
-import os
 import sys
 import time
 import warnings
