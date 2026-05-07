@@ -10,9 +10,10 @@ Holds the four functions formerly co-located inside the legacy
   - ``_save_roi_timeseries``   — persist per-subject ROI timeseries to .npz
   - ``_save_results``          — write the per-subject decoding-accuracy CSV
 
-Extracted so active runners (``run_parallel_lowram.py``) can import them
-without depending on ``runners_legacy/run_source_svm.py``, which is no
-longer importable from the active source tree.
+Extracted so active runners (``run_source_localize.py`` and
+``run_decode.py``) can import them without depending on
+``runners_legacy/run_source_svm.py``, which is no longer importable from
+the active source tree.
 """
 import sys
 
