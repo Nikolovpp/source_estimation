@@ -153,7 +153,7 @@ is the standard nested-CV evaluation protocol.
 ## 1.2 Classifier choices in detail
 
 Three classifiers are exposed via `--classifier {svm,lda,logistic}`
-in **both** `explore_decoding.py` and `run_parallel_lowram.py`. Each
+in **both** `explore_decoding.py` and `run_decode.py`. Each
 one is wrapped in the same outer pipeline
 `StandardScaler → [feature reduction] → classifier`; the differences
 live in the classifier block itself, summarized below
@@ -278,43 +278,40 @@ fit-count breakdown see §1.1.
 | Few features (`pca_flip`, `vertex_pca`) and want probabilities | `lda` | Closed-form shrinkage, no tuning, gives `predict_proba`. |
 | Many features, want sparsity / built-in selection | `logistic --tune-hyperparams` | Elastic-net (`l1_ratio = 0.1` fixed) lightly sparsifies; `C` is tuned per fold. |
 | Replicating prior speech-decoding work | `svm` | Linear SVM is the field-standard baseline. |
-| Tight wall-time budget (full pipeline, all subjects × ROIs) | `svm` or `lda` | Tuned-logistic is ~10× untuned-logistic and ~50× untuned-svm per outer iteration; the production runner's coarser parallelism amplifies this. |
+| Tight wall-time budget (full pipeline, all subjects × ROIs) | `svm` or `lda` | Tuned-logistic is ~10× untuned-logistic and ~50× untuned-svm per outer iteration. |
 
-### Using `logistic` in `run_parallel_lowram.py`
+### Using `logistic` in the production runner
 
-**Yes, this is fully supported.** `run_parallel_lowram.py` accepts
-the same `--classifier {svm,lda,logistic}` and `--tune-hyperparams`
-flags as `explore_decoding.py`, because both runners delegate to the
-same `sliding_window_svm_decode` / `decode_one_window` primitives in
+**Yes, this is fully supported.** `run_decode.py` accepts the same
+`--classifier {svm,lda,logistic}` and `--tune-hyperparams` flags as
+`explore_decoding.py`, because both runners delegate to the same
+`sliding_window_svm_decode` / `decode_one_window` primitives in
 `svm_decoding.py`. Example:
 
 ```bash
-python run_parallel_lowram.py --task overtProd --stim-class prodDiff \
+python run_decode.py --task overtProd --stim-class prodDiff \
     --method dSPM --atlas HCPMMP1 --feature-mode vertex_selectkbest \
-    --classifier logistic --tune-hyperparams --n-jobs 2
+    --classifier logistic --tune-hyperparams --n-jobs 64
 ```
 
-**Cost note.** The two runners parallelize differently:
+**Parallelism shape.** The active runners are split so each stage uses
+the parallelism that fits its work:
 
-- `explore_decoding.py` runs subjects sequentially in the main
-  process and parallelises **(roi × config × window)** across 64
-  cores (§3.4). A tuned-logistic full sweep is ~10–15 min/subject.
-- `run_parallel_lowram.py` parallelises **across subjects** (each
-  worker processes one subject end-to-end) and runs windows
-  serially within a subject. With `--n-jobs 2` (the documented
-  default), only 2 cores work at a time — the rest of the box sits
-  idle. A tuned-logistic full sweep is therefore much slower per
-  subject than in `explore_decoding`, and the wall-clock time scales
-  roughly as `ceil(n_subjects / n_jobs) × tuned_subject_cost`.
+- `run_source_localize.py` parallelises **across subjects** (each
+  worker processes one subject end-to-end). Source localization is
+  heavyweight per subject, so this is the right shape — but it is
+  also the cap on wall-clock for that stage.
+- `run_decode.py` and `explore_decoding.py` run subjects sequentially
+  in the main process and parallelise **(roi × window)** /
+  **(roi × config × window)** across 64 cores (§3.4). A tuned-logistic
+  full sweep is ~10–15 min/subject this way; the same work in the
+  former combined runner with `--n-jobs 2` left ~62 cores idle.
 
 The practical workflow is to use `explore_decoding.py` to
 **discover** the best `(classifier, sw_dur, tuning)` combination on
 a few ROIs/subjects, then lock that config in and run the
 production sweep across all subjects × all ROIs with
-`run_parallel_lowram.py`. Switching the production run to
-`--classifier logistic --tune-hyperparams` is supported but expect
-several hours of wall time at `--n-jobs 2`; bumping `--n-jobs`
-trades RAM headroom (each worker loads a 7 GB cache) for throughput.
+`run_decode.py`.
 
 ---
 
@@ -655,7 +652,7 @@ Stick with CPU.
 |---|---|---|
 | Discovering candidate classifier/window configs | `--roi <one>` | Fast feedback (~10–15 min/run) lets you iterate on hypotheses without committing hours. |
 | Confirming candidates generalize across regions | `--rois <4–8>` | Amortizes loads, exploits load balancing, single CSV-rewrite per ROI. |
-| Final characterization of a fixed config across all 16 ROIs | `--rois <all 16>` (or use the main pipeline `run_parallel_lowram.py`) | Once configs are settled, you don't need the explore_decoding sweep — switch back to the production runner. |
+| Final characterization of a fixed config across all 16 ROIs | `--rois <all 16>` (or use the production runner `run_decode.py`) | Once configs are settled, you don't need the explore_decoding sweep — switch to the production runner, which writes the standard per-subject CSVs. |
 
 Avoid running `--rois` with > 8 entries during exploration: the
 delayed feedback (you only see results after all ROIs finish) outweighs

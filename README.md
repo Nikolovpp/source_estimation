@@ -23,9 +23,13 @@ python run_source_svm.py --task overtProd --stim-class prodDiff --method dSPM
 python run_source_svm.py --task overtProd --stim-class prodDiff --method dSPM \
     --atlas Schaefer200 --leakage-correction --pseudo-trial-size 5
 
-# Parallel (low-RAM, 2 workers)
-python run_parallel_lowram.py --task overtProd --stim-class prodDiff --method dSPM \
+# Two-stage pipeline (active workflow)
+#   Stage 1: subject-parallel source localization (writes ROI .npz caches)
+python run_source_localize.py --task overtProd --stim-class prodDiff --method dSPM \
     --atlas Schaefer200 --leakage-correction --n-jobs 2
+#   Stage 2: subject-sequential, (ROI x window) parallel decoding
+python run_decode.py --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas Schaefer200 --leakage-correction --n-jobs 64
 ```
 
 ## Output
@@ -200,9 +204,23 @@ Sliding-window SVM classification in source space.
 
 Main batch runner (sequential). Accepts `--atlas`, `--leakage-correction`, `--pseudo-trial-size`, `--svm-c`.
 
-### `run_parallel.py` / `run_parallel_lowram.py`
+### `run_source_localize.py` / `run_decode.py`
 
-Parallel batch runners. Same CLI arguments as `run_source_svm.py` plus `--n-jobs`.
+The two-stage active workflow.
+
+- `run_source_localize.py` — multiprocessing.Pool over subjects; runs the
+  inverse + ROI extraction (+ optional leakage correction) and writes the
+  per-subject ROI `.npz` caches. Skips subjects whose cache already exists
+  unless `--overwrite-timeseries` is passed.
+- `run_decode.py` — subject-sequential outer loop, then a single
+  (ROI × window) joblib pool per subject. Reads the `.npz` caches and
+  writes the per-subject decoding-accuracy CSV. Errors (rather than
+  re-running the inverse) if a subject's cache is missing.
+
+The split lets each stage use the parallelism shape that fits its work:
+heavyweight per-subject work parallelizes over subjects; thousands of
+cheap (ROI × window) cells parallelize across many cores within one
+subject.
 
 ### `validate_pipeline.py`
 
@@ -557,11 +575,15 @@ python run_source_svm.py \
     --pseudo-trial-size 5 \
     --svm-c 1.0
 
-# Parallel (same args, plus --n-jobs)
-python run_parallel_lowram.py \
+# Two-stage parallel workflow (active)
+python run_source_localize.py \
     --task overtProd --stim-class prodDiff --method dSPM \
     --atlas HCPMMP1 --leakage-correction \
     --n-jobs 2
+python run_decode.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --leakage-correction \
+    --n-jobs 64
 
 # Validate
 python validate_pipeline.py \

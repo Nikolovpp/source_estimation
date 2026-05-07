@@ -23,11 +23,13 @@ when brain regions discriminate between stimulus classes.
 | `pseudo_trials.py` | Pseudo-trial averaging within CV folds |
 | `svm_decoding.py` | ROI feature extraction + sliding-window SVM |
 | `plotting.py` | Figure generation for sensor ERPs, ROI time courses, and SVM accuracy |
-| `run_source_svm.py` | Sequential main runner (CLI) |
-| `run_parallel.py` | Multiprocessing parallel runner (CLI) |
-| `run_parallel_lowram.py` | Low-RAM parallel runner (generator-based) |
-| `run_pipeline_notebook.py` | Interactive notebook-style runner (standard memory) |
-| `run_pipeline_notebook_lowram.py` | Interactive notebook-style runner (low-RAM) |
+| `run_source_localize.py` | Stage 1 (active): subject-parallel inverse + ROI extraction → `.npz` cache |
+| `run_decode.py` | Stage 2 (active): subject-sequential, (ROI × window) parallel decoding |
+| `runners_legacy/run_source_svm.py` | Legacy sequential runner |
+| `runners_legacy/run_parallel.py` | Legacy multiprocessing parallel runner |
+| `runners_legacy/run_parallel_lowram.py` | Legacy combined low-RAM runner (superseded by the source/decode split) |
+| `runners_legacy/run_pipeline_notebook.py` | Legacy notebook-style runner |
+| `runners_legacy/run_pipeline_notebook_lowram.py` | Legacy notebook-style runner (low-RAM) |
 | `source_stats_viz.py` | Group-level statistics and visualization |
 | `validate_pipeline.py` | End-to-end validation / smoke test |
 | `visualize_rois.py` | Interactive and publication-ready ROI visualization on fsaverage surface |
@@ -878,11 +880,17 @@ python run_source_svm.py \
     --pseudo-trial-size 5 \
     --svm-c 1.0
 
-# Parallel (low-RAM, same args plus --n-jobs)
-python run_parallel_lowram.py \
+# Two-stage pipeline (active workflow)
+#   Stage 1: subject-parallel source localization (writes ROI .npz caches)
+python run_source_localize.py \
     --task overtProd --stim-class prodDiff --method dSPM \
     --atlas HCPMMP1 --leakage-correction \
     --n-jobs 2
+#   Stage 2: subject-sequential, (ROI x window) parallel decoding
+python run_decode.py \
+    --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --leakage-correction \
+    --n-jobs 64
 
 # Validate on one subject
 python validate_pipeline.py \
