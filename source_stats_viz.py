@@ -35,7 +35,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))
 from config import (
     SUBJECT_IDS, DECODE_OUTPUT_ROOT, SPEECH_ROIS,
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
-    ROI_TIMESERIES_ROOT, find_cached_npz,
+    DEFAULT_C, ROI_TIMESERIES_ROOT, classifier_path_segment,
+    find_cached_npz,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -103,6 +104,17 @@ def parse_args():
     p.add_argument('--leakage-correction', action='store_true', default=False)
     p.add_argument('--pseudo-trial-size', type=int, default=0,
                    help='Pseudo-trial group size used during SVM decoding (must match the run)')
+    p.add_argument('--classifier', default='svm',
+                   choices=['svm', 'lda', 'logistic'],
+                   help='Classifier used during decoding (must match the run)')
+    p.add_argument('--c', type=float, default=None,
+                   help='Regularization C used during decoding (svm/logistic). '
+                        'When omitted, falls back to config.DEFAULT_C for the '
+                        'chosen classifier.  Ignored for lda.')
+    p.add_argument('--tune-hyperparams', action='store_true', default=False,
+                   help='Set if the decoding run used --tune-hyperparams '
+                        '(affects the path: {classifier}_tuned vs '
+                        '{classifier}_{C}).')
     p.add_argument('--stim-classes', nargs='+',
                    default=['percDiff', 'prodDiff'],
                    choices=['percDiff', 'prodDiff'])
@@ -133,14 +145,14 @@ def find_contiguous_clusters(mask):
 
 
 def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
-                      stim_class, subjects):
+                      clf_tag, stim_class, subjects):
     """Load per-subject SVM result CSVs and return list of DataFrames."""
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
     subj_dfs = []
     for subj in subjects:
         csv_path = (
             DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
-            / leakage_tag / pseudo_tag / sw_tag / stim_class
+            / leakage_tag / pseudo_tag / sw_tag / clf_tag / stim_class
             / f'{subj}_{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}.csv'
         )
         if not csv_path.exists():
@@ -190,7 +202,7 @@ def report_clusters(roi_name, ms_values, acc_values, clusters, label=''):
 # Step 1: Compute group-level statistics
 # ──────────────────────────────────────────────────────────────
 def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
-                  stim_class, subjects):
+                  clf_tag, stim_class, subjects):
     """
     Compute group-level stats for one task/method/stim_class combination.
 
@@ -204,7 +216,7 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
     Returns (mean_df, sem_df, stats_df) and saves CSVs.
     """
     subj_dfs = load_subject_csvs(task, method, atlas, feat_mode, leakage_tag,
-                                 pseudo_tag, stim_class, subjects)
+                                 pseudo_tag, clf_tag, stim_class, subjects)
     n_subj = len(subj_dfs)
     if n_subj == 0:
         print(f'  No data found for {stim_class}')
@@ -306,7 +318,7 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
     # Save CSVs
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
     out_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
-               / leakage_tag / pseudo_tag / sw_tag / stim_class)
+               / leakage_tag / pseudo_tag / sw_tag / clf_tag / stim_class)
     out_dir.mkdir(parents=True, exist_ok=True)
     base = f'{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}_{n_subj}subjAvg'
 
@@ -782,17 +794,21 @@ def main():
     atlas = args.atlas
     leakage_correction = args.leakage_correction
     pseudo_trial_size = args.pseudo_trial_size
+    classifier = args.classifier
+    tune_hyperparams = args.tune_hyperparams
+    effective_c = args.c if args.c is not None else DEFAULT_C.get(classifier, 1.0)
     stim_classes = args.stim_classes
     subjects = args.subjects
     run_erp = not args.skip_erp
 
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     pseudo_tag = f'pseudo_{pseudo_trial_size}' if pseudo_trial_size > 0 else 'no_pseudo'
+    clf_tag = classifier_path_segment(classifier, effective_c, tune_hyperparams)
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
 
     figures_dir = (
         DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
-        / leakage_tag / pseudo_tag / sw_tag / 'figures'
+        / leakage_tag / pseudo_tag / sw_tag / clf_tag / 'figures'
     )
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -803,8 +819,8 @@ def main():
         print(f'Computing stats: {task} / {method} / {sc}')
         print(f'{"="*60}')
         mean_df, sem_df, stats_df = compute_stats(
-            task, method, atlas, feat_mode, leakage_tag, pseudo_tag, sc,
-            subjects
+            task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
+            clf_tag, sc, subjects
         )
         if mean_df is not None:
             all_data[sc] = {
@@ -890,9 +906,18 @@ def main():
     if all_data:
         from datetime import datetime
 
+        if classifier == 'lda':
+            clf_summary = 'lda (shrinkage=auto, no tunable C)'
+        elif tune_hyperparams:
+            clf_summary = (f'{classifier} (C: tuned via nested CV; '
+                           f'input C={effective_c})')
+        else:
+            clf_summary = f'{classifier} (C={effective_c})'
+
         header = (f'CLUSTER SUMMARY: {task} / {method} / {atlas} / {feat_mode}\n'
                   f'Leakage correction: {leakage_correction} | '
                   f'Pseudo-trial size: {pseudo_trial_size}\n'
+                  f'Classifier: {clf_summary} | Path tag: {clf_tag}\n'
                   f'Subjects: {len(subjects)} | '
                   f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
 
@@ -927,7 +952,8 @@ def main():
 
         # Write log file next to the stats CSVs
         log_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
-                   / leakage_tag / pseudo_tag / sw_tag)
+                   / leakage_tag / pseudo_tag / sw_tag / clf_tag)
+        log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f'{task}_{method}_cluster_summary.log'
         log_file.write_text('\n'.join(log_lines) + '\n')
 

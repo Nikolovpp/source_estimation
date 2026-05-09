@@ -20,7 +20,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from config import cache_feat_mode, ROI_TIMESERIES_ROOT
+from config import cache_feat_mode, classifier_path_segment, ROI_TIMESERIES_ROOT
 
 
 def filter_roi_dict(roi_dict, roi_subset, atlas):
@@ -145,16 +145,19 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
 def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                   sw_dur, sw_step, results_all_rois, save_dir,
                   atlas='aparc', c=1.0, leakage_correction=False,
-                  pseudo_trial_size=0, classifier='svm'):
+                  pseudo_trial_size=0, classifier='svm',
+                  tune_hyperparams=False):
     """Save per-subject decoding-accuracy CSV.
 
     Columns: key, ms, mean_list, decode_acc, best_params.
     """
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     pseudo_tag = f'pseudo_{pseudo_trial_size}' if pseudo_trial_size > 0 else 'no_pseudo'
+    clf_tag = classifier_path_segment(classifier, c, tune_hyperparams)
     csv_save_path = (
         save_dir / task_cond / method / atlas / feature_mode
-        / leakage_tag / pseudo_tag / f'{sw_dur}_{sw_step}' / stim_class
+        / leakage_tag / pseudo_tag / f'{sw_dur}_{sw_step}'
+        / clf_tag / stim_class
     )
     csv_save_path.mkdir(parents=True, exist_ok=True)
 

@@ -288,6 +288,8 @@ def main():
             args.method, args.feature_mode, args.sw_dur, args.sw_step,
             atlas=args.atlas, leakage_correction=args.leakage_correction,
             pseudo_trial_size=args.pseudo_trial_size,
+            classifier=args.classifier, c=effective_c,
+            tune_hyperparams=args.tune_hyperparams,
         )
         _save_results(
             subj_id, args.task, args.stim_class, args.method,
@@ -297,6 +299,7 @@ def main():
             leakage_correction=args.leakage_correction,
             pseudo_trial_size=args.pseudo_trial_size,
             classifier=args.classifier,
+            tune_hyperparams=args.tune_hyperparams,
         )
 
         del results_all_rois
