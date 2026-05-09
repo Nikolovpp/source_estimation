@@ -492,6 +492,34 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
     return None
 
 
+def classifier_path_segment(classifier, c, tune_hyperparams=False):
+    """Path segment encoding the classifier and its hyperparameter choice.
+
+    Inserted between the sliding-window dir (e.g., ``40_5``) and
+    ``stim_class`` so swapping classifier/C does not silently overwrite
+    the previous run's CSVs.
+
+    Format
+    ------
+    - ``lda``                              — LDA has no tunable C.
+    - ``{svm,logistic}_{c_str}``           — fixed C; ``c_str`` formats the
+                                             value with ``:g`` and replaces
+                                             ``.`` with ``_`` (e.g. 0.01 →
+                                             ``0_01``, 1.0 → ``1``, 10 →
+                                             ``10``).
+    - ``{svm,logistic}_tuned``             — ``--tune-hyperparams``: C is
+                                             selected per fold from the
+                                             grid, so the input ``c`` does
+                                             not pin the result.
+    """
+    if classifier == 'lda':
+        return 'lda'
+    if tune_hyperparams:
+        return f'{classifier}_tuned'
+    c_str = f'{c:g}'.replace('.', '_')
+    return f'{classifier}_{c_str}'
+
+
 def explore_run_segment(leakage_correction, pseudo_trial_size, c):
     """Path segment encoding the run-time params that change accuracies
     but aren't otherwise represented in the explore_decoding output path.

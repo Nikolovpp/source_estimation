@@ -10,19 +10,26 @@ matplotlib.use('Agg')
 import numpy as np
 import matplotlib.pyplot as plt
 
-from config import FIGURES_ROOT
+from config import FIGURES_ROOT, classifier_path_segment
 
 
 def _make_fig_dir(task_cond, method, feature_mode, subj_id,
                   atlas='aparc', leakage_correction=False,
-                  pseudo_trial_size=0):
-    """Create and return the figure output directory."""
+                  pseudo_trial_size=0, clf_tag=None):
+    """Create and return the figure output directory.
+
+    ``clf_tag`` (e.g. ``'logistic_0_01'``) mirrors the classifier-aware
+    CSV save path so figures don't collide between classifier/C choices.
+    Optional for callers (sensor ERP, source ERP) that pre-date the
+    decoding step and don't carry classifier info.
+    """
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     pseudo_tag = f'pseudo_{pseudo_trial_size}' if pseudo_trial_size > 0 else 'no_pseudo'
-    fig_dir = (
+    base = (
         FIGURES_ROOT / task_cond / method / atlas / feature_mode
-        / leakage_tag / pseudo_tag / 'figures' / subj_id
+        / leakage_tag / pseudo_tag
     )
+    fig_dir = (base / clf_tag if clf_tag else base) / 'figures' / subj_id
     fig_dir.mkdir(parents=True, exist_ok=True)
     return fig_dir
 
@@ -121,13 +128,16 @@ def save_source_erp(roi_data, y, times, subj_id, task_cond, stim_class,
 
 def save_svm_results(results_all_rois, subj_id, task_cond, stim_class,
                      method, feature_mode, sw_dur, sw_step, atlas='aparc',
-                     leakage_correction=False, pseudo_trial_size=0):
+                     leakage_correction=False, pseudo_trial_size=0,
+                     classifier='svm', c=1.0, tune_hyperparams=False):
     """
     Save SVM decoding accuracy time course per ROI.
     """
+    clf_tag = classifier_path_segment(classifier, c, tune_hyperparams)
     fig_dir = _make_fig_dir(task_cond, method, feature_mode, subj_id,
                             atlas=atlas, leakage_correction=leakage_correction,
-                            pseudo_trial_size=pseudo_trial_size)
+                            pseudo_trial_size=pseudo_trial_size,
+                            clf_tag=clf_tag)
 
     n_rois = len(results_all_rois)
     n_cols = 4
