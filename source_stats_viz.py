@@ -115,6 +115,13 @@ def parse_args():
                    help='Set if the decoding run used --tune-hyperparams '
                         '(affects the path: {classifier}_tuned vs '
                         '{classifier}_{C}).')
+    p.add_argument('--correct-across-rois', action='store_true', default=False,
+                   help='Add supplementary across-ROI Bonferroni correction '
+                        '(cluster + TFCE p-values multiplied by n_rois). '
+                        'Adds p_cluster_roi_bonf / sig_cluster_roi_bonf and '
+                        'p_tfce_roi_bonf / sig_tfce_roi_bonf columns to the '
+                        'stats CSV and a supplementary section to '
+                        'cluster_summary.log.  Primary report is unchanged.')
     p.add_argument('--stim-classes', nargs='+',
                    default=['percDiff', 'prodDiff'],
                    choices=['percDiff', 'prodDiff'])
@@ -202,7 +209,7 @@ def report_clusters(roi_name, ms_values, acc_values, clusters, label=''):
 # Step 1: Compute group-level statistics
 # ──────────────────────────────────────────────────────────────
 def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
-                  clf_tag, stim_class, subjects):
+                  clf_tag, stim_class, subjects, correct_across_rois=False):
     """
     Compute group-level stats for one task/method/stim_class combination.
 
@@ -314,6 +321,23 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
     stats_df['tfce_score'] = tfce_scores_arr
     stats_df['p_tfce'] = tfce_pvals_arr
     stats_df['sig_tfce'] = tfce_mask_arr
+
+    # Optional supplementary across-ROI Bonferroni correction
+    # ------------------------------------------------------
+    # Cluster permutation already controls FWER across time within each
+    # ROI's time axis — that is the primary inference.  When this flag
+    # is on, additionally multiply each cluster p-value and each TFCE
+    # per-time p-value by n_rois to provide a sensitivity check for
+    # reviewers who request correction across the ROI family.  Does not
+    # alter sig_cluster / sig_tfce.
+    if correct_across_rois:
+        n_rois = len(keys)
+        cluster_pvals_corr = np.minimum(cluster_pvals_arr * n_rois, 1.0)
+        tfce_pvals_corr = np.minimum(tfce_pvals_arr * n_rois, 1.0)
+        stats_df['p_cluster_roi_bonf'] = cluster_pvals_corr
+        stats_df['sig_cluster_roi_bonf'] = cluster_pvals_corr < 0.05
+        stats_df['p_tfce_roi_bonf'] = tfce_pvals_corr
+        stats_df['sig_tfce_roi_bonf'] = tfce_pvals_corr < 0.05
 
     # Save CSVs
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
@@ -796,6 +820,7 @@ def main():
     pseudo_trial_size = args.pseudo_trial_size
     classifier = args.classifier
     tune_hyperparams = args.tune_hyperparams
+    correct_across_rois = args.correct_across_rois
     effective_c = args.c if args.c is not None else DEFAULT_C.get(classifier, 1.0)
     stim_classes = args.stim_classes
     subjects = args.subjects
@@ -820,7 +845,8 @@ def main():
         print(f'{"="*60}')
         mean_df, sem_df, stats_df = compute_stats(
             task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
-            clf_tag, sc, subjects
+            clf_tag, sc, subjects,
+            correct_across_rois=correct_across_rois,
         )
         if mean_df is not None:
             all_data[sc] = {
@@ -949,6 +975,43 @@ def main():
                 clusters_t = find_contiguous_clusters(sig_t)
                 log_lines.extend(report_clusters(roi_key, ms, acc, clusters_t,
                                                  label=f'{sc} TFCE'))
+
+        # Optional supplementary across-ROI Bonferroni section
+        if correct_across_rois:
+            n_rois = len(rois_in_data)
+            sup_header = (f'\n{"="*60}\n'
+                          f'SUPPLEMENTARY: Across-ROI Bonferroni '
+                          f'(p × n_rois={n_rois})\n'
+                          f'Note: cluster permutation already controls FWER '
+                          f'across time within each ROI.  This is an extra\n'
+                          f'sensitivity check across the ROI family — not '
+                          f'the primary inference.\n{"="*60}')
+            print(sup_header)
+            log_lines.append(sup_header)
+
+            for roi_key in rois_in_data:
+                roi_header = f'\n--- {ROI_DISPLAY_NAMES.get(roi_key, roi_key)} ---'
+                print(roi_header)
+                log_lines.append(roi_header)
+                for sc in stim_classes:
+                    if sc not in all_data:
+                        continue
+                    d = all_data[sc]
+                    mask = d['mean']['key'] == roi_key
+                    ms = d['mean'].loc[mask, 'ms'].values
+                    acc = d['mean'].loc[mask, 'decode_acc'].values
+
+                    sig_cb = d['stats'].loc[mask, 'sig_cluster_roi_bonf'].values.astype(bool)
+                    clusters_cb = find_contiguous_clusters(sig_cb)
+                    log_lines.extend(report_clusters(
+                        roi_key, ms, acc, clusters_cb,
+                        label=f'{sc} Cluster (ROI-Bonf)'))
+
+                    sig_tb = d['stats'].loc[mask, 'sig_tfce_roi_bonf'].values.astype(bool)
+                    clusters_tb = find_contiguous_clusters(sig_tb)
+                    log_lines.extend(report_clusters(
+                        roi_key, ms, acc, clusters_tb,
+                        label=f'{sc} TFCE (ROI-Bonf)'))
 
         # Write log file next to the stats CSVs
         log_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
