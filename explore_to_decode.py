@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     DECODE_OUTPUT_ROOT, DEFAULT_C, SW_DUR, SW_STEP_SIZE,
-    classifier_path_segment, explore_run_segment,
+    classifier_path_segment,
 )
 
 
@@ -57,10 +57,16 @@ def parse_args():
     p.add_argument('--classifier', required=True,
                    choices=['svm', 'lda', 'logistic'])
     p.add_argument('--c', type=float, default=None,
-                   help='Regularization C used in the explore run. '
-                        'Omit to fall back to DEFAULT_C[classifier] (matches '
-                        'explore_run_segment Cdef behavior).  Ignored for lda '
-                        'and when --tune-hyperparams is set.')
+                   help='Regularization C the explore run was launched '
+                        'with (used to locate the source dir, since '
+                        'explore_decoding stamps it into the path even '
+                        'for tuned runs).  Required for untuned runs '
+                        '(--c picks both source and output paths).  '
+                        'Optional for --tune-hyperparams: when omitted, '
+                        'the converter scans lc*_pt*_C* dirs and picks '
+                        'the matching one — tuned accuracies are bit-'
+                        'identical across c values since C is chosen per '
+                        'fold by inner CV.  Ignored for lda.')
     p.add_argument('--tune-hyperparams', action='store_true', default=False,
                    help='Pick the tuned=True explore rows.')
     p.add_argument('--leakage-correction', action='store_true', default=False)
@@ -72,6 +78,83 @@ def parse_args():
                         'this flag the script skips already-converted '
                         'subjects (idempotent).')
     return p.parse_args()
+
+
+def _csv_has_matching_rows(csv_path, classifier, sw_dur, sw_step, tuned):
+    """Quick check whether an explore_full.csv contains target rows."""
+    df = pd.read_csv(
+        csv_path,
+        usecols=['classifier', 'sw_dur', 'sw_step', 'tuned'],
+    )
+    return (
+        (df['classifier'] == classifier)
+        & (df['sw_dur'] == sw_dur)
+        & (df['sw_step'] == sw_step)
+        & (df['tuned'] == tuned)
+    ).any()
+
+
+def _discover_explore_root(base, leakage, pseudo, c, classifier,
+                           sw_dur, sw_step, tuned):
+    """Locate the explore_run_segment dir, auto-discovering when c is None.
+
+    explore_decoding encodes the input ``c`` in its output path
+    (``lc{}_pt{}_C{c}``) even for tuned runs, where the actual C is
+    overridden per fold by inner GridSearchCV.  For tuned rows the
+    path-c is cosmetic — any matching candidate gives bit-identical
+    accuracies.  Auto-discovery means callers don't have to remember
+    what c was passed to the explore invocation.
+    """
+    leakage_bit = int(bool(leakage))
+    pseudo_int = int(pseudo)
+
+    # Explicit c: use as-is and let a missing dir speak for itself.
+    if c is not None:
+        c_tag = f'{c:g}'
+        target = base / f'lc{leakage_bit}_pt{pseudo_int}_C{c_tag}'
+        if not target.is_dir():
+            sys.exit(f'ERROR: explore dir not found: {target}')
+        return target
+
+    # Auto-discover: scan lc{}_pt{}_C* dirs for a match.
+    pattern = f'lc{leakage_bit}_pt{pseudo_int}_C*'
+    candidates = []
+    for cand in sorted(base.glob(pattern)):
+        if not cand.is_dir():
+            continue
+        # The (classifier, sw_dur, tuned) schema is shared across ROIs
+        # within a run, so a single peek is enough.
+        for roi_dir in sorted(cand.iterdir()):
+            if roi_dir.name.startswith('_') or not roi_dir.is_dir():
+                continue
+            csv = roi_dir / 'explore_full.csv'
+            if csv.exists() and _csv_has_matching_rows(
+                csv, classifier, sw_dur, sw_step, tuned,
+            ):
+                candidates.append(cand)
+            break
+
+    if not candidates:
+        sys.exit(
+            f'ERROR: no explore dirs under {base} matching {pattern} '
+            f'contain rows for (classifier={classifier}, sw_dur={sw_dur}, '
+            f'sw_step={sw_step}, tuned={tuned}).'
+        )
+
+    if len(candidates) > 1:
+        names = ', '.join(c.name for c in candidates)
+        if tuned:
+            print(f'  NOTE: multiple candidate explore dirs ({names}); '
+                  f'using {candidates[0].name} (tuned accuracies are '
+                  f'bit-identical across them — C is chosen per fold)')
+        else:
+            sys.exit(
+                f'ERROR: untuned rows for classifier={classifier} exist '
+                f'in multiple explore dirs ({names}).  Specify --c to '
+                f'disambiguate (each C is a distinct decoding).'
+            )
+
+    return candidates[0]
 
 
 def _best_params_string(classifier, tune_hyperparams, effective_c, row):
@@ -98,16 +181,20 @@ def main():
         args.c if args.c is not None else DEFAULT_C.get(args.classifier, 1.0)
     )
 
-    # Where explore_decoding wrote its per-ROI CSVs
-    run_seg = explore_run_segment(
-        args.leakage_correction, args.pseudo_trial_size, args.c,
-    )
-    explore_root = (
+    # Where explore_decoding wrote its per-ROI CSVs.  When --c is
+    # given, this matches the explore_run_segment exactly; when --c is
+    # omitted (only meaningful for tuned runs), the helper scans the
+    # sibling lc*_pt*_C* dirs for one containing matching rows.
+    base = (
         DECODE_OUTPUT_ROOT / 'explore' / args.task / args.method
-        / args.atlas / args.feature_mode / args.stim_class / run_seg
+        / args.atlas / args.feature_mode / args.stim_class
     )
-    if not explore_root.is_dir():
-        sys.exit(f'ERROR: explore tree not found: {explore_root}')
+    if not base.is_dir():
+        sys.exit(f'ERROR: explore tree not found: {base}')
+    explore_root = _discover_explore_root(
+        base, args.leakage_correction, args.pseudo_trial_size, args.c,
+        args.classifier, args.sw_dur, args.sw_step, args.tune_hyperparams,
+    )
 
     # Where source_stats_viz expects per-subject CSVs
     clf_tag = classifier_path_segment(
