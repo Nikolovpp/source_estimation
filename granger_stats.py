@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import DECODE_OUTPUT_ROOT, BASELINE_WINDOWS, DECODE_TMIN
 from granger import DEFAULT_BANDS
-from run_granger import gc_tag, GC_OUTPUT_ROOT
+from run_granger import gc_tag, roiset_tag, GC_OUTPUT_ROOT
 
 GC_SENSOR_OUTPUT_ROOT = DECODE_OUTPUT_ROOT.parent / 'GC_sensor_space'
 
@@ -224,7 +224,7 @@ def _derive_gc_dir(args):
     return (root / args.task / args.method / args.atlas / args.feature_mode
             / leakage_tag / gc_tag(args.order, args.win_ms, args.target_fs,
                                    args.normalize, args.gc_mode)
-            / args.stim_class)
+            / roiset_tag(args.roi_subset) / args.stim_class)
 
 
 def parse_args():
@@ -248,6 +248,9 @@ def parse_args():
     p.add_argument('--normalize', default='none')
     p.add_argument('--gc-mode', default='pairwise',
                    choices=['pairwise', 'conditional'])
+    p.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
+                   help='Same subset passed to run_granger.py, so the derived '
+                        'path points at that subset run (omit for the full run)')
     return p.parse_args()
 
 

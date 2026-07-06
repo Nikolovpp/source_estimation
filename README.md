@@ -668,10 +668,13 @@ python granger_stats.py --space source --task overtProd --stim-class prodDiff \
 ```
 
 Output: per-subject `.npz` under
-`derivatives/source_estimation/GC_source_space/{task}/{method}/{atlas}/{feature_mode}/{leakage_tag}/{gc_tag}/{stim_class}/`
+`derivatives/source_estimation/GC_source_space/{task}/{method}/{atlas}/{feature_mode}/{leakage_tag}/{gc_tag}/{roiset}/{stim_class}/`
 (band-averaged directed GC `fxy_{band}` / `fyx_{band}`, plus `dtrgc_{band}` with
-`--trgc`). `granger_stats.py` writes per-edge figures and a task-vs-baseline
-stats CSV. Sensor-space output mirrors this under `GC_sensor_space/`.
+`--trgc`). `{roiset}` is `all_rois` for a full run or `rois_<names>` for a
+`--roi-subset` run, so subset runs never overwrite the full run (or each
+other). `granger_stats.py` (pass the same `--roi-subset`) writes per-edge
+figures and a task-vs-baseline stats CSV. Sensor-space output mirrors this
+under `GC_sensor_space/`.
 
 ### Files
 

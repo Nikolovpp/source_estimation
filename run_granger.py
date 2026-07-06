@@ -256,14 +256,32 @@ def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise'):
     return t
 
 
+def roiset_tag(roi_subset):
+    """Directory segment identifying the ROI subset, so a ``--roi-subset``
+    run writes to its own folder and never overwrites the full run (or a
+    different subset).  Order- and case-insensitive; full runs -> 'all_rois'.
+    Long subsets fall back to a short hash so paths stay sane.
+    """
+    if not roi_subset:
+        return 'all_rois'
+    names = sorted(n.strip().lower().replace(' ', '_') for n in roi_subset)
+    safe = '-'.join(names)
+    if len(safe) <= 60:
+        return f'rois_{safe}'
+    import hashlib
+    h = hashlib.sha1('|'.join(names).encode()).hexdigest()[:8]
+    return f'rois_{len(names)}x_{h}'
+
+
 def save_subject_gc(result, subj, task, stim_class, method, atlas,
                     feature_mode, leakage_correction, order, win_ms,
                     target_fs, normalize, output_root=GC_OUTPUT_ROOT,
-                    gc_mode='pairwise'):
+                    gc_mode='pairwise', roi_subset=None):
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
-        / gc_tag(order, win_ms, target_fs, normalize, gc_mode) / stim_class
+        / gc_tag(order, win_ms, target_fs, normalize, gc_mode)
+        / roiset_tag(roi_subset) / stim_class
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f'{subj}_{task}_{stim_class}.npz'
@@ -425,7 +443,7 @@ def main():
             result, subj, args.task, args.stim_class, args.method,
             args.atlas, args.feature_mode, args.leakage_correction,
             args.order, args.win_ms, args.target_fs, args.normalize,
-            gc_mode=args.gc_mode,
+            gc_mode=args.gc_mode, roi_subset=args.roi_subset,
         )
         n_pairs = result['pair_i'].size
         print(f'  {subj}: {len(roi_data)} ROIs, {n_pairs} pairs, '
