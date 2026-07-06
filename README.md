@@ -605,3 +605,81 @@ python visualize_rois.py --roi vSMC --atlas Schaefer200 --save
 # Full-resolution vs ico-5 comparison
 python visualize_rois.py --mode compare --atlas Schaefer200 --save --format svg
 ```
+
+## Granger Causality
+
+Directed connectivity between the speech-network ROIs, in Python. This is a
+faithful port of the lab's MATLAB BSMART pairwise spectral GC pipeline, lifted
+into source space, plus a modern state-space conditional GC method.
+
+**Engine** (`granger.py`) — parametric MVAR spectral (Geweke) Granger causality:
+`fit_mvar` is a line-by-line port of BSMART's `armorf` (Morf's LWR estimator),
+and `pairwise_spectral_gc` reproduces BSMART's `pwcausal.m` **to machine
+precision** (verified to 2.8e-16 in `validate_granger.py`). Also provides
+Diff-TRGC (time-reversed GC; Haufe 2013 / Winkler 2016) as a source-space
+robustness control, AIC/BIC order selection, and band averaging
+(theta 4–7, alpha 8–12, low-beta 13–20, high-beta 21–30 Hz).
+
+**Conditional / multivariate GC** — two methods:
+- `granger.conditional_spectral_gc` — classic Chen, Bressler & Ding (2006)
+  reduced/full AR partition.
+- `granger_statespace.py` — **state-space method (Barnett & Seth 2015)**, a
+  faithful port of the MVGC toolbox. Derives the reduced model's residual
+  covariance exactly from the full VAR via a discrete algebraic Riccati
+  equation (`var2riss`), avoiding the reduced-VAR mis-specification bias of the
+  classic method. This is the recommended conditional method.
+
+Both remove common-input and mediated/indirect pathways that inflate pairwise
+GC, isolating **direct** influence. Validated on mediation-chain and
+common-driver networks (`validate_granger_conditional.py`,
+`validate_granger_statespace.py`).
+
+### ROI signal
+
+GC reads the existing **vertex** ROI cache (the one decoding used — not
+pca_flip). Each ROI's vertices are collapsed to one virtual channel via a
+**fixed first-PC spatial filter** estimated once across the trial ensemble
+(`granger.reduce_roi_first_pc`) — consistent across trials (needed for the
+multi-trial AR fit) and the analogue of the MATLAB sensor pseudo-channels.
+Virtual channels are downsampled to 500 Hz (matching the MATLAB GC) before
+fitting.
+
+### Running
+
+```bash
+# Source-space pairwise GC (BSMART reproduction, + TRGC control)
+python run_granger.py --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --feature-mode vertex_selectkbest \
+    --order 10 --win-ms 40 --target-fs 500 --trgc --n-jobs 64
+
+# Source-space CONDITIONAL GC (state-space, each edge conditioned on all others)
+python run_granger.py --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas HCPMMP1 --feature-mode vertex_selectkbest \
+    --gc-mode conditional --order 10 --win-ms 40 --n-jobs 64
+
+# Sensor-space GC (reproduce the MATLAB PWGC from sensor pseudo-channels)
+python run_granger_sensor.py --task overtProd --stim-class all \
+    --order 10 --win-ms 40 --trgc --n-jobs 8
+
+# Group stats + figures (subject-mean GC, task-vs-baseline right-tailed t-test)
+python granger_stats.py --space source --task overtProd --stim-class prodDiff \
+    --method dSPM --atlas HCPMMP1 --feature-mode vertex_selectkbest \
+    --order 10 --win-ms 40 --target-fs 500
+```
+
+Output: per-subject `.npz` under
+`derivatives/source_estimation/GC_source_space/{task}/{method}/{atlas}/{feature_mode}/{leakage_tag}/{gc_tag}/{stim_class}/`
+(band-averaged directed GC `fxy_{band}` / `fyx_{band}`, plus `dtrgc_{band}` with
+`--trgc`). `granger_stats.py` writes per-edge figures and a task-vs-baseline
+stats CSV. Sensor-space output mirrors this under `GC_sensor_space/`.
+
+### Files
+
+| File | Role |
+|------|------|
+| `granger.py` | MVAR fit + pairwise Geweke spectral GC + TRGC + Chen conditional GC + band averaging |
+| `granger_statespace.py` | State-space conditional GC (Barnett & Seth 2015; MVGC port) |
+| `run_granger.py` | Source-space runner (`--gc-mode pairwise\|conditional`) |
+| `run_granger_sensor.py` | Sensor-space runner (pseudo-channels; reproduces MATLAB PWGC) |
+| `granger_stats.py` | Group aggregation, task-vs-baseline stats, per-edge figures |
+| `validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |
