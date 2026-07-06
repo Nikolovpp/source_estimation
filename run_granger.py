@@ -353,24 +353,41 @@ def main():
     if args.atlas in SPEECH_ROIS:
         roi_universe = list(SPEECH_ROIS[args.atlas].keys())
     else:
-        roi_universe = None  # full atlas; roi-subset strongly recommended
+        roi_universe = None  # e.g. custom atlas — resolve against the cache
 
-    # Resolve the requested ROI subset to canonical names (case-insensitive,
-    # like run_decode); GC on a 2-ROI subset gives just that seed<->target pair.
-    if args.roi_subset and roi_universe is not None:
-        lut = {r.lower(): r for r in roi_universe}
+    # Resolve/validate --roi-subset against the ACTUAL ROI names stored in the
+    # cache (peek at the first available subject).  Works for every atlas —
+    # including 'custom', whose ROI names (e.g. awfa-lh, ifc-lh) differ from
+    # the speech-network names — and on mismatch lists what IS available.
+    # Case-insensitive.  GC on a 2-ROI subset gives just that seed<->target pair.
+    if args.roi_subset:
+        cache_names = None
+        for s in subjects:
+            npz0 = find_cached_npz(args.task, args.method, args.atlas,
+                                   args.feature_mode, args.leakage_correction,
+                                   s, args.stim_class)
+            if npz0 is not None:
+                with np.load(npz0, allow_pickle=True) as d0:
+                    cache_names = list(d0['roi_names'])
+                break
+        if cache_names is None:
+            print('  No vertex cache found for any subject — run '
+                  'run_source_localize.py first, or check the '
+                  'ROI_TIMESERIES_EXTERNAL paths in config.env.')
+            return
+        lut = {n.lower(): n for n in cache_names}
         subset, missing = [], []
         for name in args.roi_subset:
-            (subset if name.lower() in lut else missing).append(
-                lut.get(name.lower(), name))
+            (subset.append(lut[name.lower()]) if name.lower() in lut
+             else missing.append(name))
         if missing:
-            print(f'ERROR: ROIs not in {args.atlas} speech ROIs: {missing}')
-            print(f'Available: {sorted(roi_universe)}')
+            print(f'ERROR: requested ROIs not in the {args.atlas} cache: {missing}')
+            print(f'Available ROIs in cache: {sorted(cache_names)}')
             return
         print(f'  ROI subset:   {subset} ({len(subset)} ROIs, '
               f'{len(subset)*(len(subset)-1)//2} pair(s))')
     else:
-        subset = args.roi_subset if args.roi_subset else roi_universe
+        subset = roi_universe
 
     total_start = time.time()
     ok, failed = 0, []
