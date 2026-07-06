@@ -11,6 +11,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Third-party reference toolboxes (BSMART / MVGC MATLAB source; read-only
+# reference for the Python GC port, not a runtime dependency)
+bsmart_toolbox_matlab_source_code/
+
 # Claude Code IDE settings
 .claude/
 
