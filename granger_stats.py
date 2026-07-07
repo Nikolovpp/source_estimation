@@ -3,10 +3,14 @@ Group statistics and plotting for source/sensor Granger causality.
 
 Aggregates the per-subject GC ``.npz`` files written by ``run_granger.py``
 / ``run_granger_sensor.py``, computes the subject-mean band-limited GC
-time courses with SEM, and runs the MATLAB task-vs-baseline test
-(right-tailed one-sample t-test of each task time point against the
-subject-averaged baseline level; cf. ``production_pwgc_data_to_python.m``),
-then renders per-edge figures.
+time courses with SEM, and runs the MATLAB task-vs-baseline test at each
+task time point against the subject-averaged baseline level.  Two tests
+are available via ``--test``: a right-tailed one-sample Student's t-test
+(``ttest``, matches ``production_pwgc_data_to_python.m`` and the v4
+figures) or a right-tailed Wilcoxon signed-rank test (``signrank``,
+matches the v3 figures).  Both share the identical one-sample /
+right-tailed / vs-scalar-baseline design and differ only in parametric
+vs non-parametric.  Then renders per-edge figures.
 
 CLI
 ---
@@ -87,15 +91,45 @@ def load_gc_group(gc_dir, bands=None):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Task-vs-baseline statistics (matches production_pwgc_data_to_python.m)
+# Task-vs-baseline statistics
+#   ttest    -> right-tailed one-sample Student's t (production_pwgc_data_to_python.m, v4 figs)
+#   signrank -> right-tailed Wilcoxon signed-rank   (v3 figs)
 # ─────────────────────────────────────────────────────────────────────
+def _right_tailed_pval(x, m, test):
+    """Right-tailed one-sample p-value of samples ``x`` against scalar ``m``.
+
+    ``ttest`` uses the parametric one-sample Student's t (scipy
+    ``ttest_1samp(..., alternative='greater')``).  ``signrank`` uses the
+    non-parametric Wilcoxon signed-rank on ``x - m`` (scipy
+    ``wilcoxon(..., alternative='greater')`` == MATLAB
+    ``signrank(x, m, 'tail','right')``).  Returns NaN when the statistic
+    is undefined (e.g. all differences are zero).
+    """
+    if test == 'ttest':
+        _t, p = stats.ttest_1samp(x, m, alternative='greater')
+        return p
+    if test == 'signrank':
+        d = np.asarray(x, dtype=float) - m
+        if not np.any(d != 0.0):
+            return np.nan
+        try:
+            _w, p = stats.wilcoxon(d, alternative='greater')
+        except ValueError:
+            return np.nan
+        return p
+    raise ValueError(f"unknown test {test!r} (expected 'ttest' or 'signrank')")
+
+
 def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
-                     alpha=0.05):
-    """Per-pair subject mean/SEM and right-tailed task-vs-baseline t-test.
+                     alpha=0.05, test='ttest'):
+    """Per-pair subject mean/SEM and right-tailed task-vs-baseline test.
 
     subj_stack : (n_subj, n_pairs, n_win)
     baseline_ms : (lo, hi) window-start range treated as baseline.
     task_start_ms : task points are windows with start >= this.
+    test : 'ttest' (parametric Student's t) or 'signrank' (non-parametric
+        Wilcoxon signed-rank).  Both are right-tailed, one-sample, tested
+        against the scalar subject-averaged baseline mean.
 
     Returns dict of (n_pairs, n_win) arrays: ``mean``, ``sem``,
     ``pval`` (NaN outside task), ``sig`` (bool), and scalar-per-pair
@@ -115,8 +149,7 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
     sig = np.zeros((n_pairs, n_win), bool)
     for pi in range(n_pairs):
         for w in np.where(task_mask)[0]:
-            t, p = stats.ttest_1samp(subj_stack[:, pi, w], baseline_mean[pi],
-                                     alternative='greater')
+            p = _right_tailed_pval(subj_stack[:, pi, w], baseline_mean[pi], test)
             pval[pi, w] = p
             sig[pi, w] = p < alpha
     return {'mean': subj_mean, 'sem': sem, 'pval': pval, 'sig': sig,
@@ -127,10 +160,11 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
 # Plotting
 # ─────────────────────────────────────────────────────────────────────
 def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
-                       direction, out_path, bands=None, fmt='png'):
+                       direction, out_path, bands=None, fmt='png', test='ttest'):
     """Plot one directed edge (src->tgt) across bands with significance.
 
     direction : 'fxy' (pair i->j) or 'fyx' (pair j->i).
+    test : which task-vs-baseline test produced ``sig`` (named in the title).
     """
     if bands is None:
         bands = DEFAULT_BANDS
@@ -157,7 +191,10 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
         ax.set_ylabel('GC')
     for ax in axes[2:]:
         ax.set_xlabel('window start (ms)')
-    fig.suptitle(f'Granger causality: {src_name} → {tgt_name}', fontsize=15)
+    test_label = {'ttest': "Student's t",
+                  'signrank': 'Wilcoxon signed-rank'}.get(test, test)
+    fig.suptitle(f'Granger causality: {src_name} → {tgt_name}   '
+                 f'(sig: right-tailed {test_label})', fontsize=15)
     axes[0].legend(fontsize=9, loc='upper left')
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, format=fmt, bbox_inches='tight')
@@ -168,8 +205,13 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # CLI
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
-              alpha=0.05, bands=None, fmt='png'):
-    """Aggregate a GC group directory, run stats, write figures + CSV."""
+              alpha=0.05, bands=None, fmt='png', test='ttest'):
+    """Aggregate a GC group directory, run stats, write figures + CSV.
+
+    ``test`` selects the task-vs-baseline test ('ttest' or 'signrank').
+    Figure and CSV names are tagged with it, so both tests can be written
+    into the same ``out_dir`` and diffed edge-by-edge.
+    """
     if bands is None:
         bands = DEFAULT_BANDS
     band_names = list(bands)
@@ -188,7 +230,7 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     for direction, key in [('fxy', 'fxy'), ('fyx', 'fyx')]:
         stats_by_band = {
             b: task_vs_baseline(agg[key][b], agg['window_ms'], baseline_ms,
-                                task_start_ms, alpha)
+                                task_start_ms, alpha, test)
             for b in band_names
         }
         for pi in range(n_pairs):
@@ -197,23 +239,24 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                 src, tgt = roi[i], roi[j]
             else:
                 src, tgt = roi[j], roi[i]
-            fname = os.path.join(out_dir, f'GC_{src}_to_{tgt}.{fmt}')
+            fname = os.path.join(out_dir, f'GC_{src}_to_{tgt}_{test}.{fmt}')
             plot_directed_edge(agg, stats_by_band, src, tgt, pi, direction,
-                               fname, bands, fmt)
+                               fname, bands, fmt, test)
             for b in band_names:
                 st = stats_by_band[b]
                 for w, wm in enumerate(agg['window_ms']):
                     rows.append({
                         'src': src, 'tgt': tgt, 'band': b, 'window_ms': wm,
+                        'test': test,
                         'gc_mean': st['mean'][pi, w], 'gc_sem': st['sem'][pi, w],
                         'baseline_mean': st['baseline_mean'][pi],
                         'pval': st['pval'][pi, w], 'sig': st['sig'][pi, w],
                     })
-    csv_path = os.path.join(out_dir, 'gc_task_vs_baseline_stats.csv')
+    csv_path = os.path.join(out_dir, f'gc_task_vs_baseline_stats_{test}.csv')
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     n_edges = 2 * n_pairs
     print(f'  {len(agg["subjects"])} subjects, {n_edges} directed edges, '
-          f'{len(band_names)} bands -> {out_dir}')
+          f'{len(band_names)} bands, test={test} -> {out_dir}')
     print(f'  figures: {n_edges} + stats CSV: {csv_path}')
     return csv_path
 
@@ -234,6 +277,11 @@ def parse_args():
     p.add_argument('--out-dir', default=None, help='Where to write figures/CSV')
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--alpha', type=float, default=0.05)
+    p.add_argument('--test', default='ttest', choices=['ttest', 'signrank'],
+                   help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
+                        "Student's t; matches production_pwgc_data_to_python.m and "
+                        "the v4 figures) or 'signrank' (right-tailed Wilcoxon "
+                        "signed-rank; matches the v3 figures)")
     p.add_argument('--format', default='png', choices=['png', 'svg'])
     # For deriving --gc-dir from a run's parameters:
     p.add_argument('--space', default='source', choices=['source', 'sensor'])
@@ -258,8 +306,9 @@ def main():
     args = parse_args()
     gc_dir = args.gc_dir if args.gc_dir else str(_derive_gc_dir(args))
     out_dir = args.out_dir if args.out_dir else os.path.join(gc_dir, 'group_stats')
-    print(f'GC group stats\n  gc-dir: {gc_dir}')
-    run_stats(gc_dir, args.task, out_dir, alpha=args.alpha, fmt=args.format)
+    print(f'GC group stats (test={args.test})\n  gc-dir: {gc_dir}')
+    run_stats(gc_dir, args.task, out_dir, alpha=args.alpha, fmt=args.format,
+              test=args.test)
 
 
 if __name__ == '__main__':
