@@ -90,7 +90,7 @@ def _build_class_labels(word_list, stim_class):
     return np.array(y_labels), np.array(keep_mask)
 
 
-def load_subject_epochs(subj_id, task_cond, stim_class):
+def load_subject_epochs(subj_id, task_cond, stim_class, fs=2000):
     """
     Load EEGLAB data for one subject and return MNE Epochs + class labels.
 
@@ -102,6 +102,10 @@ def load_subject_epochs(subj_id, task_cond, stim_class):
         'perception' or 'overtProd'.
     stim_class : str
         'prodDiff' or 'percDiff'.
+    fs : int
+        Sampling-rate directory to load from: 2000 (native, default) or 500
+        (continuous-resampled, ``*_500Hz_reSample_*``).  The actual sfreq is
+        still read from the .mat, not assumed from this argument.
 
     Returns
     -------
@@ -114,9 +118,9 @@ def load_subject_epochs(subj_id, task_cond, stim_class):
     """
     # Load the .mat file
     if task_cond == 'perception':
-        mat_path = get_perception_data_path(subj_id)
+        mat_path = get_perception_data_path(subj_id, fs=fs)
     elif task_cond == 'overtProd':
-        mat_path = get_production_data_path(subj_id)
+        mat_path = get_production_data_path(subj_id, fs=fs)
     else:
         raise ValueError(f'Unknown task_cond: {task_cond}')
 
@@ -131,12 +135,6 @@ def load_subject_epochs(subj_id, task_cond, stim_class):
     data = data.swapaxes(2, 0)  # now (trials, timepoints, channels)
     data = data.swapaxes(1, 2)  # now (trials, channels, timepoints)
 
-    # Sampling frequency — read from mat file, fallback to 2048 Hz (BIOSEMI native)
-    sfreq = eeg_dict.get('srate', 2048.0)
-    if isinstance(sfreq, np.ndarray):
-        sfreq = float(sfreq.flat[0])
-    sfreq = float(sfreq)
-
     # Time vector (EEGLAB stores times in milliseconds)
     times = eeg_dict['times']
     if isinstance(times, np.ndarray):
@@ -145,11 +143,21 @@ def load_subject_epochs(subj_id, task_cond, stim_class):
     # Derive tmin from the actual times array (ms → seconds)
     tmin = times[0] / 1000.0
 
-    # Cross-check sfreq against the times array
+    # Sampling frequency.  The 'srate' field is often ABSENT from these
+    # exports (get→fallback), so a hardcoded fallback would mislabel a
+    # continuously-resampled file (e.g. 500 Hz) as the 2048 Hz native rate.
+    # The times array is authoritative: when the stored/fallback srate
+    # disagrees with it, trust the times array.
     sfreq_from_times = 1000.0 / np.mean(np.diff(times))
+    sfreq = eeg_dict.get('srate', None)
+    if isinstance(sfreq, np.ndarray):
+        sfreq = float(sfreq.flat[0]) if sfreq.size else None
+    sfreq = float(sfreq) if sfreq is not None else 2048.0
+
     if abs(sfreq - sfreq_from_times) > 1.0:
-        print(f'  WARNING: srate={sfreq} Hz but times array implies '
-              f'{sfreq_from_times:.1f} Hz — using srate value')
+        print(f'  WARNING: srate={sfreq} Hz disagrees with times array '
+              f'({sfreq_from_times:.1f} Hz) — using times-derived rate')
+        sfreq = sfreq_from_times
     else:
         print(f'  sfreq={sfreq} Hz (confirmed by times array: '
               f'{sfreq_from_times:.2f} Hz)')

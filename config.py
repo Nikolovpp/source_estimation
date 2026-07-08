@@ -58,22 +58,43 @@ COMPLETE_WORD_LIST = PROD_DIFF_TH + PROD_DIFF_F + PERC_DIFF_S + PERC_DIFF_T
 # ─────────────────────────────────────────────────────────────────────
 # Data paths per task condition
 # ─────────────────────────────────────────────────────────────────────
-def get_perception_data_path(subj_id):
-    """Return path to the perception .mat file (average_ref, popthresh120)."""
-    base = EEGLAB_DIR / 'perception' / subj_id / 'average_ref' / 'eeglab_standard' / 'fs_2000'
+def get_perception_data_path(subj_id, fs=2000):
+    """Return path to the perception .mat file (average_ref, popthresh120).
+
+    ``fs`` selects the sampling-rate directory: 2000 (native, default) or
+    500 (continuous-resampled, ``*_500Hz_reSample_*``).  The fs=2000 branch
+    is unchanged from the original single-argument behavior.
+    """
+    base = EEGLAB_DIR / 'perception' / subj_id / 'average_ref' / 'eeglab_standard' / f'fs_{fs}'
     for f in base.iterdir():
-        if f.name.endswith('popthresh120.mat') and 'good_trials' not in f.name:
-            return f
-    raise FileNotFoundError(f'No popthresh120.mat found for {subj_id} in {base}')
+        if not (f.name.endswith('popthresh120.mat') and 'good_trials' not in f.name):
+            continue
+        if fs != 2000 and '500Hz_reSample' not in f.name:
+            continue
+        return f
+    raise FileNotFoundError(f'No popthresh120.mat (fs={fs}) found for {subj_id} in {base}')
 
 
-def get_production_data_path(subj_id):
-    """Return path to the production .mat file (average_ref, ProdOnset)."""
-    base = EEGLAB_DIR / 'overtProd' / subj_id / 'average_ref' / 'fs_2000'
-    for f in base.iterdir():
-        if f.name.endswith('ProdOnset.mat'):
-            return f
-    raise FileNotFoundError(f'No ProdOnset.mat found for {subj_id} in {base}')
+def get_production_data_path(subj_id, fs=2000):
+    """Return path to the production .mat file (average_ref, ProdOnset).
+
+    ``fs`` selects the sampling-rate directory: 2000 (native, default) or
+    500 (continuous-resampled).  The fs_500 directory holds several epoch
+    variants, so for fs=500 we additionally require the reSample tag and the
+    same -1.5–0.4 s epoch as the 2000 Hz default.  The fs=2000 branch is
+    unchanged from the original single-argument behavior.
+    """
+    base = EEGLAB_DIR / 'overtProd' / subj_id / 'average_ref' / f'fs_{fs}'
+    if fs == 2000:
+        for f in base.iterdir():
+            if f.name.endswith('ProdOnset.mat'):
+                return f
+    else:
+        for f in base.iterdir():
+            if (f.name.endswith('ProdOnset.mat') and 'good_trials' not in f.name
+                    and '500Hz_reSample' in f.name and '-1.5_0.4' in f.name):
+                return f
+    raise FileNotFoundError(f'No ProdOnset.mat (fs={fs}) found for {subj_id} in {base}')
 
 
 # ─────────────────────────────────────────────────────────────────────
