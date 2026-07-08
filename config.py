@@ -501,6 +501,17 @@ GC_TASK_START = {
     'perception': -0.050,
     'overtProd':  -1.350,
 }
+# GC task windows also END here (in seconds), to drop the trailing
+# moving-window MVAR boundary artifact: the last window straddles the
+# epoch end, so windows whose data reaches into the final win_ms are
+# excluded.  Set to tmax - 2*win (one window length before the last
+# window start).  Override with granger_stats.py --task-end.
+#   perception epoch end +0.6 s (last window start +0.56)
+#   overtProd  epoch end +0.4 s (last window start +0.36)
+GC_TASK_END = {
+    'perception': 0.520,
+    'overtProd':  0.320,
+}
 
 
 def cache_feat_mode(feat_mode):
