@@ -475,6 +475,33 @@ DECODE_TMIN = {
     'overtProd':  -1.500,   # start decoding at -1500 ms
 }
 
+# ─────────────────────────────────────────────────────────────────────
+# Granger-causality task-vs-baseline windows (in seconds).
+# These are SEPARATE from BASELINE_WINDOWS above.  BASELINE_WINDOWS sets
+# the inverse noise-covariance window (and is reused for decoding); it is
+# the WRONG window for the GC task-vs-baseline test:
+#   - overtProd's (-1.6, -1.5) is out-of-range for the actual -1.5..0.4 s
+#     epoch, so the GC baseline collapses onto the single leading-edge
+#     window (spurious ~100%-significant results);
+#   - perception's (-0.2, -0.1) sits right at the -0.2 s epoch edge, in
+#     the moving-window MVAR leading-edge ramp.
+# The GC windows below sit INSIDE the epoch and past that edge ramp; GC
+# task windows begin at GC_TASK_START.  The leading segment between the
+# epoch start and the baseline is left out of both baseline and task.
+# Override per run with granger_stats.py --baseline-start/--baseline-end/
+# --task-start.
+#   perception epoch -0.2..0.6 s (stimulus onset at 0)
+#   overtProd  epoch -1.5..0.4 s (production onset at 0)
+# ─────────────────────────────────────────────────────────────────────
+GC_BASELINE_WINDOWS = {
+    'perception': (-0.150, -0.050),
+    'overtProd':  (-1.450, -1.350),
+}
+GC_TASK_START = {
+    'perception': -0.050,
+    'overtProd':  -1.350,
+}
+
 
 def cache_feat_mode(feat_mode):
     """Normalize a feature_mode to its cache-directory name.
