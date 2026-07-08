@@ -34,7 +34,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import DECODE_OUTPUT_ROOT, BASELINE_WINDOWS, DECODE_TMIN
+from config import (DECODE_OUTPUT_ROOT, BASELINE_WINDOWS, DECODE_TMIN,
+                    GC_BASELINE_WINDOWS, GC_TASK_START)
 from granger import DEFAULT_BANDS
 from run_granger import gc_tag, roiset_tag, GC_OUTPUT_ROOT
 
@@ -160,11 +161,14 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
 # Plotting
 # ─────────────────────────────────────────────────────────────────────
 def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
-                       direction, out_path, bands=None, fmt='png', test='ttest'):
+                       direction, out_path, bands=None, fmt='png', test='ttest',
+                       baseline_ms=None, task_start_ms=None):
     """Plot one directed edge (src->tgt) across bands with significance.
 
     direction : 'fxy' (pair i->j) or 'fyx' (pair j->i).
     test : which task-vs-baseline test produced ``sig`` (named in the title).
+    baseline_ms, task_start_ms : if given, shade the GC baseline window and
+        mark the task-window start so the reference is visible on the plot.
     """
     if bands is None:
         bands = DEFAULT_BANDS
@@ -180,6 +184,11 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
         ax.fill_between(window_ms, m - se, m + se, color='#2166ac', alpha=0.25)
         ax.axhline(st['baseline_mean'][pair_idx], color='0.5', ls='--', lw=1,
                    label='baseline')
+        if baseline_ms is not None:
+            ax.axvspan(baseline_ms[0], baseline_ms[1], color='0.6', alpha=0.15,
+                       lw=0, label='baseline window')
+        if task_start_ms is not None:
+            ax.axvline(task_start_ms, color='0.4', ls=':', lw=1)
         # significance ticks
         sig = st['sig'][pair_idx]
         if sig.any():
@@ -216,10 +225,12 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
         bands = DEFAULT_BANDS
     band_names = list(bands)
     if baseline_ms is None:
-        bl = BASELINE_WINDOWS.get(task, (-1.6, -1.5))
+        bl = GC_BASELINE_WINDOWS.get(task, BASELINE_WINDOWS.get(task, (-1.45, -1.35)))
         baseline_ms = (bl[0] * 1000.0, bl[1] * 1000.0)
     if task_start_ms is None:
-        task_start_ms = DECODE_TMIN.get(task, -1.5) * 1000.0
+        task_start_ms = GC_TASK_START.get(task, DECODE_TMIN.get(task, -1.35)) * 1000.0
+    print(f'  GC baseline window: [{baseline_ms[0]:g}, {baseline_ms[1]:g}] ms; '
+          f'task windows from {task_start_ms:g} ms')
 
     agg = load_gc_group(gc_dir, bands)
     roi = agg['roi_names']
@@ -241,7 +252,7 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                 src, tgt = roi[j], roi[i]
             fname = os.path.join(out_dir, f'GC_{src}_to_{tgt}_{test}.{fmt}')
             plot_directed_edge(agg, stats_by_band, src, tgt, pi, direction,
-                               fname, bands, fmt, test)
+                               fname, bands, fmt, test, baseline_ms, task_start_ms)
             for b in band_names:
                 st = stats_by_band[b]
                 for w, wm in enumerate(agg['window_ms']):
@@ -277,6 +288,14 @@ def parse_args():
     p.add_argument('--out-dir', default=None, help='Where to write figures/CSV')
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--alpha', type=float, default=0.05)
+    p.add_argument('--baseline-start', type=float, default=None,
+                   help='GC baseline window start (s); default from '
+                        'config.GC_BASELINE_WINDOWS[task]. Pass with --baseline-end.')
+    p.add_argument('--baseline-end', type=float, default=None,
+                   help='GC baseline window end (s)')
+    p.add_argument('--task-start', type=float, default=None,
+                   help='GC task windows begin here (s); default from '
+                        'config.GC_TASK_START[task]')
     p.add_argument('--test', default='ttest', choices=['ttest', 'signrank'],
                    help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
                         "Student's t; matches production_pwgc_data_to_python.m and "
@@ -306,8 +325,13 @@ def main():
     args = parse_args()
     gc_dir = args.gc_dir if args.gc_dir else str(_derive_gc_dir(args))
     out_dir = args.out_dir if args.out_dir else os.path.join(gc_dir, 'group_stats')
+    baseline_ms = None
+    if args.baseline_start is not None and args.baseline_end is not None:
+        baseline_ms = (args.baseline_start * 1000.0, args.baseline_end * 1000.0)
+    task_start_ms = args.task_start * 1000.0 if args.task_start is not None else None
     print(f'GC group stats (test={args.test})\n  gc-dir: {gc_dir}')
-    run_stats(gc_dir, args.task, out_dir, alpha=args.alpha, fmt=args.format,
+    run_stats(gc_dir, args.task, out_dir, baseline_ms=baseline_ms,
+              task_start_ms=task_start_ms, alpha=args.alpha, fmt=args.format,
               test=args.test)
 
 
