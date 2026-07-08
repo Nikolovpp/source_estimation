@@ -34,8 +34,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import (DECODE_OUTPUT_ROOT, BASELINE_WINDOWS, DECODE_TMIN,
-                    GC_BASELINE_WINDOWS, GC_TASK_START, GC_TASK_END)
+from config import DECODE_OUTPUT_ROOT, GC_TASK_END
 from granger import DEFAULT_BANDS
 from run_granger import gc_tag, roiset_tag, GC_OUTPUT_ROOT
 
@@ -171,22 +170,31 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 
     direction : 'fxy' (pair i->j) or 'fyx' (pair j->i).
     test : which task-vs-baseline test produced ``sig`` (named in the title).
-    baseline_ms, task_start_ms, task_end_ms : if given, shade the GC
-        baseline window and mark the task-window start/end so the tested
-        region is visible on the plot.
+    baseline_ms, task_start_ms, task_end_ms : shade the GC baseline window and
+        mark the task-window start.  The plot is also RESTRICTED to the analysed
+        span — from the baseline start through the task-end crop — so the leading
+        pre-baseline segment and the trailing cropped windows (both excluded from
+        the stats) are not drawn either.
     """
     if bands is None:
         bands = DEFAULT_BANDS
     band_names = list(bands)
     window_ms = agg['window_ms']
+    # Only show what the stats use: baseline start .. task end.  Everything
+    # outside (leading pre-baseline windows, trailing MVAR-boundary windows
+    # dropped by the task-end crop) is hidden.
+    lo = baseline_ms[0] if baseline_ms is not None else float(window_ms[0])
+    hi = task_end_ms if task_end_ms is not None else float(window_ms[-1])
+    keep = (window_ms >= lo) & (window_ms <= hi)
+    wm = window_ms[keep]
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
     axes = axes.ravel()
     for ax, b in zip(axes, band_names):
         st = stats_by_band[b]
-        m = st['mean'][pair_idx]
-        se = st['sem'][pair_idx]
-        ax.plot(window_ms, m, color='#2166ac', lw=2, label=f'{src_name}→{tgt_name}')
-        ax.fill_between(window_ms, m - se, m + se, color='#2166ac', alpha=0.25)
+        m = st['mean'][pair_idx][keep]
+        se = st['sem'][pair_idx][keep]
+        ax.plot(wm, m, color='#2166ac', lw=2, label=f'{src_name}→{tgt_name}')
+        ax.fill_between(wm, m - se, m + se, color='#2166ac', alpha=0.25)
         ax.axhline(st['baseline_mean'][pair_idx], color='0.5', ls='--', lw=1,
                    label='baseline')
         if baseline_ms is not None:
@@ -194,16 +202,15 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
                        lw=0, label='baseline window')
         if task_start_ms is not None:
             ax.axvline(task_start_ms, color='0.4', ls=':', lw=1)
-        if task_end_ms is not None:
-            ax.axvline(task_end_ms, color='0.4', ls=':', lw=1)
-        # significance ticks
-        sig = st['sig'][pair_idx]
+        # significance ticks (task windows only; already within the kept span)
+        sig = st['sig'][pair_idx][keep]
         if sig.any():
             ytop = np.nanmax(m + se)
-            ax.plot(window_ms[sig], np.full(sig.sum(), ytop * 1.05), 's',
+            ax.plot(wm[sig], np.full(int(sig.sum()), ytop * 1.05), 's',
                     color='#b2182b', ms=3)
         ax.set_title(f'{b} ({bands[b][0]:g}–{bands[b][1]:g} Hz)', fontsize=12)
         ax.axvline(0, color='k', lw=0.8, alpha=0.5)
+        ax.set_xlim(lo, hi)
         ax.set_ylabel('GC')
     for ax in axes[2:]:
         ax.set_xlabel('window start (ms)')
@@ -221,28 +228,43 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # CLI
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
-              alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None):
+              alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
+              baseline_dur_ms=100.0):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
     ``test`` selects the task-vs-baseline test ('ttest' or 'signrank').
     Figure and CSV names are tagged with it, so both tests can be written
     into the same ``out_dir`` and diffed edge-by-edge.
+
+    The baseline defaults to the epoch's ACTUAL pre-stimulus baseline period —
+    the leading ``baseline_dur_ms`` (100 ms) of the moving-window axis — derived
+    from the data itself, so it is correct whatever the epoch length: the -1.6 s
+    sensor run -> [-1600, -1500] ms, the -1.5 s source run -> [-1500, -1400] ms.
+    (Earlier this was a hardcoded interior window, config.GC_BASELINE_WINDOWS,
+    shifted off the epoch start to dodge the per-epoch resample edge transient;
+    Fix #1 — the edge-padded resample in run_granger — removed that transient, so
+    the true leading baseline is shown again.)  The task period begins at the end
+    of the baseline and, if ``task_end_ms``/config.GC_TASK_END is set, drops the
+    trailing MVAR-boundary windows.  Override any of these with
+    --baseline-start/--baseline-end / --task-start / --task-end.
     """
     if bands is None:
         bands = DEFAULT_BANDS
     band_names = list(bands)
+    agg = load_gc_group(gc_dir, bands)
+    window_ms = agg['window_ms']
     if baseline_ms is None:
-        bl = GC_BASELINE_WINDOWS.get(task, BASELINE_WINDOWS.get(task, (-1.45, -1.35)))
-        baseline_ms = (bl[0] * 1000.0, bl[1] * 1000.0)
+        # leading `baseline_dur_ms` of the actual epoch = the true baseline period
+        baseline_ms = (float(window_ms[0]), float(window_ms[0]) + baseline_dur_ms)
     if task_start_ms is None:
-        task_start_ms = GC_TASK_START.get(task, DECODE_TMIN.get(task, -1.35)) * 1000.0
+        task_start_ms = baseline_ms[1]           # task begins where baseline ends
     if task_end_ms is None and task in GC_TASK_END:
         task_end_ms = GC_TASK_END[task] * 1000.0
     end_str = f'{task_end_ms:g}' if task_end_ms is not None else 'end'
-    print(f'  GC baseline window: [{baseline_ms[0]:g}, {baseline_ms[1]:g}] ms; '
+    print(f'  GC baseline window: [{baseline_ms[0]:g}, {baseline_ms[1]:g}] ms '
+          f'(epoch leading {baseline_dur_ms:g} ms); '
           f'task windows [{task_start_ms:g}, {end_str}] ms')
 
-    agg = load_gc_group(gc_dir, bands)
     roi = agg['roi_names']
     n_pairs = len(agg['pair_i'])
     os.makedirs(out_dir, exist_ok=True)
@@ -300,13 +322,14 @@ def parse_args():
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--alpha', type=float, default=0.05)
     p.add_argument('--baseline-start', type=float, default=None,
-                   help='GC baseline window start (s); default from '
-                        'config.GC_BASELINE_WINDOWS[task]. Pass with --baseline-end.')
+                   help="GC baseline window start (s); default is the epoch's "
+                        'leading 100 ms (the true baseline period, derived from '
+                        'the data). Pass with --baseline-end to override.')
     p.add_argument('--baseline-end', type=float, default=None,
                    help='GC baseline window end (s)')
     p.add_argument('--task-start', type=float, default=None,
-                   help='GC task windows begin here (s); default from '
-                        'config.GC_TASK_START[task]')
+                   help='GC task windows begin here (s); default is the end of '
+                        'the baseline window')
     p.add_argument('--task-end', type=float, default=None,
                    help='GC task windows end here (s), dropping the trailing '
                         'edge; default from config.GC_TASK_END[task]. Pass a '
