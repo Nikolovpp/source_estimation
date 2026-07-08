@@ -66,18 +66,51 @@ GC_OUTPUT_ROOT = DECODE_OUTPUT_ROOT.parent / 'GC_source_space'
 # ─────────────────────────────────────────────────────────────────────
 # Signal prep
 # ─────────────────────────────────────────────────────────────────────
-def resample_channels(x, sfreq, target_fs):
+def resample_channels(x, sfreq, target_fs, pad_mode='reflect'):
     """Anti-aliased resample along the last axis from sfreq to target_fs.
 
-    Returns (x_resampled, new_sfreq).  If the rates already match (within
-    1 Hz) the input is returned unchanged.
+    Each signal's edges are padded before the polyphase FIR and the pad is
+    cropped off afterward, so the anti-alias filter never sees the zero
+    padding that ``resample_poly`` assumes by default — that zero padding
+    otherwise injects a ringing transient at both ends of every (epoched)
+    signal, which for high-order moving-window MVAR/Granger causality shows
+    up as spurious sharp GC at the first/last windows.  This mirrors the
+    edge handling EEGLAB ``pop_resample`` applies (see ``myresample``).
+
+    ``pad_mode`` is any ``numpy.pad`` mode: 'reflect' (default) preserves
+    the edge slope and is the standard DSP choice; 'edge' reproduces
+    EEGLAB's DC-hold.  It falls back to 'edge' when the signal is shorter
+    than the required pad length (a constraint of 'reflect').
+
+    The output has exactly the same length as an un-padded
+    ``resample_poly`` call, so downstream window/time-axis bookkeeping is
+    unchanged.  Returns (x_resampled, new_sfreq); if the rates already
+    match (within 1 Hz) the input is returned unchanged.
     """
     if abs(sfreq - target_fs) < 1.0:
         return x, float(sfreq)
     frac = Fraction(int(round(target_fs)), int(round(sfreq))).limit_denominator(1000)
     up, down = frac.numerator, frac.denominator
-    x_rs = resample_poly(x, up, down, axis=-1)
-    return x_rs, float(sfreq) * up / down
+
+    # resample_poly's default anti-alias FIR has half-length 10*max(up,down)
+    # in the up-sampled domain → ceil(10*max(up,down)/up) input samples.
+    # Pad by that, rounded up to a whole multiple of `down`, so the post-
+    # resample crop (npad*up/down) is an exact integer number of samples.
+    half_in = int(np.ceil(10 * max(up, down) / up))
+    npad = int(np.ceil(half_in / down) * down)
+    n_time = x.shape[-1]
+    mode = 'edge' if (pad_mode == 'reflect' and npad >= n_time) else pad_mode
+
+    pad_width = [(0, 0)] * (x.ndim - 1) + [(npad, npad)]
+    xp = np.pad(x, pad_width, mode=mode)
+    xr = resample_poly(xp, up, down, axis=-1)
+
+    crop = npad * up // down
+    # Length of an un-padded resample, taken from scipy directly so the
+    # slice matches exactly regardless of its internal rounding.
+    n_ref = resample_poly(np.zeros(n_time, dtype=xr.dtype), up, down).shape[-1]
+    xr = xr[..., crop:crop + n_ref]
+    return xr, float(sfreq) * up / down
 
 
 def normalize_ensemble(x, mode):
