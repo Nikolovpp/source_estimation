@@ -229,24 +229,32 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
               alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
-              baseline_dur_ms=100.0):
+              baseline_dur_ms=100.0, edge_guard_ms=0.0):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
     ``test`` selects the task-vs-baseline test ('ttest' or 'signrank').
     Figure and CSV names are tagged with it, so both tests can be written
     into the same ``out_dir`` and diffed edge-by-edge.
 
-    The baseline defaults to the epoch's ACTUAL pre-stimulus baseline period —
-    the leading ``baseline_dur_ms`` (100 ms) of the moving-window axis — derived
+    The baseline is the epoch's ACTUAL pre-stimulus baseline period — the
+    leading ``baseline_dur_ms`` (100 ms) of the moving-window axis — derived
     from the data itself, so it is correct whatever the epoch length: the -1.6 s
     sensor run -> [-1600, -1500] ms, the -1.5 s source run -> [-1500, -1400] ms.
-    (Earlier this was a hardcoded interior window, config.GC_BASELINE_WINDOWS,
-    shifted off the epoch start to dodge the per-epoch resample edge transient;
-    Fix #1 — the edge-padded resample in run_granger — removed that transient, so
-    the true leading baseline is shown again.)  The task period begins at the end
-    of the baseline and, if ``task_end_ms``/config.GC_TASK_END is set, drops the
-    trailing MVAR-boundary windows.  Override any of these with
-    --baseline-start/--baseline-end / --task-start / --task-end.
+    A LOW baseline is expected and is the signal (a rest / silent period has low
+    directed connectivity), so the baseline is shown in full and NOT trimmed by
+    default (earlier this was a hardcoded interior window shifted 50 ms off the
+    epoch start; that was wrong — it cut into the genuine baseline).
+
+    ``edge_guard_ms`` (default 0) optionally drops the very first moving
+    window(s): the single first window is a computational edge point (an
+    isolated one-window drop at the epoch start — verified at -1500 ms in
+    overtProd AND -200 ms in perception, jumping straight back to the interior
+    level, i.e. not the sustained baseline low), but it is one window in a
+    100 ms average (negligible), so it is kept by default.  Set e.g.
+    ``--edge-guard 4`` to drop it.  The trailing MVAR-boundary windows (a sharp
+    spike in the last ~2 windows) are dropped separately by the task-end crop
+    (config.GC_TASK_END).  Override any of this with --baseline-start/
+    --baseline-end / --task-start / --task-end / --edge-guard.
     """
     if bands is None:
         bands = DEFAULT_BANDS
@@ -254,8 +262,10 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     agg = load_gc_group(gc_dir, bands)
     window_ms = agg['window_ms']
     if baseline_ms is None:
-        # leading `baseline_dur_ms` of the actual epoch = the true baseline period
-        baseline_ms = (float(window_ms[0]), float(window_ms[0]) + baseline_dur_ms)
+        # leading baseline = [epoch start + edge guard, epoch start + duration]:
+        # the true baseline period minus the contaminated boundary window(s).
+        baseline_ms = (float(window_ms[0]) + edge_guard_ms,
+                       float(window_ms[0]) + baseline_dur_ms)
     if task_start_ms is None:
         task_start_ms = baseline_ms[1]           # task begins where baseline ends
     if task_end_ms is None and task in GC_TASK_END:
@@ -334,6 +344,11 @@ def parse_args():
                    help='GC task windows end here (s), dropping the trailing '
                         'edge; default from config.GC_TASK_END[task]. Pass a '
                         'value beyond the last window to disable the crop.')
+    p.add_argument('--edge-guard', type=float, default=0.0,
+                   help='ms trimmed off the leading baseline to drop the single '
+                        'first moving window (an isolated computational edge '
+                        'point). Default 0 (keep the full, genuine baseline); '
+                        'set e.g. 4 to drop the first window.')
     p.add_argument('--test', default='ttest', choices=['ttest', 'signrank'],
                    help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
                         "Student's t; matches production_pwgc_data_to_python.m and "
@@ -371,7 +386,7 @@ def main():
     print(f'GC group stats (test={args.test})\n  gc-dir: {gc_dir}')
     run_stats(gc_dir, args.task, out_dir, baseline_ms=baseline_ms,
               task_start_ms=task_start_ms, alpha=args.alpha, fmt=args.format,
-              test=args.test, task_end_ms=task_end_ms)
+              test=args.test, task_end_ms=task_end_ms, edge_guard_ms=args.edge_guard)
 
 
 if __name__ == '__main__':
