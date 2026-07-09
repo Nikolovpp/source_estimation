@@ -53,7 +53,8 @@ import pandas as pd
 
 warnings.filterwarnings('ignore')
 os.environ['PYTHONWARNINGS'] = 'ignore'
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# methods-paper script lives one level down; add the source_estimation root
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib
 matplotlib.use('Agg')
