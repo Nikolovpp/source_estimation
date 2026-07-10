@@ -310,6 +310,9 @@ def main():
     ap.add_argument('--reduce-jobs', type=int, default=16, help='Stage A (RAM-heavy)')
     ap.add_argument('--gc-jobs', type=int, default=60, help='Stage B (light)')
     ap.add_argument('--overwrite-reduced', action='store_true')
+    ap.add_argument('--fresh', action='store_true',
+                    help='delete any existing Stage-B checkpoint CSV and recompute from scratch '
+                         '(default resumes, skipping subjects already in it)')
     args = ap.parse_args()
     cfg = TASK_CFG[args.task]
     sfx = '' if args.leakage else '_raw'
@@ -343,16 +346,34 @@ def main():
     pairs = args.pairs if args.pairs else default_pairs(rois)
     print(f'  ROIs: {rois}\n  {len(pairs)} pairs')
 
-    # ── Stage B ──
-    print(f'\n[Stage B] GC + TRGC sweep (gc-jobs={args.gc_jobs}) ...')
-    jobs = [(s, p, o) for s in subs_ok for p in pairs for o in args.orders]
-    out = Parallel(n_jobs=args.gc_jobs, verbose=5)(
-        delayed(gc_cell)(s, args.task, args.stim_class, args.atlas, args.leakage,
-                         p, o, args.gc_win_ms, args.gc_step, cfg['base'], cfg['task'])
-        for (s, p, o) in jobs)
-    rows = [r for cell in out if cell for r in cell]
-    df = pd.DataFrame(rows)
-    df.to_csv(rep / f'{args.task}{sfx}_estimator_order.csv', index=False)
+    # ── Stage B (resumable: the raw per-cell CSV is the checkpoint, appended
+    #    one subject at a time; a re-run skips subjects already in it) ──
+    raw_csv = rep / f'{args.task}{sfx}_estimator_order.csv'
+    if args.fresh and raw_csv.exists():
+        raw_csv.unlink()
+    done = set()
+    if raw_csv.exists():
+        try:
+            done = set(pd.read_csv(raw_csv, usecols=['subj'])['subj'].unique())
+        except Exception:
+            done = set()
+    todo = [s for s in subs_ok if s not in done]
+    print(f'\n[Stage B] GC + TRGC sweep (gc-jobs={args.gc_jobs}) — '
+          f'{len(done)} subj done, {len(todo)} to go'
+          + ('  [resuming]' if done else ''))
+    for i, s in enumerate(todo):
+        cells = Parallel(n_jobs=args.gc_jobs)(
+            delayed(gc_cell)(s, args.task, args.stim_class, args.atlas, args.leakage,
+                             p, o, args.gc_win_ms, args.gc_step, cfg['base'], cfg['task'])
+            for p in pairs for o in args.orders)
+        rows = [r for cell in cells if cell for r in cell]
+        if rows:                                # append this subject; header only if new file
+            pd.DataFrame(rows).to_csv(raw_csv, mode='a', header=not raw_csv.exists(),
+                                      index=False)
+        print(f'  [{i + 1}/{len(todo)}] {s}: {len(rows)} rows -> {raw_csv.name}', flush=True)
+    if not raw_csv.exists():
+        print('  No GC rows produced — check reduced caches.'); return
+    df = pd.read_csv(raw_csv)
     summ = group_summary(df)
     summ.to_csv(rep / f'{args.task}{sfx}_estimator_order_group.csv', index=False)
 
