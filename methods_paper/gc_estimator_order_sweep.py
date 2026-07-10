@@ -30,12 +30,13 @@ Path resolution is config.env-aware, so on the workstation NO path flags are
 needed (set EEG_PROJECT_ROOT + ROI_TIMESERIES_EXTERNAL in config.env).  Use
 --no-leakage later for the raw arm (needs raw TS generated first).
 
-Outputs (under GC_sensor_vs_source_baseline_check/estimator_order_sweep/{stim_class}/):
-  {task}{sfx}_estimator_order.csv        per (subj, pair, order, band) raw
-  {task}{sfx}_estimator_order_group.csv  group summary
-  {task}{sfx}_estimator_order.png        low_beta contrast vs order, per estimator
-  {task}{sfx}_estimator_order_allband.png all-pairs-mean contrast vs order, all bands
-  {task}{sfx}_bic_order.csv              BIC-optimal order distribution
+Outputs (under GC_sensor_vs_source_baseline_check/estimator_order_sweep/); every
+file carries {task}_{stim}{sfx} so no run overwrites another:
+  {task}_{stim}{sfx}_estimator_order.csv        per (subj, pair, order, band) raw
+  {task}_{stim}{sfx}_estimator_order_group.csv  group summary
+  {task}_{stim}{sfx}_estimator_order.png        low_beta contrast vs order, per estimator
+  {task}_{stim}{sfx}_estimator_order_allband.png all-pairs-mean contrast vs order, all bands
+  {task}_{stim}{sfx}_bic_order.csv              BIC-optimal order distribution
 
 Usage (workstation; config.env set):
     conda activate mne
@@ -238,7 +239,7 @@ def allpairs_curve(df, band):
     return out
 
 
-def fig_lowbeta(summ, df, task, pairs, orders, sfx, outdir):
+def fig_lowbeta(summ, df, task, pairs, orders, stem, outdir):
     band = 'low_beta'
     ap = allpairs_curve(df, band)
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.6), sharex=True)
@@ -266,11 +267,11 @@ def fig_lowbeta(summ, df, task, pairs, orders, sfx, outdir):
                  f'stable/consistent estimator = flat across order & consistent sign',
                  fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
-    f = outdir / f'{task}{sfx}_estimator_order.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{stem}_estimator_order.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
-def fig_allband(df, task, sfx, outdir):
+def fig_allband(df, task, stem, outdir):
     fig, axes = plt.subplots(1, len(BANDS), figsize=(4.0 * len(BANDS), 4.2), sharex=True)
     for ax, band in zip(np.atleast_1d(axes), BANDS):
         ap = allpairs_curve(df, band)
@@ -285,7 +286,7 @@ def fig_allband(df, task, sfx, outdir):
     fig.suptitle(f'{task}: all-pairs-mean contrast vs order, per band + estimator',
                  fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    f = outdir / f'{task}{sfx}_estimator_order_allband.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{stem}_estimator_order_allband.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
@@ -317,20 +318,23 @@ def main():
     cfg = TASK_CFG[args.task]
     sfx = '' if args.leakage else '_raw'
     leak = 'leakage_corrected' if args.leakage else 'raw'
-    rep = OUT / args.stim_class            # per-stim-class report dir (no collisions)
+    # Every report filename carries task_stimclass{_raw}, so distinct runs never
+    # overwrite each other (overtProd_prodDiff_... vs overtProd_percDiff_...).
+    stem = f'{args.task}_{args.stim_class}{sfx}'
+    rep = OUT                               # flat report dir; identity lives in the filename
     rep.mkdir(parents=True, exist_ok=True)
     print(f'{args.task}/{args.stim_class} [{leak}] atlas={args.atlas} method={args.method}')
     print(f'  {len(args.subjects)} subj | orders {args.orders} | '
           f'base {cfg["base"]}s task {cfg["task"]}s | win {args.gc_win_ms}ms step {args.gc_step}')
     # Echo the exact target files UP FRONT (before the multi-hour compute) so a
     # stale-code / wrong-flag run is caught in seconds, not after it overwrites.
-    outs = [f'{args.task}{sfx}_estimator_order.csv', f'{args.task}{sfx}_estimator_order_group.csv',
-            f'{args.task}{sfx}_bic_order.csv', f'{args.task}{sfx}_estimator_order.png',
-            f'{args.task}{sfx}_estimator_order_allband.png']
+    outs = [f'{stem}_estimator_order.csv', f'{stem}_estimator_order_group.csv',
+            f'{stem}_bic_order.csv', f'{stem}_estimator_order.png',
+            f'{stem}_estimator_order_allband.png']
     print(f'  reports -> {rep}/')
     for o in outs:
         print(f'    {o}')
-    print('  ^ verify the path includes the stim-class subfolder above; Ctrl-C now if not.')
+    print('  ^ every filename carries task_stimclass; Ctrl-C now if these look wrong.')
 
     # ── Stage A ──
     print(f'\n[Stage A] reduce + cache (reduce-jobs={args.reduce_jobs}) ...')
@@ -357,7 +361,7 @@ def main():
 
     # ── Stage B (resumable: the raw per-cell CSV is the checkpoint, appended
     #    one subject at a time; a re-run skips subjects already in it) ──
-    raw_csv = rep / f'{args.task}{sfx}_estimator_order.csv'
+    raw_csv = rep / f'{stem}_estimator_order.csv'
     if args.fresh and raw_csv.exists():
         raw_csv.unlink()
     done = set()
@@ -384,7 +388,7 @@ def main():
         print('  No GC rows produced — check reduced caches.'); return
     df = pd.read_csv(raw_csv)
     summ = group_summary(df)
-    summ.to_csv(rep / f'{args.task}{sfx}_estimator_order_group.csv', index=False)
+    summ.to_csv(rep / f'{stem}_estimator_order_group.csv', index=False)
 
     # ── BIC diagnostic ──
     bic = Parallel(n_jobs=args.gc_jobs)(
@@ -392,7 +396,7 @@ def main():
                            p, args.orders, cfg['base'], cfg['task'])
         for s in subs_ok for p in pairs)
     bic_df = pd.DataFrame([b for b in bic if b])
-    bic_df.to_csv(rep / f'{args.task}{sfx}_bic_order.csv', index=False)
+    bic_df.to_csv(rep / f'{stem}_bic_order.csv', index=False)
 
     # ── console: low_beta all-pairs curve ──
     apc = allpairs_curve(df, 'low_beta')
@@ -414,11 +418,11 @@ def main():
               + ', '.join(f'p{int(k)}:{int(v)}' for k, v in vc.items())
               + f'  | median={int(bic_df.bic_order.median())}')
 
-    f1 = fig_lowbeta(summ, df, args.task, pairs, args.orders, sfx, rep)
-    f2 = fig_allband(df, args.task, sfx, rep)
-    print(f'\nwrote {rep / f"{args.task}{sfx}_estimator_order.csv"}')
-    print(f'wrote {rep / f"{args.task}{sfx}_estimator_order_group.csv"}')
-    print(f'wrote {rep / f"{args.task}{sfx}_bic_order.csv"}')
+    f1 = fig_lowbeta(summ, df, args.task, pairs, args.orders, stem, rep)
+    f2 = fig_allband(df, args.task, stem, rep)
+    print(f'\nwrote {rep / f"{stem}_estimator_order.csv"}')
+    print(f'wrote {rep / f"{stem}_estimator_order_group.csv"}')
+    print(f'wrote {rep / f"{stem}_bic_order.csv"}')
     print(f'wrote {f1}\nwrote {f2}')
 
 
