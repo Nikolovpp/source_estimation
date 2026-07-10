@@ -30,7 +30,7 @@ Path resolution is config.env-aware, so on the workstation NO path flags are
 needed (set EEG_PROJECT_ROOT + ROI_TIMESERIES_EXTERNAL in config.env).  Use
 --no-leakage later for the raw arm (needs raw TS generated first).
 
-Outputs (under GC_sensor_vs_source_baseline_check/estimator_order_sweep/):
+Outputs (under GC_sensor_vs_source_baseline_check/estimator_order_sweep/{stim_class}/):
   {task}{sfx}_estimator_order.csv        per (subj, pair, order, band) raw
   {task}{sfx}_estimator_order_group.csv  group summary
   {task}{sfx}_estimator_order.png        low_beta contrast vs order, per estimator
@@ -238,7 +238,7 @@ def allpairs_curve(df, band):
     return out
 
 
-def fig_lowbeta(summ, df, task, pairs, orders, sfx):
+def fig_lowbeta(summ, df, task, pairs, orders, sfx, outdir):
     band = 'low_beta'
     ap = allpairs_curve(df, band)
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.6), sharex=True)
@@ -266,11 +266,11 @@ def fig_lowbeta(summ, df, task, pairs, orders, sfx):
                  f'stable/consistent estimator = flat across order & consistent sign',
                  fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
-    f = OUT / f'{task}{sfx}_estimator_order.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{task}{sfx}_estimator_order.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
-def fig_allband(df, task, sfx):
+def fig_allband(df, task, sfx, outdir):
     fig, axes = plt.subplots(1, len(BANDS), figsize=(4.0 * len(BANDS), 4.2), sharex=True)
     for ax, band in zip(np.atleast_1d(axes), BANDS):
         ap = allpairs_curve(df, band)
@@ -285,7 +285,7 @@ def fig_allband(df, task, sfx):
     fig.suptitle(f'{task}: all-pairs-mean contrast vs order, per band + estimator',
                  fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    f = OUT / f'{task}{sfx}_estimator_order_allband.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{task}{sfx}_estimator_order_allband.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
@@ -314,6 +314,8 @@ def main():
     cfg = TASK_CFG[args.task]
     sfx = '' if args.leakage else '_raw'
     leak = 'leakage_corrected' if args.leakage else 'raw'
+    rep = OUT / args.stim_class            # per-stim-class report dir (no collisions)
+    rep.mkdir(parents=True, exist_ok=True)
     print(f'{args.task}/{args.stim_class} [{leak}] atlas={args.atlas} method={args.method}')
     print(f'  {len(args.subjects)} subj | orders {args.orders} | '
           f'base {cfg["base"]}s task {cfg["task"]}s | win {args.gc_win_ms}ms step {args.gc_step}')
@@ -350,9 +352,9 @@ def main():
         for (s, p, o) in jobs)
     rows = [r for cell in out if cell for r in cell]
     df = pd.DataFrame(rows)
-    df.to_csv(OUT / f'{args.task}{sfx}_estimator_order.csv', index=False)
+    df.to_csv(rep / f'{args.task}{sfx}_estimator_order.csv', index=False)
     summ = group_summary(df)
-    summ.to_csv(OUT / f'{args.task}{sfx}_estimator_order_group.csv', index=False)
+    summ.to_csv(rep / f'{args.task}{sfx}_estimator_order_group.csv', index=False)
 
     # ── BIC diagnostic ──
     bic = Parallel(n_jobs=args.gc_jobs)(
@@ -360,7 +362,7 @@ def main():
                            p, args.orders, cfg['base'], cfg['task'])
         for s in subs_ok for p in pairs)
     bic_df = pd.DataFrame([b for b in bic if b])
-    bic_df.to_csv(OUT / f'{args.task}{sfx}_bic_order.csv', index=False)
+    bic_df.to_csv(rep / f'{args.task}{sfx}_bic_order.csv', index=False)
 
     # ── console: low_beta all-pairs curve ──
     apc = allpairs_curve(df, 'low_beta')
@@ -382,11 +384,11 @@ def main():
               + ', '.join(f'p{int(k)}:{int(v)}' for k, v in vc.items())
               + f'  | median={int(bic_df.bic_order.median())}')
 
-    f1 = fig_lowbeta(summ, df, args.task, pairs, args.orders, sfx)
-    f2 = fig_allband(df, args.task, sfx)
-    print(f'\nwrote {OUT / f"{args.task}{sfx}_estimator_order.csv"}')
-    print(f'wrote {OUT / f"{args.task}{sfx}_estimator_order_group.csv"}')
-    print(f'wrote {OUT / f"{args.task}{sfx}_bic_order.csv"}')
+    f1 = fig_lowbeta(summ, df, args.task, pairs, args.orders, sfx, rep)
+    f2 = fig_allband(df, args.task, sfx, rep)
+    print(f'\nwrote {rep / f"{args.task}{sfx}_estimator_order.csv"}')
+    print(f'wrote {rep / f"{args.task}{sfx}_estimator_order_group.csv"}')
+    print(f'wrote {rep / f"{args.task}{sfx}_bic_order.csv"}')
     print(f'wrote {f1}\nwrote {f2}')
 
 

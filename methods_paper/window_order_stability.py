@@ -153,7 +153,9 @@ def main():
                 contrast=float(c.mean()), n_pos=int((c > 0).sum()),
                 t=float(t), p=float(p)))
     summ = pd.DataFrame(recs).sort_values(['space', 'direction', 'win_ms', 'order'])
-    csv = ROOT / f'{args.task}_window_order_stability.csv'
+    rep = ROOT / 'window_order_stability' / args.stim_class   # per-stim-class report dir
+    rep.mkdir(parents=True, exist_ok=True)
+    csv = rep / f'{args.task}_window_order_stability.csv'
     summ.to_csv(csv, index=False)
 
     # console: forward direction (Temporal->IFG), the headline pair
@@ -188,7 +190,7 @@ def main():
                  f'window/order\n(source flat across the grid => washout is not a '
                  f'resolution artifact)', fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    png = ROOT / f'{args.task}_window_order_stability.png'
+    png = rep / f'{args.task}_window_order_stability.png'
     fig.savefig(png, dpi=140); plt.close(fig)
 
     print(f'\nwrote {csv}\nwrote {png}')

@@ -36,7 +36,7 @@ The FIXPC3/4 arm needs block/multivariate spectral GC (a small engine addition)
 and is handled in a follow-up; this covers the 1-channel aggregations + the
 plain-vs-TRGC axis with NO new engine code.
 
-Outputs (durable, under GC_sensor_vs_source_baseline_check/virtual_sensor_compare/):
+Outputs (durable, under GC_sensor_vs_source_baseline_check/virtual_sensor_compare/{stim_class}/):
   {task}_vsensor_gc.png          GC task-baseline contrast by method x estimator
   {task}_vsensor_ts.png          TS-impact panels by method
   {task}_vsensor_metrics.csv     per (subj, pair, method) raw metrics
@@ -260,7 +260,7 @@ def group_summary(df):
     return pd.DataFrame(recs)
 
 
-def fig_gc(summ, task, pairs, sfx=''):
+def fig_gc(summ, task, pairs, outdir, sfx=''):
     ests = [('fwd', 'plain GC  ROI-A->B'), ('rev', 'plain GC  ROI-B->A'),
             ('trgc', 'TRGC (net A->B)')]
     fig, axes = plt.subplots(len(pairs), len(ests),
@@ -292,11 +292,11 @@ def fig_gc(summ, task, pairs, sfx=''):
                  f'baseline->task GC rise?\n(bars = group mean +/- sem; '
                  f'annotation = # subjects with task>baseline)', fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    f = OUT / f'{task}{sfx}_vsensor_gc.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{task}{sfx}_vsensor_gc.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
-def fig_ts(summ, task, pairs, sfx=''):
+def fig_ts(summ, task, pairs, outdir, sfx=''):
     panels = [('pc1_var_a', 'PC1 var. explained (ROI-A)'),
               ('sim_fixpc1_b', '|corr| of channel to FIXPC1 (ROI-B)'),
               ('pwr_ratio_a', 'within-ROI task/baseline power (ROI-A)'),
@@ -318,7 +318,7 @@ def fig_ts(summ, task, pairs, sfx=''):
     fig.suptitle(f'{task}: virtual-sensor method impact on the ROI time series',
                  fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    f = OUT / f'{task}{sfx}_vsensor_ts.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{task}{sfx}_vsensor_ts.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
@@ -352,9 +352,11 @@ def main():
         print('No data — check --src-root path / mounts.'); return
     df = pd.DataFrame(rows)
     sfx = '' if args.leakage else '_raw'
-    df.to_csv(OUT / f'{args.task}{sfx}_vsensor_metrics.csv', index=False)
+    rep = OUT / args.stim_class            # per-stim-class report dir (no collisions)
+    rep.mkdir(parents=True, exist_ok=True)
+    df.to_csv(rep / f'{args.task}{sfx}_vsensor_metrics.csv', index=False)
     summ = group_summary(df)
-    summ.to_csv(OUT / f'{args.task}{sfx}_vsensor_group.csv', index=False)
+    summ.to_csv(rep / f'{args.task}{sfx}_vsensor_group.csv', index=False)
 
     # console: headline pair, forward GC + TRGC contrast per method
     hp = args.pairs[0]
@@ -373,10 +375,10 @@ def main():
               f'sim={s.loc[m,"sim_fixpc1_a_mean"]:.2f}  '
               f'pwr_ratio={s.loc[m,"pwr_ratio_a_mean"]:.2f}')
 
-    f1 = fig_gc(summ, args.task, args.pairs, sfx)
-    f2 = fig_ts(summ, args.task, args.pairs, sfx)
-    print(f'\nwrote {OUT / f"{args.task}{sfx}_vsensor_metrics.csv"}')
-    print(f'wrote {OUT / f"{args.task}{sfx}_vsensor_group.csv"}')
+    f1 = fig_gc(summ, args.task, args.pairs, rep, sfx)
+    f2 = fig_ts(summ, args.task, args.pairs, rep, sfx)
+    print(f'\nwrote {rep / f"{args.task}{sfx}_vsensor_metrics.csv"}')
+    print(f'wrote {rep / f"{args.task}{sfx}_vsensor_group.csv"}')
     print(f'wrote {f1}\nwrote {f2}')
 
 
