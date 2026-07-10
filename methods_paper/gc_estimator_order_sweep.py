@@ -322,6 +322,15 @@ def main():
     print(f'{args.task}/{args.stim_class} [{leak}] atlas={args.atlas} method={args.method}')
     print(f'  {len(args.subjects)} subj | orders {args.orders} | '
           f'base {cfg["base"]}s task {cfg["task"]}s | win {args.gc_win_ms}ms step {args.gc_step}')
+    # Echo the exact target files UP FRONT (before the multi-hour compute) so a
+    # stale-code / wrong-flag run is caught in seconds, not after it overwrites.
+    outs = [f'{args.task}{sfx}_estimator_order.csv', f'{args.task}{sfx}_estimator_order_group.csv',
+            f'{args.task}{sfx}_bic_order.csv', f'{args.task}{sfx}_estimator_order.png',
+            f'{args.task}{sfx}_estimator_order_allband.png']
+    print(f'  reports -> {rep}/')
+    for o in outs:
+        print(f'    {o}')
+    print('  ^ verify the path includes the stim-class subfolder above; Ctrl-C now if not.')
 
     # ── Stage A ──
     print(f'\n[Stage A] reduce + cache (reduce-jobs={args.reduce_jobs}) ...')
