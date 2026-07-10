@@ -23,13 +23,15 @@ estimation artifact.
 Each space keeps its NATIVE baseline (overtProd sensor -1.6:-1.5, source
 -1.5:-1.4; perception both -0.2:-0.1); task window is shared per task.
 
-Outputs (durable, under GC_sensor_vs_source_baseline_check/):
-  {task}_window_order_stability.png   grid of group contrasts vs (win, order)
-  {task}_window_order_stability.csv   per-cell group stats
+Outputs (durable, under GC_sensor_vs_source_baseline_check/window_order_stability/);
+every file carries {task}_{stim} so distinct runs never overwrite:
+  {task}_{stim}_window_order_stability.png   grid of group contrasts vs (win, order)
+  {task}_{stim}_window_order_stability.csv   per-cell group stats
 
 Usage:
     conda activate mne
-    python methods_paper/window_order_stability.py --task overtProd  --stim-class prodDiff
+    # both stim-classes for a task in ONE call (each writes its own reports)
+    python methods_paper/window_order_stability.py --task overtProd --stim-class prodDiff percDiff
     python methods_paper/window_order_stability.py --task perception --stim-class percDiff
 """
 import os, sys, glob, argparse, warnings
@@ -116,15 +118,27 @@ def one_cell(subj, task, stim, space, win_ms, order, base, task_win):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--task', default='overtProd', choices=['overtProd', 'perception'])
-    ap.add_argument('--stim-class', default='prodDiff')
+    ap.add_argument('--stim-class', nargs='+', default=['prodDiff'],
+                    help='one or more stim-classes; each runs the full sweep and writes '
+                         'its own task_stimclass-named reports')
     ap.add_argument('--n-jobs', type=int, default=32)
     args = ap.parse_args()
+    for i, stim in enumerate(args.stim_class):
+        if len(args.stim_class) > 1:
+            print('\n' + '#' * 70
+                  + f'\n# stim-class {i + 1}/{len(args.stim_class)}: {args.task}/{stim}\n'
+                  + '#' * 70)
+        run_one(args, stim)
+
+
+def run_one(args, stim):
+    """Full window/order sweep for ONE stim-class -> its own task_stimclass reports."""
     cfg = TASK_CFG[args.task]
 
     subs = sorted(os.path.basename(f).split('_')[0]
-                  for f in glob.glob(str(SRC_RED / f'*_{args.task}_{args.stim_class}.npz')))
-    subs = [s for s in subs if (SEN_MAST / f'{s}_{args.task}_{args.stim_class}.npz').exists()]
-    print(f'{args.task}/{args.stim_class}: {len(subs)} subjects | grid '
+                  for f in glob.glob(str(SRC_RED / f'*_{args.task}_{stim}.npz')))
+    subs = [s for s in subs if (SEN_MAST / f'{s}_{args.task}_{stim}.npz').exists()]
+    print(f'{args.task}/{stim}: {len(subs)} subjects | grid '
           f'{len(WIN_MS)} win x {len(ORDERS)} order x 2 spaces')
     print(f'  sensor baseline {cfg["base_sen"]} s | source baseline {cfg["base_src"]} s | '
           f'task {cfg["task_win"]} s ({cfg["onset"]})')
@@ -137,7 +151,7 @@ def main():
                 for s in subs:
                     jobs.append((s, space, wm, od, base))
     rows = Parallel(n_jobs=args.n_jobs, verbose=5)(
-        delayed(one_cell)(s, args.task, args.stim_class, space, wm, od, base, cfg['task_win'])
+        delayed(one_cell)(s, args.task, stim, space, wm, od, base, cfg['task_win'])
         for (s, space, wm, od, base) in jobs)
     df = pd.DataFrame([r for r in rows if r is not None])
 
@@ -153,9 +167,10 @@ def main():
                 contrast=float(c.mean()), n_pos=int((c > 0).sum()),
                 t=float(t), p=float(p)))
     summ = pd.DataFrame(recs).sort_values(['space', 'direction', 'win_ms', 'order'])
-    rep = ROOT / 'window_order_stability' / args.stim_class   # per-stim-class report dir
+    rep = ROOT / 'window_order_stability'    # analysis dir; stim-class lives in the filename
     rep.mkdir(parents=True, exist_ok=True)
-    csv = rep / f'{args.task}_window_order_stability.csv'
+    stem = f'{args.task}_{stim}'
+    csv = rep / f'{stem}_window_order_stability.csv'
     summ.to_csv(csv, index=False)
 
     # console: forward direction (Temporal->IFG), the headline pair
@@ -190,7 +205,7 @@ def main():
                  f'window/order\n(source flat across the grid => washout is not a '
                  f'resolution artifact)', fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    png = rep / f'{args.task}_window_order_stability.png'
+    png = rep / f'{stem}_window_order_stability.png'
     fig.savefig(png, dpi=140); plt.close(fig)
 
     print(f'\nwrote {csv}\nwrote {png}')

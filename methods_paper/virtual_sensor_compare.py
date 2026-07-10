@@ -36,15 +36,17 @@ The FIXPC3/4 arm needs block/multivariate spectral GC (a small engine addition)
 and is handled in a follow-up; this covers the 1-channel aggregations + the
 plain-vs-TRGC axis with NO new engine code.
 
-Outputs (durable, under GC_sensor_vs_source_baseline_check/virtual_sensor_compare/{stim_class}/):
-  {task}_vsensor_gc.png          GC task-baseline contrast by method x estimator
-  {task}_vsensor_ts.png          TS-impact panels by method
-  {task}_vsensor_metrics.csv     per (subj, pair, method) raw metrics
-  {task}_vsensor_group.csv       group summary
+Outputs (durable, under GC_sensor_vs_source_baseline_check/virtual_sensor_compare/);
+every file carries {task}_{stim}{sfx} so distinct runs never overwrite:
+  {task}_{stim}{sfx}_vsensor_gc.png          GC task-baseline contrast by method x estimator
+  {task}_{stim}{sfx}_vsensor_ts.png          TS-impact panels by method
+  {task}_{stim}{sfx}_vsensor_metrics.csv     per (subj, pair, method) raw metrics
+  {task}_{stim}{sfx}_vsensor_group.csv       group summary
 
 Usage (local):
     conda activate mne
-    python methods_paper/virtual_sensor_compare.py --task overtProd  --stim-class prodDiff
+    # both stim-classes for a task in ONE call (each writes its own reports)
+    python methods_paper/virtual_sensor_compare.py --task overtProd --stim-class prodDiff percDiff
     python methods_paper/virtual_sensor_compare.py --task perception --stim-class percDiff
 """
 import os, sys, glob, argparse, warnings
@@ -260,7 +262,7 @@ def group_summary(df):
     return pd.DataFrame(recs)
 
 
-def fig_gc(summ, task, pairs, outdir, sfx=''):
+def fig_gc(summ, task, pairs, outdir, stem):
     ests = [('fwd', 'plain GC  ROI-A->B'), ('rev', 'plain GC  ROI-B->A'),
             ('trgc', 'TRGC (net A->B)')]
     fig, axes = plt.subplots(len(pairs), len(ests),
@@ -292,11 +294,11 @@ def fig_gc(summ, task, pairs, outdir, sfx=''):
                  f'baseline->task GC rise?\n(bars = group mean +/- sem; '
                  f'annotation = # subjects with task>baseline)', fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    f = outdir / f'{task}{sfx}_vsensor_gc.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{stem}_vsensor_gc.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
-def fig_ts(summ, task, pairs, outdir, sfx=''):
+def fig_ts(summ, task, pairs, outdir, stem):
     panels = [('pc1_var_a', 'PC1 var. explained (ROI-A)'),
               ('sim_fixpc1_b', '|corr| of channel to FIXPC1 (ROI-B)'),
               ('pwr_ratio_a', 'within-ROI task/baseline power (ROI-A)'),
@@ -318,14 +320,16 @@ def fig_ts(summ, task, pairs, outdir, sfx=''):
     fig.suptitle(f'{task}: virtual-sensor method impact on the ROI time series',
                  fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    f = outdir / f'{task}{sfx}_vsensor_ts.png'; fig.savefig(f, dpi=140); plt.close(fig)
+    f = outdir / f'{stem}_vsensor_ts.png'; fig.savefig(f, dpi=140); plt.close(fig)
     return f
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--task', default='overtProd', choices=['overtProd', 'perception'])
-    ap.add_argument('--stim-class', default='prodDiff')
+    ap.add_argument('--stim-class', nargs='+', default=['prodDiff'],
+                    help='one or more stim-classes; each runs the full screen and writes '
+                         'its own task_stimclass-named reports')
     ap.add_argument('--pairs', nargs='+', default=DEFAULT_PAIRS,
                     help='ROI pairs "roiA:roiB" (custom-atlas names)')
     ap.add_argument('--subjects', nargs='+', default=DEFAULT_SUBS)
@@ -337,26 +341,37 @@ def main():
     ap.set_defaults(leakage=True)
     ap.add_argument('--n-jobs', type=int, default=8)
     args = ap.parse_args()
+    for i, stim in enumerate(args.stim_class):
+        if len(args.stim_class) > 1:
+            print('\n' + '#' * 70
+                  + f'\n# stim-class {i + 1}/{len(args.stim_class)}: {args.task}/{stim}\n'
+                  + '#' * 70)
+        run_one(args, stim)
+
+
+def run_one(args, stim):
+    """Full virtual-sensor screen for ONE stim-class -> its own task_stimclass reports."""
     cfg = TASK_CFG[args.task]
+    sfx = '' if args.leakage else '_raw'
+    stem = f'{args.task}_{stim}{sfx}'      # identity in the filename, no overwrite
     leak_tag = 'leakage_corrected' if args.leakage else 'raw'
-    print(f'{args.task}/{args.stim_class} [{leak_tag}]: {len(args.subjects)} subj x '
+    print(f'{args.task}/{stim} [{leak_tag}]: {len(args.subjects)} subj x '
           f'{len(args.pairs)} pairs x {len(METHODS)} methods | '
           f'base {cfg["base"]}s task {cfg["task"]}s ({cfg["onset"]})')
 
     out = Parallel(n_jobs=args.n_jobs, verbose=5)(
-        delayed(process)(s, args.task, args.stim_class, args.pairs, args.leakage,
+        delayed(process)(s, args.task, stim, args.pairs, args.leakage,
                          args.src_root, cfg['base'], cfg['task'])
         for s in args.subjects)
     rows = [r for sub in out for r in sub]
     if not rows:
         print('No data — check --src-root path / mounts.'); return
     df = pd.DataFrame(rows)
-    sfx = '' if args.leakage else '_raw'
-    rep = OUT / args.stim_class            # per-stim-class report dir (no collisions)
+    rep = OUT                              # flat report dir; identity is in the filename
     rep.mkdir(parents=True, exist_ok=True)
-    df.to_csv(rep / f'{args.task}{sfx}_vsensor_metrics.csv', index=False)
+    df.to_csv(rep / f'{stem}_vsensor_metrics.csv', index=False)
     summ = group_summary(df)
-    summ.to_csv(rep / f'{args.task}{sfx}_vsensor_group.csv', index=False)
+    summ.to_csv(rep / f'{stem}_vsensor_group.csv', index=False)
 
     # console: headline pair, forward GC + TRGC contrast per method
     hp = args.pairs[0]
@@ -375,10 +390,10 @@ def main():
               f'sim={s.loc[m,"sim_fixpc1_a_mean"]:.2f}  '
               f'pwr_ratio={s.loc[m,"pwr_ratio_a_mean"]:.2f}')
 
-    f1 = fig_gc(summ, args.task, args.pairs, rep, sfx)
-    f2 = fig_ts(summ, args.task, args.pairs, rep, sfx)
-    print(f'\nwrote {rep / f"{args.task}{sfx}_vsensor_metrics.csv"}')
-    print(f'wrote {rep / f"{args.task}{sfx}_vsensor_group.csv"}')
+    f1 = fig_gc(summ, args.task, args.pairs, rep, stem)
+    f2 = fig_ts(summ, args.task, args.pairs, rep, stem)
+    print(f'\nwrote {rep / f"{stem}_vsensor_metrics.csv"}')
+    print(f'wrote {rep / f"{stem}_vsensor_group.csv"}')
     print(f'wrote {f1}\nwrote {f2}')
 
 
