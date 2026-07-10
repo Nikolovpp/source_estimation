@@ -40,10 +40,11 @@ file carries {task}_{stim}{sfx} so no run overwrites another:
 
 Usage (workstation; config.env set):
     conda activate mne
-    python methods_paper/gc_estimator_order_sweep.py --task overtProd  --stim-class prodDiff \
-        --reduce-jobs 16 --gc-jobs 60
-    python methods_paper/gc_estimator_order_sweep.py --task perception --stim-class percDiff \
-        --reduce-jobs 16 --gc-jobs 60
+    # both stim-classes for a task in ONE call (each writes its own reports)
+    python methods_paper/gc_estimator_order_sweep.py --task overtProd \
+        --stim-class prodDiff percDiff --reduce-jobs 16 --gc-jobs 60
+    python methods_paper/gc_estimator_order_sweep.py --task perception \
+        --stim-class percDiff --reduce-jobs 16 --gc-jobs 60
 Local smoke test (small):
     python methods_paper/gc_estimator_order_sweep.py --task overtProd --stim-class prodDiff \
         --subjects EEGPROD4003 EEGPROD4005 --pairs awfa-lh:ifc-lh --orders 8 10 \
@@ -293,7 +294,10 @@ def fig_allband(df, task, stem, outdir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--task', default='overtProd', choices=['overtProd', 'perception'])
-    ap.add_argument('--stim-class', default='prodDiff')
+    ap.add_argument('--stim-class', nargs='+', default=['prodDiff'],
+                    help='one or more stim-classes; each runs the full pipeline in turn '
+                         'and writes its own task_stimclass-named reports (Stage A caches '
+                         'are per stim-class, so nothing is recomputed across them)')
     ap.add_argument('--method', default='LCMV')
     ap.add_argument('--atlas', default='custom')
     ap.add_argument('--subjects', nargs='+', default=list(SUBJECT_IDS))
@@ -315,15 +319,26 @@ def main():
                     help='delete any existing Stage-B checkpoint CSV and recompute from scratch '
                          '(default resumes, skipping subjects already in it)')
     args = ap.parse_args()
+    print(f'stim-classes to run: {args.stim_class}')
+    for i, stim in enumerate(args.stim_class):
+        if len(args.stim_class) > 1:
+            print('\n' + '#' * 70
+                  + f'\n# stim-class {i + 1}/{len(args.stim_class)}: {args.task}/{stim}\n'
+                  + '#' * 70)
+        run_one(args, stim)
+
+
+def run_one(args, stim):
+    """Full Stage A + Stage B + reports for ONE stim-class."""
     cfg = TASK_CFG[args.task]
     sfx = '' if args.leakage else '_raw'
     leak = 'leakage_corrected' if args.leakage else 'raw'
     # Every report filename carries task_stimclass{_raw}, so distinct runs never
     # overwrite each other (overtProd_prodDiff_... vs overtProd_percDiff_...).
-    stem = f'{args.task}_{args.stim_class}{sfx}'
+    stem = f'{args.task}_{stim}{sfx}'
     rep = OUT                               # flat report dir; identity lives in the filename
     rep.mkdir(parents=True, exist_ok=True)
-    print(f'{args.task}/{args.stim_class} [{leak}] atlas={args.atlas} method={args.method}')
+    print(f'{args.task}/{stim} [{leak}] atlas={args.atlas} method={args.method}')
     print(f'  {len(args.subjects)} subj | orders {args.orders} | '
           f'base {cfg["base"]}s task {cfg["task"]}s | win {args.gc_win_ms}ms step {args.gc_step}')
     # Echo the exact target files UP FRONT (before the multi-hour compute) so a
@@ -339,7 +354,7 @@ def main():
     # ── Stage A ──
     print(f'\n[Stage A] reduce + cache (reduce-jobs={args.reduce_jobs}) ...')
     red = Parallel(n_jobs=args.reduce_jobs, verbose=5)(
-        delayed(reduce_subject)(s, args.task, args.stim_class, args.method, args.atlas,
+        delayed(reduce_subject)(s, args.task, stim, args.method, args.atlas,
                                 args.leakage, args.target_fs, args.src_root,
                                 args.overwrite_reduced)
         for s in args.subjects)
@@ -352,7 +367,7 @@ def main():
         print('  No subjects reduced — check config.env / --src-root.'); return
 
     # ROI list + pairs from the first available reduced cache
-    got = load_reduced(subs_ok[0], args.task, args.stim_class, args.atlas, args.leakage)
+    got = load_reduced(subs_ok[0], args.task, stim, args.atlas, args.leakage)
     rois = list(got[0].keys())
     if args.rois:
         rois = [r for r in rois if r in set(args.rois)]
@@ -376,7 +391,7 @@ def main():
           + ('  [resuming]' if done else ''))
     for i, s in enumerate(todo):
         cells = Parallel(n_jobs=args.gc_jobs)(
-            delayed(gc_cell)(s, args.task, args.stim_class, args.atlas, args.leakage,
+            delayed(gc_cell)(s, args.task, stim, args.atlas, args.leakage,
                              p, o, args.gc_win_ms, args.gc_step, cfg['base'], cfg['task'])
             for p in pairs for o in args.orders)
         rows = [r for cell in cells if cell for r in cell]
@@ -392,7 +407,7 @@ def main():
 
     # ── BIC diagnostic ──
     bic = Parallel(n_jobs=args.gc_jobs)(
-        delayed(bic_order)(s, args.task, args.stim_class, args.atlas, args.leakage,
+        delayed(bic_order)(s, args.task, stim, args.atlas, args.leakage,
                            p, args.orders, cfg['base'], cfg['task'])
         for s in subs_ok for p in pairs)
     bic_df = pd.DataFrame([b for b in bic if b])
