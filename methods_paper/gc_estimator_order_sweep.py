@@ -389,11 +389,17 @@ def run_one(args, stim):
     print(f'\n[Stage B] GC + TRGC sweep (gc-jobs={args.gc_jobs}) — '
           f'{len(done)} subj done, {len(todo)} to go'
           + ('  [resuming]' if done else ''))
+    # ONE pool over ALL todo cells (subject x pair x order) keeps every core busy;
+    # the ORDERED result generator still lets us flush per subject, because
+    # submission is grouped by subject so each subject's n_per results arrive as a
+    # contiguous block -> full utilization AND per-subject resumable checkpointing.
+    n_per = len(pairs) * len(args.orders)
+    gen = Parallel(n_jobs=args.gc_jobs, return_as='generator')(
+        delayed(gc_cell)(s, args.task, stim, args.atlas, args.leakage,
+                         p, o, args.gc_win_ms, args.gc_step, cfg['base'], cfg['task'])
+        for s in todo for p in pairs for o in args.orders)
     for i, s in enumerate(todo):
-        cells = Parallel(n_jobs=args.gc_jobs)(
-            delayed(gc_cell)(s, args.task, stim, args.atlas, args.leakage,
-                             p, o, args.gc_win_ms, args.gc_step, cfg['base'], cfg['task'])
-            for p in pairs for o in args.orders)
+        cells = list(itertools.islice(gen, n_per))   # this subject's block, in order
         rows = [r for cell in cells if cell for r in cell]
         if rows:                                # append this subject; header only if new file
             pd.DataFrame(rows).to_csv(raw_csv, mode='a', header=not raw_csv.exists(),
