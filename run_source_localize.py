@@ -28,13 +28,18 @@ need to re-run.  Most iteration happens in ``run_decode.py`` /
 
 Usage
 -----
-    python run_source_localize.py --task overtProd --stim-class prodDiff \\
-        --method dSPM --atlas HCPMMP1 --feature-mode vertex_selectkbest \\
-        --leakage-correction --n-jobs 2
+    # both stim-classes in one call (shared forward model, queued to completion)
+    python run_source_localize.py --task overtProd --stim-class prodDiff percDiff \\
+        --method LCMV --atlas custom --feature-mode vertex_selectkbest --n-jobs 12
+
+    # leakage-corrected arm (same, add --leakage-correction)
+    python run_source_localize.py --task overtProd --stim-class prodDiff percDiff \\
+        --method LCMV --atlas custom --feature-mode vertex_selectkbest \\
+        --leakage-correction --n-jobs 12
 
     # Force a re-run even if caches exist
-    python run_source_localize.py --task overtProd --stim-class prodDiff \\
-        --method dSPM --atlas HCPMMP1 --overwrite-timeseries --n-jobs 2
+    python run_source_localize.py --task overtProd --stim-class prodDiff percDiff \\
+        --method LCMV --atlas custom --overwrite-timeseries --n-jobs 12
 """
 import os
 # Pin BLAS threads to 1 BEFORE numpy import — otherwise each worker
@@ -205,8 +210,11 @@ def parse_args():
     )
     parser.add_argument('--task', required=True,
                         choices=['perception', 'overtProd'])
-    parser.add_argument('--stim-class', required=True,
-                        choices=['prodDiff', 'percDiff'])
+    parser.add_argument('--stim-class', required=True, nargs='+',
+                        choices=['prodDiff', 'percDiff'],
+                        help='one or more stim-classes; each runs as its own '
+                             'subject-parallel batch, sharing the forward model '
+                             '(e.g. --stim-class prodDiff percDiff)')
     parser.add_argument('--method', required=True,
                         choices=['dSPM', 'LCMV'])
     parser.add_argument('--feature-mode', default='pca_flip',
@@ -233,13 +241,14 @@ def parse_args():
 def main():
     args = parse_args()
     subjects = args.subjects if args.subjects else SUBJECT_IDS
+    stim_classes = list(dict.fromkeys(args.stim_class))   # de-dup, preserve order
 
-    setup_logging(args.task, args.stim_class, args.method, args.atlas,
+    setup_logging(args.task, '_'.join(stim_classes), args.method, args.atlas,
                   args.feature_mode, runner_name='source_localize')
 
     print(f'Source localization (subject-parallel)')
     print(f'  Task:         {args.task}')
-    print(f'  Stim class:   {args.stim_class}')
+    print(f'  Stim classes: {stim_classes}')
     print(f'  Method:       {args.method}')
     print(f'  Atlas:        {args.atlas}')
     print(f'  Feature mode: {args.feature_mode}')
@@ -263,7 +272,7 @@ def main():
     except Exception:
         free_gb = float('nan')
     per = 2.5 if args.task == 'overtProd' else 1.2
-    est_gb = len(subjects) * per
+    est_gb = len(subjects) * per * len(stim_classes)
     print(f'  Save root:    {ROI_TIMESERIES_SAVE_ROOT}')
     print(f'  Free space:   {free_gb:.0f} GB on {probe} | est. output ~{est_gb:.0f} GB')
     if not (free_gb != free_gb) and free_gb < est_gb * 1.3:   # nan-safe check
@@ -283,48 +292,50 @@ def main():
     if args.roi_subset:
         roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
 
-    # Only build forward solution if at least one subject lacks cached data
+    # Build the forward solution ONCE (it is stim-class-independent — same montage
+    # / info) if ANY (stim-class, subject) is uncached; reuse it across all
+    # stim-classes so queued batches don't each rebuild it.
     any_uncached = any(
         find_cached_npz(args.task, args.method, args.atlas, args.feature_mode,
-                        args.leakage_correction, s, args.stim_class) is None
+                        args.leakage_correction, s, sc) is None
         or args.overwrite_timeseries
-        for s in subjects
+        for sc in stim_classes for s in subjects
     )
-    if any_uncached:
-        print('\nBuilding forward solution (uncached subjects detected)...')
-        first_epochs, _, _ = load_subject_epochs(
-            subjects[0], args.task, args.stim_class
-        )
-        fwd = make_forward(first_epochs.info, src, bem)
-        del first_epochs
-    else:
-        print('\nAll subjects cached — nothing to do.')
+    if not any_uncached:
+        print('\nAll subjects/stim-classes cached — nothing to do.')
         return
-    del bem
+    print('\nBuilding forward solution (shared across stim-classes)...')
+    first_epochs, _, _ = load_subject_epochs(subjects[0], args.task, stim_classes[0])
+    fwd = make_forward(first_epochs.info, src, bem)
+    del first_epochs, bem
     gc.collect()
 
-    worker_args = [
-        (subj_id, args.task, args.stim_class, args.method,
-         args.feature_mode, args.atlas, args.leakage_correction,
-         args.overwrite_timeseries)
-        for subj_id in subjects
-    ]
-
-    total_start = time.time()
-
-    with Pool(
-        processes=args.n_jobs,
-        initializer=_init_worker,
-        initargs=(fwd, src, roi_dict),
-    ) as pool:
-        results = pool.map(_worker, worker_args)
-
-    total_time = (time.time() - total_start) / 60.0
-    failed = [s for s, r in zip(subjects, results) if r is None]
-    n_ok = len(subjects) - len(failed)
-    print(f'\n{n_ok}/{len(subjects)} subjects done in {total_time:.1f} minutes')
-    if failed:
-        print(f'FAILED subjects: {", ".join(failed)}')
+    # Each stim-class runs as its own subject-parallel batch (shared forward),
+    # so `--stim-class prodDiff percDiff` queues both to completion in one call.
+    for si, stim_class in enumerate(stim_classes):
+        print(f'\n{"#" * 60}')
+        print(f'# stim-class {si + 1}/{len(stim_classes)}: {stim_class}')
+        print(f'{"#" * 60}')
+        worker_args = [
+            (subj_id, args.task, stim_class, args.method,
+             args.feature_mode, args.atlas, args.leakage_correction,
+             args.overwrite_timeseries)
+            for subj_id in subjects
+        ]
+        total_start = time.time()
+        with Pool(
+            processes=args.n_jobs,
+            initializer=_init_worker,
+            initargs=(fwd, src, roi_dict),
+        ) as pool:
+            results = pool.map(_worker, worker_args)
+        total_time = (time.time() - total_start) / 60.0
+        failed = [s for s, r in zip(subjects, results) if r is None]
+        n_ok = len(subjects) - len(failed)
+        print(f'\n[{stim_class}] {n_ok}/{len(subjects)} subjects done '
+              f'in {total_time:.1f} minutes')
+        if failed:
+            print(f'[{stim_class}] FAILED subjects: {", ".join(failed)}')
 
 
 if __name__ == '__main__':
