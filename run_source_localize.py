@@ -236,6 +236,27 @@ def main():
     print(f'  Workers:      {args.n_jobs}')
     print(f'  Subjects:     {len(subjects)}')
     print(f'  Overwrite:    {args.overwrite_timeseries}')
+
+    # Preflight: show WHERE caches will be written and whether the volume has
+    # room.  The vertex caches are ~2.5 GB (overtProd) / ~1.2 GB (perception)
+    # per subject; a full drive truncates writes silently.  Set
+    # ROI_TIMESERIES_SAVE_ROOT in config.env to redirect to a roomy volume.
+    import shutil
+    from config import ROI_TIMESERIES_SAVE_ROOT
+    probe = ROI_TIMESERIES_SAVE_ROOT
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        free_gb = shutil.disk_usage(probe).free / 1e9
+    except Exception:
+        free_gb = float('nan')
+    per = 2.5 if args.task == 'overtProd' else 1.2
+    est_gb = len(subjects) * per
+    print(f'  Save root:    {ROI_TIMESERIES_SAVE_ROOT}')
+    print(f'  Free space:   {free_gb:.0f} GB on {probe} | est. output ~{est_gb:.0f} GB')
+    if not (free_gb != free_gb) and free_gb < est_gb * 1.3:   # nan-safe check
+        print(f'  *** WARNING: free space is tight vs the estimated output — writes may '
+              f'TRUNCATE.  Point ROI_TIMESERIES_SAVE_ROOT at a bigger volume. ***')
     print()
 
     print('Setting up fsaverage source space and ROI labels...')
