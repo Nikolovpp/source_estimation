@@ -100,14 +100,26 @@ def _process_subject(subj_id, task_cond, stim_class, method,
         print(f'  Cache already exists, skipping: {cached_npz}')
         return subj_id
 
-    from config import BASELINE_WINDOWS
-    baseline_tmin, baseline_tmax = BASELINE_WINDOWS[task_cond]
-
     try:
         epochs, y, sfreq = load_subject_epochs(subj_id, task_cond, stim_class)
     except FileNotFoundError as e:
         print(f'  SKIPPING {subj_id}: {e}')
         return None
+
+    # Noise-cov baseline validated against THIS subject's ACTUAL loaded epoch, so
+    # it can never collapse to a degenerate ~1-sample window.  Printed to the
+    # terminal AND the run log (setup_logging tees stdout to both).
+    from config import resolve_noise_baseline
+    ep_lo, ep_hi = float(epochs.times[0]), float(epochs.times[-1])
+    baseline_tmin, baseline_tmax, bl_warn = resolve_noise_baseline(
+        task_cond, ep_lo, ep_hi)
+    n_bl = int(((epochs.times >= baseline_tmin)
+                & (epochs.times <= baseline_tmax)).sum())
+    print(f'  Epoch loaded:       [{ep_lo:.3f}, {ep_hi:.3f}] s ({len(epochs.times)} samples)')
+    print(f'  Noise-cov baseline: [{baseline_tmin:.3f}, {baseline_tmax:.3f}] s '
+          f'({n_bl} samples in-window)')
+    if bl_warn:
+        print(f'  WARNING: {bl_warn}')
 
     save_sensor_erp(epochs, y, subj_id, task_cond, stim_class,
                     method, feature_mode, atlas=atlas,

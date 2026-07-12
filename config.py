@@ -465,17 +465,19 @@ PRODUCTION_TMIN = -1.6
 PRODUCTION_TMAX = 0.4
 
 # ─────────────────────────────────────────────────────────────────────
-# Pre-stimulus baselines for noise covariance (in seconds)
-# These are the reference periods used ONLY for estimating noise —
-# they are excluded from the SVM decoding time range.
-# NOTE: These are conceptual boundaries.  MNE snaps them to the
-# nearest actual sample when computing covariances.  For SVM decoding,
-# the exact time vector (epochs.times / eeg_dict['times']) is used to
-# determine crop indices and window-center timestamps.
+# Pre-stimulus baselines for the inverse NOISE COVARIANCE (in seconds).
+# The window MUST lie inside the loaded epoch — otherwise mne.compute_covariance
+# collapses onto ~1 sample and the noise covariance is degenerate, which
+# destabilises the beamformer.  The exports load as:
+#   perception [-0.2, 0.6] s -> baseline -0.2..-0.1 (pre-stimulus)
+#   overtProd  [-1.5, 0.4] s -> baseline -1.5..-1.4 (earliest pre-production quiet)
+# There is NO -1.6 s overtProd epoch, so the old (-1.6, -1.5) sat entirely before
+# the epoch start (1 sample) — fixed below.  resolve_noise_baseline() re-validates
+# this against each subject's ACTUAL epoch at runtime and logs the window used.
 # ─────────────────────────────────────────────────────────────────────
 BASELINE_WINDOWS = {
-    'perception': (-0.200, -0.100),   # -200 ms to -100 ms
-    'overtProd':  (-1.600, -1.500),   # -1600 ms to -1500 ms
+    'perception': (-0.200, -0.100),   # -200 to -100 ms (epoch -0.2..0.6)
+    'overtProd':  (-1.500, -1.400),   # -1500 to -1400 ms (epoch -1.5..0.4)
 }
 
 # SVM decoding starts AFTER the baseline ends (in seconds)
@@ -484,16 +486,40 @@ DECODE_TMIN = {
     'overtProd':  -1.500,   # start decoding at -1500 ms
 }
 
+
+def resolve_noise_baseline(task_cond, epoch_tmin, epoch_tmax, tol=1e-6):
+    """Noise-covariance baseline guaranteed to lie inside the LOADED epoch.
+
+    Returns ``(tmin, tmax, warning)``.  ``BASELINE_WINDOWS[task_cond]`` is the
+    intended window, but if it falls outside a subject's actual epoch, MNE's
+    ``compute_covariance`` collapses onto ~1 sample and the noise covariance is
+    degenerate (which destabilises the beamformer).  This clamps the window into
+    ``[epoch_tmin, epoch_tmax]`` (preserving its width where possible) and returns
+    a non-None ``warning`` string when it had to adjust, so the caller can log it.
+    """
+    lo, hi = BASELINE_WINDOWS[task_cond]
+    if lo >= epoch_tmin - tol and hi <= epoch_tmax + tol and lo < hi:
+        return lo, hi, None
+    width = (hi - lo) if hi > lo else 0.1
+    nlo = min(max(lo, epoch_tmin), epoch_tmax)
+    nhi = min(max(hi, epoch_tmin), epoch_tmax)
+    if nhi - nlo < 0.5 * width:                      # window collapsed at an edge
+        nlo = epoch_tmin
+        nhi = min(epoch_tmin + width, epoch_tmax)
+    warning = (f"BASELINE_WINDOWS[{task_cond!r}]=({lo:g}, {hi:g}) lies outside the "
+               f"loaded epoch [{epoch_tmin:.3f}, {epoch_tmax:.3f}] s; clamped to "
+               f"[{nlo:.3f}, {nhi:.3f}] s to avoid a degenerate noise covariance. "
+               f"Update BASELINE_WINDOWS in config.py.")
+    return nlo, nhi, warning
+
 # ─────────────────────────────────────────────────────────────────────
 # Granger-causality task-vs-baseline windows (in seconds).
-# These are SEPARATE from BASELINE_WINDOWS above.  BASELINE_WINDOWS sets
-# the inverse noise-covariance window (and is reused for decoding); it is
-# the WRONG window for the GC task-vs-baseline test:
-#   - overtProd's (-1.6, -1.5) is out-of-range for the actual -1.5..0.4 s
-#     epoch, so the GC baseline collapses onto the single leading-edge
-#     window (spurious ~100%-significant results);
-#   - perception's (-0.2, -0.1) sits right at the -0.2 s epoch edge, in
-#     the moving-window MVAR leading-edge ramp.
+# These are SEPARATE from BASELINE_WINDOWS above.  BASELINE_WINDOWS sets the
+# inverse noise-covariance window; it is the WRONG window for the GC
+# task-vs-baseline test because both baselines sit at the very START of the epoch,
+# inside the moving-window MVAR leading-edge ramp (overtProd -1.5..-1.4 begins at
+# the epoch edge; perception -0.2..-0.1 sits at the -0.2 s edge) — which would give
+# spurious edge-dominated GC.
 # The GC windows below sit INSIDE the epoch and past that edge ramp; GC
 # task windows begin at GC_TASK_START.  The leading segment between the
 # epoch start and the baseline is left out of both baseline and task.
