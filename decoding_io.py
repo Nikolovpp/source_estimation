@@ -20,7 +20,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from config import cache_feat_mode, classifier_path_segment, ROI_TIMESERIES_ROOT
+from config import (cache_feat_mode, classifier_path_segment,
+                    ROI_TIMESERIES_ROOT, ROI_TIMESERIES_SAVE_ROOT)
 
 
 def filter_roi_dict(roi_dict, roi_subset, atlas):
@@ -114,7 +115,7 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
     """
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     ts_dir = (
-        ROI_TIMESERIES_ROOT / task_cond / method / atlas
+        ROI_TIMESERIES_SAVE_ROOT / task_cond / method / atlas
         / cache_feat_mode(feature_mode) / leakage_tag
     )
     ts_dir.mkdir(parents=True, exist_ok=True)

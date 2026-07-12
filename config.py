@@ -32,6 +32,15 @@ CODE_DIR = PROJECT_ROOT / 'code' / 'source_estimation'
 _ext = os.environ.get('ROI_TIMESERIES_EXTERNAL', '')
 ROI_TIMESERIES_EXTERNAL = [Path(p) for p in _ext.split(':') if p.strip()]
 
+# Destination for NEW ROI-timeseries caches.  The vertex caches are large
+# (~2.5 GB/subject); a small project drive overflows and writes TRUNCATE
+# silently.  Set ROI_TIMESERIES_SAVE_ROOT in config.env to a roomy volume
+# (e.g. the big external drive) to send new caches there instead.  Defaults to
+# ROI_TIMESERIES_ROOT (previous behavior).  find_cached_npz searches this
+# location too, so redirected caches are still found on read.
+_save_root = os.environ.get('ROI_TIMESERIES_SAVE_ROOT', '').strip()
+ROI_TIMESERIES_SAVE_ROOT = Path(_save_root) if _save_root else ROI_TIMESERIES_ROOT
+
 # ─────────────────────────────────────────────────────────────────────
 # Subjects
 # ─────────────────────────────────────────────────────────────────────
@@ -541,7 +550,10 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
     if feat_mode not in candidates:
         candidates.append(feat_mode)
 
-    roots = [ROI_TIMESERIES_ROOT, *ROI_TIMESERIES_EXTERNAL]
+    roots = []
+    for r in (ROI_TIMESERIES_ROOT, ROI_TIMESERIES_SAVE_ROOT, *ROI_TIMESERIES_EXTERNAL):
+        if r not in roots:
+            roots.append(r)
 
     for root in roots:
         for name in candidates:
