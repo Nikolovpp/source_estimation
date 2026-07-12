@@ -61,6 +61,58 @@ CSV columns:
 6. **SVM decoding** — sliding-window LinearSVC with repeated CV (optional pseudo-trial averaging)
 7. **Save CSV** — one file per subject
 
+## EEG Reference and Data Rank
+
+**This is crucial and non-obvious — read before touching the inverse.**
+
+### Which EEGLAB export to import
+
+The preprocessing exports two references per subject, under
+`derivatives/EEGLAB/{task}/{subj}/`:
+
+- **`average_ref/`** — use this for **source estimation**. EEGLAB applies a proper
+  *full* average reference (it reconstructs the implicit recording reference as a
+  zero channel, averages over all 65, then drops the reference channel).
+- **`mastoid_ref/`** — use this for the **sensor-space GC / BSMART** comparison
+  (`methods_paper/` sensor pipeline), matching the linked-mastoid convention of that
+  analysis.
+
+Average reference is the standard (and, in MNE, effectively required) reference for
+source modeling; linked mastoid is a standard sensor/ERP choice. Sources:
+[MNE `set_eeg_reference` tutorial](https://mne.tools/stable/auto_tutorials/preprocessing/55_setting_eeg_reference.html),
+[EEGLAB re-referencing](https://eeglab.org/tutorials/ConceptsGuide/rereferencing_background.html)
+and [DIPFIT](https://eeglab.org/tutorials/09_source/DIPFIT.html),
+[EGI average-reference note](https://www.egi.com/knowledge-center/item/65-dense-array-eeg-and-the-importance-of-the-average-reference),
+reference-comparison ERP studies
+([Frontiers 2017](https://www.frontiersin.org/articles/10.3389/fnins.2017.00247/full),
+[Frontiers 2019](https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2019.01068/full)).
+
+### Why MNE re-references even though EEGLAB already did
+
+`data_loader.load_subject_epochs` calls `set_eeg_reference('average', projection=True)`.
+This is **not** redundant preprocessing — it is a *modeling* requirement. MNE applies
+the same average-reference operator to the **leadfield**, so the forward model and the
+data share a reference; `make_inverse_operator` (dSPM) raises a `ValueError` without it.
+The choice of *input* reference does not affect source results — average-referencing
+erases it (verified: `avg_ref(mastoid_reref(X)) == avg_ref(X)` to ~1e-13) — so
+`average_ref` is simply the clean, unambiguous input.
+
+### The rank consequence (a real bug we hit)
+
+EEGLAB's average-ref export is legitimately **full rank 64** (the sum-to-zero
+constraint lives in the dropped reference channel). But MNE's average-reference
+projector re-references to the 64-channel mean and drops the effective rank to **63**
+(interpolated bad channels drop it further for some subjects). The inverse must be
+told this true rank. `inverse_pipelines._compute_data_rank` now derives it per subject
+via `mne.compute_rank(epochs)`.
+
+Passing a **too-high rank (the old hard-coded 64)** makes the unit-noise-gain LCMV
+beamformer invert a near-null dimension and **collapse to a single global time course**
+for ill-conditioned subjects — every vertex in every ROI carries the identical signal
+(`corr(vtx,vtx)=1.0`, `std_across_vtx≈1e-7`). This was the beamformer-level cause of the
+source-space GC "washout," and a handy runtime flag is the cache file size (a collapsed
+subject compresses to ~0.4–0.6 GB vs ~1.9–2.4 GB for a healthy one).
+
 ## Atlas Selection
 
 Four cortical parcellation options are supported, selectable via `--atlas`:
@@ -159,7 +211,7 @@ Central configuration. All paths, subject IDs, ROI definitions, atlas maps, and 
 
 Loads EEGLAB-preprocessed `.mat` files and converts them to MNE Epochs.
 
-- **`load_subject_epochs(subj_id, task_cond, stim_class)`** — Main entry point. Loads one subject's data, applies artifact rejection, filters to the requested stimulus contrast, converts units (uV → V), sets the biosemi64 montage and average reference. Returns `(epochs, y_labels, sfreq)`.
+- **`load_subject_epochs(subj_id, task_cond, stim_class)`** — Main entry point. Loads one subject's data, applies artifact rejection, filters to the requested stimulus contrast, converts units (uV → V), sets the biosemi64 montage and average reference (import the `average_ref/` export for source estimation — see [EEG Reference and Data Rank](#eeg-reference-and-data-rank)). Returns `(epochs, y_labels, sfreq)`.
 
 ### `forward_model.py`
 
@@ -176,6 +228,7 @@ Two inverse methods for projecting sensor-space EEG into source space.
 
 - **`run_dspm(...)`** / **`run_lcmv(...)`** — Standard inverse solutions returning full SourceEstimate lists.
 - **`run_dspm_lowram(...)`** / **`run_lcmv_lowram(...)`** — Generator-based variants that extract ROI data during inverse computation and discard full STCs to save memory.
+- **`_compute_data_rank(epochs)`** — Data-driven rank via `mne.compute_rank`, passed to the covariance/inverse builders. Must reflect the true post-average-reference rank (≤63), **not** the channel count — a too-high rank collapses the LCMV beamformer for ill-conditioned subjects. See [EEG Reference and Data Rank](#eeg-reference-and-data-rank).
 
 ### `leakage_correction.py`
 
