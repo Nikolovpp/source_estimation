@@ -18,16 +18,24 @@ from config import LAMBDA2
 
 def _compute_data_rank(epochs):
     """
-    Estimate the effective rank of the EEG data.
+    Data-driven effective rank of the EEG data (for the covariance / inverse).
 
-    The EEGLAB preprocessing removes all extra channels (EOG, EMG, reference)
-    before exporting, so the data arrives as exactly 64 EEG channels at
-    full rank. The average reference applied in data_loader.py is a
-    projection (not a physical re-referencing done during preprocessing),
-    so it does not reduce the rank of the stored data.
+    The EEGLAB export is average-referenced — the recording reference is
+    reconstructed as a zero channel, averaged over 65, then dropped — so the
+    stored 64 channels are legitimately full rank 64.  But ``data_loader`` then
+    applies MNE's average reference as a projector, which is MANDATORY for inverse
+    modeling (``make_inverse_operator`` raises without it) and drops the effective
+    rank to 63; EEGLAB's spherical interpolation of bad channels drops it further
+    for some subjects.
+
+    ``mne.compute_rank`` derives the true per-subject rank (accounting for both the
+    average-reference projector and interpolated channels), so the covariance
+    whitening / beamformer never inverts a near-null dimension.  A too-high rank
+    (e.g. a hard-coded 64) makes the unit-noise-gain LCMV beamformer collapse to a
+    single global time course for ill-conditioned subjects — every vertex gets the
+    same signal.  See README "EEG Reference and Data Rank".
     """
-    n_channels = len(epochs.ch_names)
-    return dict(eeg=n_channels)
+    return mne.compute_rank(epochs, verbose='error')
 
 
 def run_dspm(epochs, fwd, baseline_tmin, baseline_tmax):
