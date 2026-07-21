@@ -567,10 +567,10 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
 # Band averaging  (matches production_pwgc_data_to_python.m)
 # ─────────────────────────────────────────────────────────────────────
 DEFAULT_BANDS = {
-    'theta': (4.0, 7.0),
+    'theta': (4.0, 8.0),
     'alpha': (8.0, 12.0),
-    'low_beta': (13.0, 20.0),
-    'high_beta': (21.0, 30.0),
+    'low_beta': (12.0, 18.0),
+    'high_beta': (18.0, 30.0),
 }
 
 
