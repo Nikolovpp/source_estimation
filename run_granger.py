@@ -137,8 +137,8 @@ def normalize_ensemble(x, mode):
 # ─────────────────────────────────────────────────────────────────────
 def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                        target_fs=500.0, step=1, freqs=None, bands=None,
-                       normalize='none', trgc=False, tmin=None, tmax=None,
-                       gc_mode='pairwise', n_jobs=1):
+                       normalize='none', demean_trials=True, trgc=False,
+                       tmin=None, tmax=None, gc_mode='pairwise', n_jobs=1):
     """Moving-window Geweke GC for one subject, all ROI pairs.
 
     ``gc_mode='pairwise'`` runs bivariate BSMART GC per pair.
@@ -159,7 +159,16 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         Sampling rate of the cached series (Hz).
     order, win_ms, target_fs, step, normalize, trgc :
         GC parameters.  ``win_ms`` at ``target_fs`` sets the window in
-        samples (40 ms @ 500 Hz = 20, matching BSMART).
+        samples (canonical config: 250 ms @ 200 Hz = 50 samples, order 25;
+        legacy BSMART-matching config: 40 ms @ 500 Hz = 20 samples, order 10).
+    demean_trials : bool
+        If True (default), subtract each trial's temporal mean per virtual
+        channel before windowing (per-trial whole-series demean).  ``armorf``
+        fits raw second moments, so a non-zero epoch mean biases the AR
+        estimate; this removes the per-trial DC.  This is the front-end demean
+        that ``reduce_roi_first_pc`` assumes.  Distinct from
+        ``normalize='demean'`` (which removes the across-trial ERP).  Applied
+        only here, so the low-level BSMART-faithful pairwise path is unchanged.
     freqs : np.ndarray, optional
         Frequencies in Hz (default 1..30, 1 Hz steps).
     bands : dict, optional
@@ -202,6 +211,15 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
     hi = n_t if tmax is None else int(np.searchsorted(new_times, tmax, 'right'))
     V = V[:, :, lo:hi]
     win_times = new_times[lo:hi]
+
+    # Per-trial whole-series demean — the front-end demean that
+    # reduce_roi_first_pc leaves to the caller.  armorf uses raw second
+    # moments, so a non-zero epoch mean biases the AR fit; subtract each
+    # trial's temporal mean per channel.  Distinct from --normalize demean
+    # (across-trial ERP removal, below) and kept out of the low-level
+    # pairwise/fit_mvar path so validate_granger's BSMART match still holds.
+    if demean_trials:
+        V = V - V.mean(axis=2, keepdims=True)
 
     # Optional ensemble normalization (default none = BSMART).
     if normalize != 'none':
@@ -362,11 +380,15 @@ def parse_args():
     p.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
                    help='ROIs to include (default all speech ROIs); GC is '
                         'computed for every pair among them.')
-    p.add_argument('--order', type=int, default=10, help='AR model order')
-    p.add_argument('--win-ms', type=float, default=40.0,
-                   help='Moving-window length in ms (40 ms @ 500 Hz = 20 samples)')
-    p.add_argument('--target-fs', type=float, default=500.0,
-                   help='Resample virtual channels to this rate before GC')
+    p.add_argument('--order', type=int, default=25,
+                   help='AR model order (canonical 25; = fs/(2*f_lo) for theta @ fs=200. '
+                        'Legacy BSMART-matching config used 10)')
+    p.add_argument('--win-ms', type=float, default=250.0,
+                   help='Moving-window length in ms (canonical 250 = 2*order @ 200 Hz = 50 '
+                        'samples; sized for theta 4 Hz. Legacy config used 40)')
+    p.add_argument('--target-fs', type=float, default=200.0,
+                   help='Resample virtual channels to this rate before GC (canonical 200; '
+                        'keeps order in the 5-25 range across bands. Legacy config used 500)')
     p.add_argument('--step', type=int, default=1, help='Window step in samples (BSMART=1)')
     p.add_argument('--fmin', type=float, default=1.0)
     p.add_argument('--fmax', type=float, default=30.0)
@@ -374,7 +396,12 @@ def parse_args():
     p.add_argument('--tmin', type=float, default=None, help='GC window start (s); default full epoch')
     p.add_argument('--tmax', type=float, default=None, help='GC window end (s); default full epoch')
     p.add_argument('--normalize', default='none', choices=['none', 'demean', 'zscore'],
-                   help='Ensemble normalization (none = BSMART-faithful)')
+                   help='Across-trial ensemble normalization (none = BSMART-faithful; '
+                        "'demean' removes the ERP — NOT the per-trial demean below)")
+    p.add_argument('--no-demean-trials', dest='demean_trials', action='store_false',
+                   default=True,
+                   help='Disable the per-trial whole-series demean (ON by default; this is the '
+                        'correct armorf front-end demean, distinct from --normalize demean)')
     p.add_argument('--trgc', action='store_true', default=False,
                    help='Also compute Diff-TRGC (time-reversed GC robustness control)')
     p.add_argument('--subjects', nargs='+', default=None)
@@ -469,7 +496,8 @@ def main():
             roi_data, times, sfreq,
             order=args.order, win_ms=args.win_ms, target_fs=args.target_fs,
             step=args.step, freqs=freqs, normalize=args.normalize,
-            trgc=args.trgc, tmin=args.tmin, tmax=args.tmax,
+            demean_trials=args.demean_trials, trgc=args.trgc,
+            tmin=args.tmin, tmax=args.tmax,
             gc_mode=args.gc_mode, n_jobs=args.n_jobs,
         )
         out_file = save_subject_gc(
