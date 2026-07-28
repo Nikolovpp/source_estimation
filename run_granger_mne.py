@@ -70,7 +70,7 @@ from run_granger import roiset_tag
 GC_OUTPUT_ROOT = DECODE_OUTPUT_ROOT.parent / 'GC_source_space_mne'
 
 PRESETS = {
-    'A': dict(gc_n_lags=25, win_ms=250.0, target_fs=200.0),
+    'A': dict(gc_n_lags=20, win_ms=250.0, target_fs=200.0),
     'B': dict(gc_n_lags=15, win_ms=60.0, target_fs=500.0),
 }
 
@@ -78,10 +78,11 @@ PRESETS = {
 # ─────────────────────────────────────────────────────────────────────
 # IO
 # ─────────────────────────────────────────────────────────────────────
-def gc_tag_mne(gc_n_lags, win_ms, target_fs):
+def gc_tag_mne(gc_n_lags, win_ms, target_fs, n_pcs=1):
     # 'ssgc_cwt' = state-space GC, continuous-wavelet (Morlet) mode — the only
-    # MNE mode that runs at these window sizes. The tag marks it explicitly.
-    return f'ssgc_cwt_mo{gc_n_lags}_sw{win_ms:g}ms_fs{target_fs:g}'
+    # MNE mode that runs at these window sizes. pc{k} = FIXPC-k ROI aggregation
+    # (k PCs per ROI; k>1 = multivariate block GC).
+    return f'ssgc_cwt_pc{n_pcs}_mo{gc_n_lags}_sw{win_ms:g}ms_fs{target_fs:g}'
 
 
 def pairs_tag(pair_names):
@@ -97,9 +98,10 @@ def save_subject(result, subj, task, stim_class, method, atlas, feature_mode,
                  leakage_correction, gc_n_lags, win_ms, target_fs,
                  roi_subset, pairs_tag, output_root=GC_OUTPUT_ROOT):
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    n_pcs = int(result.get('n_pcs', 1))
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
-        / gc_tag_mne(gc_n_lags, win_ms, target_fs)
+        / gc_tag_mne(gc_n_lags, win_ms, target_fs, n_pcs)
         / (pairs_tag or roiset_tag(roi_subset)) / stim_class
     )
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +113,7 @@ def save_subject(result, subj, task, stim_class, method, atlas, feature_mode,
         'fs': np.array(result['fs']),
         'mode': np.array(result.get('mode', 'cwt_morlet')),
         'estimator': np.array('mne_statespace_cwt'),
+        'n_pcs': np.array(n_pcs),
         'under_resolved': np.array(result.get('under_resolved', [])),
     }
     for b, arr in result['fxy'].items():
@@ -190,7 +193,8 @@ def process_subject(subj, args, subset, pair_names, cwt_freqs):
     result = compute_subject_gc_mne(
         roi_data, times, sfreq, gc_n_lags=args.gc_n_lags, win_ms=args.win_ms,
         target_fs=args.target_fs, cwt_freqs=cwt_freqs, pairs=pairs,
-        trgc=args.trgc, tmin=tmin, tmax=tmax, ncycle_floor=args.ncycle_floor)
+        trgc=args.trgc, tmin=tmin, tmax=tmax, ncycle_floor=args.ncycle_floor,
+        n_pcs=args.n_pcs)
     out_file = save_subject(
         result, subj, args.task, args.stim_class, args.method, args.atlas,
         args.feature_mode, args.leakage_correction, args.gc_n_lags,
@@ -226,6 +230,12 @@ def parse_args():
                         'ways). Default: all pairs among --roi-subset / speech ROIs.')
     p.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
                    help='ROIs to include when --pairs is not given.')
+    p.add_argument('--n-pcs', type=int, default=1,
+                   help='PCs kept per ROI (FIXPC-k). 1 = one virtual channel + '
+                        'bivariate GC; 3 or 4 = multivariate block GC (Pellegrini '
+                        '2023). k>1 REQUIRES the full multi-vertex cache (all '
+                        'vertices per ROI) — a pre-reduced/single-channel cache '
+                        'can only do k=1.')
     p.add_argument('--ncycle-floor', type=float, default=1.0,
                    help='minimum Morlet cycles (protects short-window low freqs)')
     p.add_argument('--fmin', type=float, default=4.0)
@@ -297,6 +307,9 @@ def main():
     win_samp = max(2, round(args.win_ms / 1000.0 * args.target_fs))
     print(f'  (FFT-mode GC would need >={nfft} samp for MO={args.gc_n_lags}; '
           f'this window is {win_samp} samp -> cwt required)')
+    agg = ('FIXPC1 (single channel, bivariate GC)' if args.n_pcs == 1
+           else f'FIXPC{args.n_pcs} (multivariate block GC — needs full vertex cache)')
+    print(f'  ROI aggreg.:  {agg}')
     if pair_names:
         print(f'  ROI pairs:    {["->".join(p) for p in pair_names]}')
     else:
