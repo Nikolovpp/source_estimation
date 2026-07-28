@@ -15,6 +15,10 @@ __pycache__/
 # reference for the Python GC port, not a runtime dependency)
 bsmart_toolbox_matlab_source_code/
 
+# GC learning materials (first-principles chapter, workbook, figures, data
+# bundle) — teaching/draft blog content, not part of the runnable pipeline
+GC_fundamentals/
+
 # Claude Code IDE settings
 .claude/
 
