@@ -61,9 +61,14 @@ def build_dirs(a):
                     a.leakage_correction,
                     bsmart_gc_tag(a.order, a.win_ms, a.target_fs, 'none'),
                     roiset_tag(bs_subset), a.stim_class)
+    # The MNE side may use a DIFFERENT config (it cannot use BSMART's short window
+    # — it is bound by ~1/T). --mne-* override; default to the shared config.
+    mne_lags = a.mne_gc_n_lags if a.mne_gc_n_lags is not None else a.order
+    mne_win = a.mne_win_ms if a.mne_win_ms is not None else a.win_ms
+    mne_fs = a.mne_target_fs if a.mne_target_fs is not None else a.target_fs
     mne = config_dir(GC_ROOT_MNE, a.task, a.method, a.atlas, a.feature_mode,
                      a.leakage_correction,
-                     gc_tag_mne(a.order, a.win_ms, a.target_fs),
+                     gc_tag_mne(mne_lags, mne_win, mne_fs),
                      pairs_tag(pair_tuples) if pair_tuples
                      else roiset_tag(a.bsmart_roi_subset), a.stim_class)
     return bs, mne
@@ -182,9 +187,14 @@ def parse_args():
     p.add_argument('--method', default='LCMV'); p.add_argument('--atlas', default='custom')
     p.add_argument('--feature-mode', default='vertex_selectkbest')
     p.add_argument('--leakage-correction', action='store_true', default=False)
-    p.add_argument('--order', type=int, default=25, help='shared config: order/gc_n_lags')
-    p.add_argument('--win-ms', type=float, default=250.0, help='shared config: SW (ms)')
-    p.add_argument('--target-fs', type=float, default=200.0, help='shared config: fs (Hz)')
+    p.add_argument('--order', type=int, default=25, help='BSMART order (and MNE gc_n_lags unless --mne-gc-n-lags)')
+    p.add_argument('--win-ms', type=float, default=250.0, help='BSMART window (ms); MNE too unless --mne-win-ms')
+    p.add_argument('--target-fs', type=float, default=200.0, help='BSMART fs (Hz); MNE too unless --mne-target-fs')
+    # MNE can't share BSMART's short window (it is bound by ~1/T). These override
+    # the MNE side so you can compare, e.g., BSMART@60ms vs MNE@250ms.
+    p.add_argument('--mne-gc-n-lags', type=int, default=None)
+    p.add_argument('--mne-win-ms', type=float, default=None)
+    p.add_argument('--mne-target-fs', type=float, default=None)
     p.add_argument('--bsmart-roi-subset', nargs='+', default=None,
                    help='the --roi-subset used for the BSMART run (locates its dir); '
                         'defaults to the ROIs in --pairs')
