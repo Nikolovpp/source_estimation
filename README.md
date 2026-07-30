@@ -182,9 +182,43 @@ effectively averaging out random noise while preserving time-locked signals. Thi
 provides the SVM with cleaner, more separable decision boundaries.
 
 Enable with `--pseudo-trial-size N` (e.g., `--pseudo-trial-size 5`). Applied only to
-training data within each CV fold (test set remains individual trials). With ~80–100
-trials per class and group_size=5, yields ~16–20 pseudo-trials per class. Group sizes
-of 5–10 are recommended.
+training data within each CV fold — the test set stays single-trial, so reported
+accuracy still reflects single-trial generalization and is **not** optimistically
+inflated (the leakage-free Guggenmos/Cichy design). `create_pseudo_trials` shuffles
+same-class training indices, forms complete groups of `N`, averages each group into
+one pseudo-trial, and **discards the remainder** (`len(idx) // N`).
+
+### Trade-off, and why it is classifier-specific
+
+Pseudo-trials are a genuine gamble rather than a free win, and the balance depends on
+the classifier — decide per configuration rather than defaulting to 5.
+
+**For:** averaging `N` same-class trials cuts noise variance ~`N`× (≈√`N` lower noise
+std) while preserving the time-locked signal, so the classifier and the upstream
+`SelectKBest` ANOVA both see cleaner exemplars — usually raising peak accuracy for
+noisy single-trial source estimates.
+
+**Against (especially for the tuned logistic):** `N=5` divides the per-fold training
+count by ~5. The prodDiff subjects run ~170–220 trials (~85–110/class), so the 5-fold
+outer training fold is ~135–175 samples (~70–90/class; see
+[Feature Modes](#feature-modes)); group_size 5 leaves only ≈15 pseudo-trials/class (~30
+total). `--tune-hyperparams` then selects `C` on an inner 3-fold split of *those ~30*
+(~20 train / ~10 val) — a thin regime that can *increase* cross-repeat variance even as
+the mean rises. This is not hypothetical: at the **full** ~160-sample fold the inner-CV
+`C` selection is already only picked ~48–60% of the time (a nearly flat landscape; see
+the `C_sel` field now written to `best_params`), so halving the exemplars pushes tuning
+further into the noise. Pseudo-trials also add a random-grouping variance component and
+can blur decoding **onset** (the sliding-window quantity of interest) when trials carry
+latency jitter. Logistic regression additionally benefits less than the covariance/
+distance decoders pseudo-trials were designed for, since its elastic-net penalty already
+absorbs trial noise — so it pays the full sample-count cost for a smaller SNR gain.
+
+**Guidance:** treat `pseudo-trial-size` as a hyperparameter and let
+`explore_decoding.py` decide it (compare `0` / `3` / `5` on peak accuracy **and**
+cross-repeat spread, not peak alone). For a tuned logistic at these trial counts, a
+smaller group (2–3) captures most of the √`N` SNR gain while keeping more exemplars, and
+often beats 5; reserve 5+ for higher-trial subjects or pair it with a fixed `--c`
+(dropping `--tune-hyperparams`) so `C` is not being tuned on ~9 samples.
 
 ## Files
 
@@ -406,8 +440,9 @@ the work of suppressing irrelevant dimensions.
 
 - **Pros**: no preprocessing-stage information loss; the classifier
   decides which vertices and which vertex combinations matter.
-- **Cons**: with `n_features ≫ n_samples` (e.g. 200 vertices vs ~70
-  training samples per outer fold), accuracy is highly sensitive to
+- **Cons**: with `n_features` comparable to or exceeding `n_samples`
+  (e.g. ~50–500 vertices vs ~135–175 training samples per outer fold,
+  from ~170–220 trials/subject), accuracy is highly sensitive to
   regularization strength. Almost always needs `--tune-hyperparams`
   to find a workable `C`.
 - **Use when**: comparing against vertex-reduced modes to check
@@ -420,7 +455,7 @@ the work of suppressing irrelevant dimensions.
 |---|---|---|
 | `pca_flip`               | Yes — 1 feature per ROI is well-conditioned for LDA. | Yes (works fine, but SVM/logistic gain little over LDA at 1 feature). |
 | `vertex_pca`             | Usually — the 95% cap typically lands at ~5–30 features (≪ samples). | Yes. |
-| `vertex_selectkbest`     | Borderline — k=200 vs ~70 samples is at the edge; Ledoit-Wolf shrinkage keeps the covariance pseudo-stable but discriminability suffers. | Yes — preferred. |
+| `vertex_selectkbest`     | Borderline — k=200 vs ~135–175 samples is at the edge; Ledoit-Wolf shrinkage keeps the covariance pseudo-stable but discriminability suffers. | Yes — preferred. |
 | `vertex_selectkbest_all` | **Avoid** — `n_features ≫ n_samples` collapses LDA's covariance toward naive Bayes even with shrinkage. | Yes, but **must** combine with `--tune-hyperparams`. |
 
 ### Cache sharing
@@ -671,7 +706,10 @@ and `pairwise_spectral_gc` reproduces BSMART's `pwcausal.m` **to machine
 precision** (verified to 2.8e-16 in `validate_granger.py`). Also provides
 Diff-TRGC (time-reversed GC; Haufe 2013 / Winkler 2016) as a source-space
 robustness control, AIC/BIC order selection, and band averaging
-(theta 4–7, alpha 8–12, low-beta 13–20, high-beta 21–30 Hz).
+(half-open, disjoint bands: theta [4,8), alpha [8,12), low-beta [12,18),
+high-beta [18,30] Hz — note these edges differ from the older MATLAB
+scheme of 4–7 / 8–12 / 13–20 / 21–30, so band values are not directly
+comparable across the two).
 
 **Conditional / multivariate GC** — two methods:
 - `granger.conditional_spectral_gc` — classic Chen, Bressler & Ding (2006)
