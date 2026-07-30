@@ -65,13 +65,38 @@ def load_gc_group(gc_dir, bands=None):
     dtr = {b: [] for b in band_names}
     for f in files:
         d = np.load(f, allow_pickle=True)
-        subjects.append(os.path.basename(f).split('_')[0])
+        subj = os.path.basename(f).split('_')[0]
+        subjects.append(subj)
         if ref is None:
             ref = {
                 'roi_names': list(d['roi_names']),
                 'pair_i': d['pair_i'], 'pair_j': d['pair_j'],
                 'window_ms': d['window_ms'],
             }
+        else:
+            # Every subject must agree on WHICH pair each row is, or the stack
+            # silently averages different edges together. Pairs are re-resolved
+            # per subject in run_granger_mne.process_subject and any a subject
+            # lacks are dropped, so two subjects can end up the same SHAPE with
+            # different CONTENT — np.stack would accept that without complaint.
+            ref_pairs = [(str(ref['roi_names'][i]), str(ref['roi_names'][j]))
+                         for i, j in zip(ref['pair_i'], ref['pair_j'])]
+            this_names = list(map(str, d['roi_names']))
+            this_pairs = [(this_names[i], this_names[j])
+                          for i, j in zip(d['pair_i'], d['pair_j'])]
+            if this_pairs != ref_pairs:
+                raise ValueError(
+                    f'{subj} has a different pair set/order than '
+                    f'{subjects[0]} in {gc_dir}.\n'
+                    f'  {subjects[0]}: {ref_pairs}\n'
+                    f'  {subj}: {this_pairs}\n'
+                    'Stacking these would average different directed edges '
+                    'across subjects. Re-run the affected subject(s), or drop '
+                    'them via --subjects.')
+            if d['window_ms'].shape != ref['window_ms'].shape:
+                raise ValueError(
+                    f'{subj} has {d["window_ms"].size} windows but '
+                    f'{subjects[0]} has {ref["window_ms"].size} in {gc_dir}.')
         if has_trgc is None:
             has_trgc = f'dtrgc_{band_names[0]}' in d
         for b in band_names:

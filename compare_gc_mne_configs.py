@@ -63,6 +63,12 @@ def load_config(cdir, task, stim, subjects, band):
         if pairs is None:
             pairs, times = p, d['window_ms']
             ur = list(map(str, d['under_resolved'])) if 'under_resolved' in d.files else []
+        elif p != pairs:
+            # same shape + different pair order => silently averaging different
+            # edges across subjects (see granger_stats.load_gc_group)
+            raise ValueError(
+                f'{s} has a different pair set/order than {found[0]} in {cdir}:\n'
+                f'  {found[0]}: {pairs}\n  {s}: {p}')
         fxy.append(d[f'fxy_{band}']); fyx.append(d[f'fyx_{band}'])
         if f'dtrgc_{band}' in d.files:
             dtr.append(d[f'dtrgc_{band}'])

@@ -222,9 +222,16 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         V = V - V.mean(axis=2, keepdims=True)
 
     # Optional ensemble normalization (default none = BSMART).
+    # V is (n_trials, n_chan, n_times) and normalize_ensemble expects
+    # (n_trials, n_times) — so it must be handed one CHANNEL at a time and
+    # stacked back on axis 1. Iterating trials instead (V[r], shape
+    # (n_chan, n_times)) makes its axis-0 mean a cross-CHANNEL average, i.e. a
+    # per-trial common-average reference over the ROIs — not ERP removal, and
+    # actively harmful here because it mixes the very channels whose directed
+    # coupling is being measured.
     if normalize != 'none':
-        V = np.stack([normalize_ensemble(V[r], normalize)
-                      for r in range(V.shape[0])], axis=0)
+        V = np.stack([normalize_ensemble(V[:, c, :], normalize)
+                      for c in range(V.shape[1])], axis=1)
 
     win_samples = max(2, round(win_ms / 1000.0 * fs))
     starts = np.arange(0, V.shape[2] - win_samples + 1, step)
@@ -395,9 +402,17 @@ def parse_args():
     p.add_argument('--fstep', type=float, default=1.0)
     p.add_argument('--tmin', type=float, default=None, help='GC window start (s); default full epoch')
     p.add_argument('--tmax', type=float, default=None, help='GC window end (s); default full epoch')
-    p.add_argument('--normalize', default='none', choices=['none', 'demean', 'zscore'],
-                   help='Across-trial ensemble normalization (none = BSMART-faithful; '
-                        "'demean' removes the ERP — NOT the per-trial demean below)")
+    p.add_argument('--normalize', default='demean',
+                   choices=['none', 'demean', 'zscore'],
+                   help="Across-trial ensemble normalization. DEFAULT 'demean' "
+                        'removes the ERP, which is a deterministic component '
+                        'shared across trials; an ROI-pair latency difference in '
+                        'it is otherwise read as directed influence, and TRGC '
+                        "does not catch that. 'none' is BSMART-faithful and "
+                        'reproduces the legacy runs. NOT the same as the '
+                        'per-trial temporal demean below. The mode is part of '
+                        'the output path, so a demean run cannot overwrite a '
+                        'legacy none run.')
     p.add_argument('--no-demean-trials', dest='demean_trials', action='store_false',
                    default=True,
                    help='Disable the per-trial whole-series demean (ON by default; this is the '

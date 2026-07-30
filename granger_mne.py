@@ -80,6 +80,21 @@ def min_fft_window_samples(gc_n_lags, fs, fmin=4.0, fmax=30.0):
     return None
 
 
+def mne_cwt_freq_floor(fs, n_times):
+    """Lowest frequency ``mne_connectivity`` will RETURN for a cwt run, in Hz.
+
+    Not a rule of thumb — a hard property of the library. It discards every
+    requested frequency below ``5 * fs / n_times``, applied to the length of the
+    array passed in (not ``win_ms``, not ``cwt_n_cycles``), and reports nothing.
+    Measured at fs=200 requesting 4-30 Hz (27 bins): n_times 60 -> 14 bins
+    (>=17 Hz), 118 -> 22 (>=9 Hz), 150 -> 24 (>=7 Hz), 250 -> all 27 (>=4 Hz).
+
+    Provided so callers can predict the returned grid; nothing in this module
+    warns or errors on it. Band values with no surviving bins come back NaN.
+    """
+    return 5.0 * float(fs) / float(n_times)
+
+
 def min_trustworthy_window_ms(freq_lo, min_cycles=2.0):
     """Window (ms) needed to hold ``min_cycles`` cycles of ``freq_lo`` Hz.
 
@@ -156,7 +171,15 @@ def timefreq_gc_mne(data, fs, cwt_freqs, n_cycles, gc_n_lags, seeds, targets,
 
     Returns
     -------
-    (n_edges, n_freqs, n_times) real array — one GC value per directed edge.
+    gc : (n_edges, n_freqs_out, n_times) real array — one GC value per edge.
+    freqs_out : (n_freqs_out,) the frequencies MNE ACTUALLY returned.
+
+    ``freqs_out`` is **not** necessarily ``cwt_freqs``: MNE silently drops every
+    requested frequency below ``5 * fs / n_times`` (see
+    :func:`mne_cwt_freq_floor`). Callers must band-average against ``freqs_out``,
+    never against the requested grid — doing the latter raises
+    ``IndexError: boolean index did not match indexed array`` downstream, or
+    worse, silently averages the wrong bins when the counts happen to match.
     """
     from mne_connectivity import spectral_connectivity_epochs
     import mne
@@ -168,13 +191,14 @@ def timefreq_gc_mne(data, fs, cwt_freqs, n_cycles, gc_n_lags, seeds, targets,
         mode='cwt_morlet', cwt_freqs=np.asarray(cwt_freqs, float),
         cwt_n_cycles=np.asarray(n_cycles, float), gc_n_lags=gc_n_lags,
         rank=rank, verbose=False)
-    return np.asarray(con.get_data())            # (n_edges, n_freqs, n_times)
+    return (np.asarray(con.get_data()),          # (n_edges, n_freqs_out, n_times)
+            np.asarray(con.freqs, dtype=float))
 
 
 def compute_subject_gc_mne(roi_data, times, sfreq, *, gc_n_lags=20, win_ms=250.0,
                            target_fs=200.0, cwt_freqs=None, bands=None, pairs=None,
                            trgc=True, tmin=None, tmax=None, ncycle_floor=1.0,
-                           n_pcs=1):
+                           n_pcs=1, normalize='demean', labels=None):
     """Time-resolved MNE state-space GC for one subject, all requested ROI pairs.
 
     ``roi_data`` : dict ``{roi_name: array}`` — vertex data
@@ -218,7 +242,40 @@ def compute_subject_gc_mne(roi_data, times, sfreq, *, gc_n_lags=20, win_ms=250.0
     hi = n_t if tmax is None else int(np.searchsorted(new_times, tmax, 'right'))
     V = V[:, :, lo:hi]
     win_times = new_times[lo:hi]
-    V = V - V.mean(axis=2, keepdims=True)              # per-trial demean
+    V = V - V.mean(axis=2, keepdims=True)              # per-trial temporal demean
+
+    # ── Ensemble (ERP) removal — ON BY DEFAULT ────────────────────────────
+    # The step above is a per-trial TEMPORAL demean; it does nothing about the
+    # phase-locked evoked response, which is a deterministic component shared by
+    # every trial. MNE's cwt CSD is the across-trial average of wavelet outer
+    # products, so an ERP enters it directly, and any latency difference between
+    # two ROIs' evoked responses is read as directed influence from the earlier
+    # one. Measured on two INDEPENDENT AR(2) processes (true GC ~= 0) plus one
+    # identical evoked burst arriving 25 ms later in ch1: theta 0->1 = 0.409 vs
+    # 0.005 truth, and dTRGC = +0.378 vs +0.003 — i.e. TRGC does NOT catch it,
+    # because an ERP latency difference genuinely IS a time lag.
+    #
+    # Removed WITHIN each level of ``labels`` when given: the cache holds both
+    # classes of a contrast, so a single grand mean would leave the
+    # between-condition evoked difference in as a two-level deterministic driver.
+    if normalize != 'none':
+        if labels is None:
+            groups = [np.ones(V.shape[0], bool)]
+        else:
+            lab = np.asarray(labels)
+            groups = [lab == u for u in np.unique(lab)]
+        for g in groups:
+            if not g.any():
+                continue
+            mu = V[g].mean(axis=0, keepdims=True)       # ERP per (chan, time)
+            if normalize == 'demean':
+                V[g] = V[g] - mu
+            elif normalize == 'zscore':
+                sd = V[g].std(axis=0, keepdims=True)
+                sd[sd == 0] = 1.0
+                V[g] = (V[g] - mu) / sd
+            else:
+                raise ValueError(f'Unknown normalize mode: {normalize!r}')
 
     n_cyc = sw_to_ncycles(cwt_freqs, win_ms, ncycle_floor)
     n_roi = len(roi_names)
@@ -238,11 +295,15 @@ def compute_subject_gc_mne(roi_data, times, sfreq, *, gc_n_lags=20, win_ms=250.0
     edge_idx = {e: k for k, e in enumerate(edges)}
 
     data = V                                           # (n_ep, total_ch, n_t)
-    gc = timefreq_gc_mne(data, fs, cwt_freqs, n_cyc, gc_n_lags,
-                         seeds, targets, 'gc', rank)
+    gc, freqs_out = timefreq_gc_mne(data, fs, cwt_freqs, n_cyc, gc_n_lags,
+                                    seeds, targets, 'gc', rank)
 
+    # MNE drops requested frequencies below 5*fs/n_times without raising, so
+    # band-average against what it RETURNED, and record what was lost.
     def bavg(edge):                               # (n_freq,n_time) -> {band:(n_time,)}
-        return band_average(gc[edge_idx[edge]], cwt_freqs, bands)
+        """Band-average on the RETURNED grid, via granger.band_average so the
+        half-open/disjoint band definition has exactly one implementation."""
+        return band_average(gc[edge_idx[edge]], freqs_out, bands, on_empty='nan')
 
     fxy = {b: np.full((len(pairs), win_times.size), np.nan) for b in band_names}
     fyx = {b: np.full((len(pairs), win_times.size), np.nan) for b in band_names}
@@ -256,17 +317,28 @@ def compute_subject_gc_mne(roi_data, times, sfreq, *, gc_n_lags=20, win_ms=250.0
 
     result = {
         'roi_names': roi_names, 'pair_i': pair_i, 'pair_j': pair_j,
-        'window_ms': win_times * 1000.0, 'freqs': cwt_freqs, 'bands': dict(bands),
+        'window_ms': win_times * 1000.0, 'freqs': freqs_out, 'bands': dict(bands),
         'fxy': fxy, 'fyx': fyx, 'fs': fs, 'mode': MODE, 'n_pcs': n_pcs,
         'under_resolved': under_resolved_bands(win_ms, bands),
+        # ``freqs`` above is what MNE returned, which can be a subset of what was
+        # requested (it applies its own low-frequency floor). Keep the request
+        # alongside it so the two are reconstructable from the npz alone; a band
+        # with no surviving bins comes back NaN, which is self-evident in fxy/fyx.
+        'freqs_requested': np.asarray(cwt_freqs, float),
+        'normalize': normalize,
+        # Frequency-resolved GC, so band definitions can be changed WITHOUT
+        # recomputing. Only band means were persisted historically, which is why
+        # the band-overlap fix forced a full re-run.
+        'gc_freq': gc, 'gc_freq_edges': np.array(edges, dtype=int),
     }
 
     if trgc:
-        gct = timefreq_gc_mne(data, fs, cwt_freqs, n_cyc, gc_n_lags,
-                              seeds, targets, 'gc_tr', rank)
+        gct, freqs_tr = timefreq_gc_mne(data, fs, cwt_freqs, n_cyc, gc_n_lags,
+                                        seeds, targets, 'gc_tr', rank)
 
         def bavg_tr(edge):
-            return band_average(gct[edge_idx[edge]], cwt_freqs, bands)
+            return band_average(gct[edge_idx[edge]], freqs_tr, bands,
+                                on_empty='nan')
 
         dtr = {b: np.full((len(pairs), win_times.size), np.nan) for b in band_names}
         for k, (i, j) in enumerate(pairs):
