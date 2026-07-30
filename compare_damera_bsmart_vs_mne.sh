@@ -49,7 +49,23 @@
 #   bash compare_damera_bsmart_vs_mne.sh
 set -u
 cd /media/maxlab_sharedrive/SpeechProduction/EEG/code/source_estimation/
-source ~/miniforge3/etc/profile.d/conda.sh && conda activate mne
+# Portable conda bootstrap — this box uses miniforge3, the workstation
+# anaconda3, so do not hardcode a prefix. Fail loudly rather than silently
+# running the wrong interpreter.
+if command -v conda >/dev/null 2>&1; then
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+else
+    for _p in "$HOME/miniforge3" "$HOME/anaconda3" "$HOME/miniconda3" /opt/conda; do
+        if [ -f "$_p/etc/profile.d/conda.sh" ]; then
+            source "$_p/etc/profile.d/conda.sh"; break
+        fi
+    done
+fi
+if ! conda activate mne 2>/dev/null; then
+    echo "ERROR: could not activate the 'mne' conda env." >&2
+    echo "  conda found at: $(command -v conda || echo '<none on PATH>')" >&2
+    exit 1
+fi
 
 # ── shared descriptors ──────────────────────────────────────────────────
 TASKS="${TASKS:-overtProd perception}"
