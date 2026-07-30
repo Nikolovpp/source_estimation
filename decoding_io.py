@@ -167,12 +167,31 @@ def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
         / f'{subj_id}_{task_cond}_{stim_class}_{sw_dur}_{sw_step}.csv'
     )
 
-    if classifier == 'lda':
-        best_params_str = 'lda(shrinkage=auto)'
-    elif classifier == 'logistic':
-        best_params_str = f'logistic(C={c}, elasticnet)'
-    else:
-        best_params_str = f'svm(C={c})'
+    def _best_params_str(r):
+        """Per-window ``best_params``.
+
+        When hyperparameter tuning ran (``--tune-hyperparams``), report the
+        modal selected value(s) plus ``C_sel`` — the fraction of the CV fits
+        that picked the mode. A low ``C_sel`` signals a flat inner-CV landscape
+        where the pick is near-arbitrary, so the column is honest about tuning
+        confidence rather than implying a decisive choice. Falls back to the
+        fixed default ``c`` when tuning was off (or for LDA, which has no
+        tunable C). The reported C is the value actually used per window, not
+        the runner's default.
+        """
+        if classifier == 'lda':
+            return 'lda(shrinkage=auto)'
+        mode = r.get('best_params_mode')
+        if mode:
+            params = ', '.join(f'{k}={v:g}' for k, v in mode.items())
+            freq = (r.get('best_params_freq') or {}).get('C')
+            sel = f'; C_sel={freq:.0%}' if freq is not None else ''
+            if classifier == 'logistic':
+                return f'logistic({params}, elasticnet{sel})'
+            return f'svm({params}{sel})'
+        if classifier == 'logistic':
+            return f'logistic(C={c}, elasticnet)'
+        return f'svm(C={c})'
 
     rows = []
     for roi_name, results in results_all_rois.items():
@@ -184,7 +203,7 @@ def _save_results(subj_id, task_cond, stim_class, method, feature_mode,
                 'ms': r['ms'],
                 'mean_list': r['mean_list'],
                 'decode_acc': r['decode_acc'],
-                'best_params': best_params_str,
+                'best_params': _best_params_str(r),
             })
 
     df = pd.DataFrame(

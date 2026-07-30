@@ -136,11 +136,19 @@ def _decode_subject(subj_id, roi_data, y, times, sfreq, args,
     # expected by save_svm_results / _save_results.
     results_all_rois = {name: [] for name in roi_names}
     for entry in entries:
-        results_all_rois[entry['roi']].append({
+        rec = {
             'ms': entry['ms'],
             'mean_list': entry['mean_list'],
             'decode_acc': entry['decode_acc'],
-        })
+        }
+        # Carry the tuned-hyperparameter mode + selection frequency through so
+        # the CSV records the C actually chosen per window rather than the fixed
+        # default. Present only under --tune-hyperparams; the saver falls back to
+        # the fixed C otherwise.
+        if 'best_params_mode' in entry:
+            rec['best_params_mode'] = entry['best_params_mode']
+            rec['best_params_freq'] = entry.get('best_params_freq')
+        results_all_rois[entry['roi']].append(rec)
     for name in roi_names:
         results_all_rois[name].sort(key=lambda r: r['ms'])
 
