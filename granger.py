@@ -14,8 +14,11 @@ Design goals
   noise covariance (Geweke 1982; Ding, Chen & Bressler 2006).  This is
   the BSMART approach, NOT non-parametric spectral factorization.
 * **Frequency-resolved** — GC is returned per frequency so it can be
-  averaged into the study's bands (theta 4-7, alpha 8-12, low-beta
-  13-20, high-beta 21-30 Hz), matching the MATLAB output.
+  averaged into the study's bands.  Bands are half-open and DISJOINT:
+  theta [4,8), alpha [8,12), low-beta [12,18), high-beta [18,30].
+  (The older MATLAB scheme was 4-7 / 8-12 / 13-20 / 21-30; the edges
+  changed in fa0e91c, so Python and MATLAB band values are NOT
+  directly comparable.)
 * **Multi-trial fitting** — the AR model is fit on the trial ensemble
   (all epochs treated as realizations of the same process), exactly as
   BSMART's ``armorf(x, Nr, Nl, p)`` does.  This is what makes an
@@ -564,7 +567,9 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Band averaging  (matches production_pwgc_data_to_python.m)
+# Band averaging.  Half-open and disjoint -- see band_masks().
+# NOTE: the band EDGES differ from production_pwgc_data_to_python.m
+# (which used 4:7 / 8:12 / 13:20 / 21:30); values are not comparable.
 # ─────────────────────────────────────────────────────────────────────
 DEFAULT_BANDS = {
     'theta': (4.0, 8.0),
@@ -629,7 +634,31 @@ def reduce_roi_first_pc(vertex_data, return_filter=False):
     return (vc, w) if return_filter else vc
 
 
-def band_average(gc, freqs, bands=None):
+def band_masks(freqs, bands=None):
+    """Boolean frequency masks per band — the single source of truth.
+
+    Bands are **half-open** ``[fmin, fmax)``, except the highest band whose
+    upper edge is inclusive so the top frequency is not dropped. This makes
+    ``DEFAULT_BANDS`` a partition: with the contiguous edges (4,8), (8,12),
+    (12,18), (18,30), closing both ends would place 8, 12 and 18 Hz in *two*
+    bands each. On a 1 Hz grid that put peak alpha (8 Hz) into a fifth of the
+    theta average and made the band statistics mutually dependent. The MATLAB
+    original this ports used the disjoint integer ranges 4:7 / 8:12 / 13:20 /
+    21:30, i.e. it was always meant to be a partition.
+
+    Every band average in this project must go through here — do not re-derive
+    the masks locally.
+    """
+    if bands is None:
+        bands = DEFAULT_BANDS
+    freqs = np.asarray(freqs, dtype=float)
+    top = max(fmax for _, fmax in bands.values())
+    return {name: ((freqs >= fmin) & (freqs <= fmax) if fmax >= top
+                   else (freqs >= fmin) & (freqs < fmax))
+            for name, (fmin, fmax) in bands.items()}
+
+
+def band_average(gc, freqs, bands=None, on_empty='raise'):
     """Average a frequency-resolved GC array into named bands.
 
     Parameters
@@ -637,9 +666,16 @@ def band_average(gc, freqs, bands=None):
     gc : np.ndarray, shape (n_freqs, ...)
         GC with frequency on axis 0.
     freqs : array_like, shape (n_freqs,)
+        The frequencies ``gc`` was actually evaluated at — for an estimator that
+        may return a subset of what was requested (``mne_connectivity`` drops
+        bins below ``5*fs/n_times``), pass the returned grid, not the requested
+        one.
     bands : dict {name: (fmin, fmax)}, optional
-        Inclusive frequency bounds (defaults to the study's
+        Half-open bounds; see :func:`band_masks` (defaults to the study's
         theta/alpha/low-beta/high-beta scheme).
+    on_empty : {'raise', 'nan'}
+        What to do when no frequency falls in a band. ``'nan'`` fills that band
+        with NaN so one unavailable band does not abort a batch.
 
     Returns
     -------
@@ -648,11 +684,20 @@ def band_average(gc, freqs, bands=None):
     if bands is None:
         bands = DEFAULT_BANDS
     freqs = np.asarray(freqs, dtype=float)
+    gc = np.asarray(gc)
+    if gc.shape[0] != freqs.size:
+        raise ValueError(
+            f'band_average: gc has {gc.shape[0]} frequency rows but freqs has '
+            f'{freqs.size} entries. Pass the frequencies the estimator actually '
+            f'RETURNED, not the grid you requested — mne_connectivity silently '
+            f'drops bins below 5*fs/n_times.')
     out = {}
-    for name, (fmin, fmax) in bands.items():
-        mask = (freqs >= fmin) & (freqs <= fmax)
+    for name, mask in band_masks(freqs, bands).items():
         if not mask.any():
+            if on_empty == 'nan':
+                out[name] = np.full(gc.shape[1:], np.nan)
+                continue
             raise ValueError(f'No frequencies fall in band {name} '
-                             f'[{fmin}, {fmax}] Hz')
+                             f'{bands[name]} Hz')
         out[name] = gc[mask].mean(axis=0)
     return out

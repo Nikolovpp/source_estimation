@@ -78,11 +78,16 @@ PRESETS = {
 # ─────────────────────────────────────────────────────────────────────
 # IO
 # ─────────────────────────────────────────────────────────────────────
-def gc_tag_mne(gc_n_lags, win_ms, target_fs, n_pcs=1):
+def gc_tag_mne(gc_n_lags, win_ms, target_fs, n_pcs=1, normalize='demean'):
     # 'ssgc_cwt' = state-space GC, continuous-wavelet (Morlet) mode — the only
     # MNE mode that runs at these window sizes. pc{k} = FIXPC-k ROI aggregation
     # (k PCs per ROI; k>1 = multivariate block GC).
-    return f'ssgc_cwt_pc{n_pcs}_mo{gc_n_lags}_sw{win_ms:g}ms_fs{target_fs:g}'
+    tag = f'ssgc_cwt_pc{n_pcs}_mo{gc_n_lags}_sw{win_ms:g}ms_fs{target_fs:g}'
+    # ERP removal is part of the analysis, so it belongs in the path: a 'demean'
+    # run must not overwrite a legacy 'none' run.
+    if normalize != 'none':
+        tag += f'_{normalize}'
+    return tag
 
 
 def pairs_tag(pair_names):
@@ -96,12 +101,13 @@ def pairs_tag(pair_names):
 
 def save_subject(result, subj, task, stim_class, method, atlas, feature_mode,
                  leakage_correction, gc_n_lags, win_ms, target_fs,
-                 roi_subset, pairs_tag, output_root=GC_OUTPUT_ROOT):
+                 roi_subset, pairs_tag, output_root=GC_OUTPUT_ROOT,
+                 normalize='demean'):
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     n_pcs = int(result.get('n_pcs', 1))
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
-        / gc_tag_mne(gc_n_lags, win_ms, target_fs, n_pcs)
+        / gc_tag_mne(gc_n_lags, win_ms, target_fs, n_pcs, normalize)
         / (pairs_tag or roiset_tag(roi_subset)) / stim_class
     )
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +121,18 @@ def save_subject(result, subj, task, stim_class, method, atlas, feature_mode,
         'estimator': np.array('mne_statespace_cwt'),
         'n_pcs': np.array(n_pcs),
         'under_resolved': np.array(result.get('under_resolved', [])),
+        # ``freqs`` is what MNE returned, which can be a subset of the requested
+        # grid; keep the request so the npz is self-describing.
+        'freqs_requested': np.asarray(
+            result.get('freqs_requested', result['freqs']), dtype=float),
+        'bands': np.array(list(result.get('bands', {}).items()), dtype=object),
+        'normalize': np.array(result.get('normalize', 'none')),
     }
+    # Frequency-resolved GC (n_edges, n_freqs, n_times) + its edge list, so band
+    # definitions can be changed later without recomputing anything.
+    if 'gc_freq' in result:
+        save['gc_freq'] = np.asarray(result['gc_freq'], dtype=np.float32)
+        save['gc_freq_edges'] = np.asarray(result['gc_freq_edges'])
     for b, arr in result['fxy'].items():
         save[f'fxy_{b}'] = arr
     for b, arr in result['fyx'].items():
@@ -194,11 +211,12 @@ def process_subject(subj, args, subset, pair_names, cwt_freqs):
         roi_data, times, sfreq, gc_n_lags=args.gc_n_lags, win_ms=args.win_ms,
         target_fs=args.target_fs, cwt_freqs=cwt_freqs, pairs=pairs,
         trgc=args.trgc, tmin=tmin, tmax=tmax, ncycle_floor=args.ncycle_floor,
-        n_pcs=args.n_pcs)
+        n_pcs=args.n_pcs, normalize=args.normalize, labels=y)
     out_file = save_subject(
         result, subj, args.task, args.stim_class, args.method, args.atlas,
         args.feature_mode, args.leakage_correction, args.gc_n_lags,
-        args.win_ms, args.target_fs, args.roi_subset, args.pairs_tag)
+        args.win_ms, args.target_fs, args.roi_subset, args.pairs_tag,
+        normalize=args.normalize)
     return subj, out_file, f'{result["pair_i"].size} pairs, {time.time()-t0:.1f}s'
 
 
@@ -251,6 +269,15 @@ def parse_args():
     p.add_argument('--n-jobs', type=int, default=8,
                    help='subject-parallel workers (BLAS pinned to 1 each)')
     p.add_argument('--overwrite', action='store_true', default=False)
+    p.add_argument('--normalize', choices=['none', 'demean', 'zscore'],
+                   default='demean',
+                   help="across-trial (ERP) removal, applied within each level "
+                        "of the stimulus labels. DEFAULT 'demean': the evoked "
+                        "response is deterministic and shared across trials, and "
+                        "an ROI-pair latency difference in it is otherwise read "
+                        "as directed influence (measured ~85x inflation, and "
+                        "TRGC does not catch it). 'none' reproduces the legacy "
+                        "runs. The mode is part of the output path.")
     return p.parse_args()
 
 

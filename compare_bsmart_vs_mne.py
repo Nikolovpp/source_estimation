@@ -57,21 +57,77 @@ def build_dirs(a):
         if a.pairs else None
     bs_subset = a.bsmart_roi_subset or (
         sorted({r for pr in pair_tuples for r in pr}) if pair_tuples else None)
+    # run_granger.py launched WITHOUT --roi-subset writes to 'all_rois', but
+    # deriving bs_subset from --pairs here yields 'rois_<names>' — so without an
+    # override there is no way to point at an all_rois BSMART run.
+    bs_sub = a.bsmart_subdir if a.bsmart_subdir else roiset_tag(bs_subset)
     bs = config_dir(GC_ROOT, a.task, a.method, a.atlas, a.feature_mode,
                     a.leakage_correction,
-                    bsmart_gc_tag(a.order, a.win_ms, a.target_fs, 'none'),
-                    roiset_tag(bs_subset), a.stim_class)
+                    bsmart_gc_tag(a.order, a.win_ms, a.target_fs,
+                                  a.bsmart_normalize),
+                    bs_sub, a.stim_class)
     # The MNE side may use a DIFFERENT config (it cannot use BSMART's short window
     # — it is bound by ~1/T). --mne-* override; default to the shared config.
     mne_lags = a.mne_gc_n_lags if a.mne_gc_n_lags is not None else a.order
     mne_win = a.mne_win_ms if a.mne_win_ms is not None else a.win_ms
     mne_fs = a.mne_target_fs if a.mne_target_fs is not None else a.target_fs
+    # n_pcs is part of the MNE tag (``ssgc_cwt_pc{k}_...``) and is NOT implied by
+    # anything else here, so it must be given explicitly. rerun_GC.sh runs
+    # PCS="3 4", so the pc1 default will not find those runs.
+    mne_sub = (a.mne_subdir if a.mne_subdir
+               else (pairs_tag(pair_tuples) if pair_tuples
+                     else roiset_tag(a.bsmart_roi_subset)))
     mne = config_dir(GC_ROOT_MNE, a.task, a.method, a.atlas, a.feature_mode,
                      a.leakage_correction,
-                     gc_tag_mne(mne_lags, mne_win, mne_fs),
-                     pairs_tag(pair_tuples) if pair_tuples
-                     else roiset_tag(a.bsmart_roi_subset), a.stim_class)
+                     gc_tag_mne(mne_lags, mne_win, mne_fs, a.mne_n_pcs,
+                                a.mne_normalize),
+                     mne_sub, a.stim_class)
     return bs, mne
+
+
+def probe(cdir, task, stim, label):
+    """Explain why a config dir yielded nothing, and list what does exist.
+
+    The writer (``run_granger_mne.save_subject``) and this reader build the path
+    independently, so they can disagree in the n_pcs / gc-tag / pairs-vs-roiset
+    segments. This turns that silent miss into a directory listing.
+    """
+    print(f'\n  [{label}] no {{subject}}_{task}_{stim}.npz in:')
+    print(f'    {cdir}')
+    if not cdir.exists():
+        # walk up to the deepest ancestor that does exist and list its children
+        anc = cdir
+        while not anc.exists() and anc != anc.parent:
+            anc = anc.parent
+        print(f'  first existing ancestor: {anc}')
+        try:
+            kids = sorted(p.name for p in anc.iterdir() if p.is_dir())
+        except OSError:
+            kids = []
+        if kids:
+            print('  it contains: ' + ', '.join(kids[:20])
+                  + (' …' if len(kids) > 20 else ''))
+    else:
+        n = len(list(cdir.glob('*.npz')))
+        print(f'  the directory EXISTS and holds {n} .npz file(s) — '
+              f'so the task/stim/subject names are the mismatch'
+              if n else '  the directory exists but is empty')
+    # where does data for this task/stim actually live?
+    root = cdir
+    for _ in range(3):                            # up past stim / subdir / tag
+        root = root.parent
+    hits = sorted({p.parent for p in root.rglob(f'*_{task}_{stim}.npz')}) \
+        if root.exists() else []
+    if hits:
+        print(f'  config dirs under {root} that DO contain '
+              f'*_{task}_{stim}.npz:')
+        for h in hits[:12]:
+            print(f'    {h.relative_to(root)}   ({len(list(h.glob("*.npz")))} npz)')
+        if len(hits) > 12:
+            print(f'    … and {len(hits) - 12} more')
+    elif root.exists():
+        print(f'  nothing matching *_{task}_{stim}.npz anywhere under {root} — '
+              f'that run has not been done for this task/contrast.')
 
 
 def net_arr(cfg, k, flip):
@@ -195,6 +251,30 @@ def parse_args():
     p.add_argument('--mne-gc-n-lags', type=int, default=None)
     p.add_argument('--mne-win-ms', type=float, default=None)
     p.add_argument('--mne-target-fs', type=float, default=None)
+    p.add_argument('--mne-n-pcs', type=int, default=1,
+                   help='the --n-pcs the MNE run used; part of its directory tag '
+                        '(ssgc_cwt_pc{k}_...). rerun_GC.sh uses PCS="3 4", so the '
+                        'pc1 default will NOT find those runs.')
+    p.add_argument('--bsmart-normalize', choices=['none', 'demean', 'zscore'],
+                   default='demean',
+                   help="the --normalize the BSMART run used; it is part of that "
+                        "run's directory tag. Both runners now DEFAULT to "
+                        "'demean', so use 'none' to locate legacy runs.")
+    p.add_argument('--mne-normalize', choices=['none', 'demean', 'zscore'],
+                   default='demean',
+                   help="the --normalize the MNE run used (part of its tag). "
+                        "Use 'none' for runs made before ERP removal became the "
+                        "default.")
+    p.add_argument('--bsmart-subdir', default=None,
+                   help='override the BSMART pairs_/rois_ path segment. Needed '
+                        'when the BSMART run was launched without --roi-subset '
+                        '(it then writes to all_rois) while --pairs is given '
+                        'here. Try --bsmart-subdir all_rois.')
+    p.add_argument('--mne-subdir', default=None,
+                   help='override the MNE pairs_/rois_ path segment. Needed when '
+                        'the run was launched WITHOUT --pairs (as rerun_GC.sh does): '
+                        'it then writes to rois_<sorted names> / all_rois, not to '
+                        'pairs_<...>. Try --mne-subdir all_rois.')
     p.add_argument('--bsmart-roi-subset', nargs='+', default=None,
                    help='the --roi-subset used for the BSMART run (locates its dir); '
                         'defaults to the ROIs in --pairs')
@@ -223,7 +303,14 @@ def main():
     A = load_config(bs_dir, a.task, a.stim_class, subjects, a.band)
     B = load_config(mne_dir, a.task, a.stim_class, subjects, a.band)
     if A is None or B is None:
-        print('ERROR: no subject npz found in one/both dirs.'); return
+        which = ('BSMART and MNE' if A is None and B is None
+                 else 'BSMART' if A is None else 'MNE')
+        print(f'ERROR: no subject npz found on the {which} side.')
+        if A is None:
+            probe(bs_dir, a.task, a.stim_class, 'BSMART')
+        if B is None:
+            probe(mne_dir, a.task, a.stim_class, 'MNE')
+        return
     if a.bsmart_win_ms:                       # recentre BSMART window-start times
         A['times'] = A['times'] + a.bsmart_win_ms / 2000.0
     common = align_pairs_named(A, B, a.pairs)
