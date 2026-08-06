@@ -752,11 +752,49 @@ python run_granger.py --task overtProd --stim-class prodDiff --method dSPM \
 python run_granger_sensor.py --task overtProd --stim-class all \
     --order 10 --win-ms 40 --trgc --n-jobs 8
 
-# Group stats + figures (subject-mean GC, task-vs-baseline right-tailed t-test)
+# Group stats + figures — point it at ONE results directory (recommended).
+# Runs BOTH the pointwise right-tailed t-test and the sign-flip cluster
+# permutation test (cluster-mass + TFCE); --task is read off the path.
+python granger_stats.py --gc-dir <dir of subject .npz>
+
+# or derive the directory from the run's parameters
 python granger_stats.py --space source --task overtProd --stim-class prodDiff \
     --method dSPM --atlas HCPMMP1 --feature-mode vertex_selectkbest \
     --order 10 --win-ms 40 --target-fs 500
+
+# A/B two conditions (subject-paired), e.g. ERP removal on vs off
+python compare_gc_conditions.py \
+    --dir-a .../order6_win60ms_fs200/rois_.../prodDiff \
+    --dir-b .../order6_win60ms_fs200_demean/rois_.../prodDiff \
+    --label-a raw --label-b demean
 ```
+
+#### Which test to read
+
+`granger_stats.py` answers *is this edge above its own baseline?* and writes two
+families of p-value into one CSV:
+
+| column | test | corrects across |
+|--------|------|-----------------|
+| `pval` / `sig` | pointwise right-tailed t (or `--test signrank`) vs the group baseline scalar; matches the MATLAB figures | nothing |
+| `p_cluster` / `sig_cluster` | sign-flip cluster-mass permutation over the task span, each subject vs its OWN baseline | windows, within one edge x band |
+| `p_tfce` / `sig_tfce` | same but TFCE | windows, within one edge x band |
+| `p_cluster_min_fam_fdr`, `p_tfce_min_fam_fdr` (+ `_fam_bonf`) | the above, corrected over every edge x band tested | the whole family |
+
+Report the permutation columns; the pointwise ones are uncorrected across
+windows and are kept for continuity with the v3/v4 figures.
+
+`compare_gc_conditions.py` answers a different question — *do two configs give
+different numbers?* — and its headline is the **paired t on the span mean**, not
+the cluster test. A uniform offset (which is what a preprocessing knob usually
+produces) puts a sub-threshold t at every window, so cluster-mass reports a null
+where the paired t is p=2e-4. The cluster/TFCE columns are there to localise
+*when* two conditions diverge, not to detect *whether* they do.
+
+Neither script can rescue a run with no pre-stimulus baseline: the MNE cwt
+perception runs start at about -45 ms, so their "leading 100 ms" baseline is
+mostly post-stimulus. `granger_stats.py` prints a loud warning in that case —
+use `compare_gc_conditions.py` instead of a task-vs-baseline test there.
 
 Output: per-subject `.npz` under
 `derivatives/source_estimation/GC_source_space/{task}/{method}/{atlas}/{feature_mode}/{leakage_tag}/{gc_tag}/{roiset}/{stim_class}/`
@@ -775,5 +813,6 @@ under `GC_sensor_space/`.
 | `granger_statespace.py` | State-space conditional GC (Barnett & Seth 2015; MVGC port) |
 | `run_granger.py` | Source-space runner (`--gc-mode pairwise\|conditional`) |
 | `run_granger_sensor.py` | Sensor-space runner (pseudo-channels; reproduces MATLAB PWGC) |
-| `granger_stats.py` | Group aggregation, task-vs-baseline stats, per-edge figures |
+| `granger_stats.py` | Group aggregation, task-vs-baseline stats (pointwise t/signrank + cluster & TFCE permutation), per-edge figures |
+| `compare_gc_conditions.py` | Subject-paired A/B of two GC result directories (any two configs or estimators) |
 | `validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |

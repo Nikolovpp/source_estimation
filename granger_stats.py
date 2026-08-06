@@ -1,26 +1,53 @@
 """
 Group statistics and plotting for source/sensor Granger causality.
 
-Aggregates the per-subject GC ``.npz`` files written by ``run_granger.py``
-/ ``run_granger_sensor.py``, computes the subject-mean band-limited GC
-time courses with SEM, and runs the MATLAB task-vs-baseline test at each
-task time point against the subject-averaged baseline level.  Two tests
-are available via ``--test``: a right-tailed one-sample Student's t-test
-(``ttest``, matches ``production_pwgc_data_to_python.m`` and the v4
-figures) or a right-tailed Wilcoxon signed-rank test (``signrank``,
-matches the v3 figures).  Both share the identical one-sample /
-right-tailed / vs-scalar-baseline design and differ only in parametric
-vs non-parametric.  Then renders per-edge figures.
+Aggregates the per-subject GC ``.npz`` files written by ``run_granger.py``,
+``run_granger_mne.py`` or ``run_granger_sensor.py``, computes the
+subject-mean band-limited GC time courses with SEM, and tests task
+against baseline.  TWO FAMILIES of test are run and both are written to
+the same CSV, so they can be read side by side:
+
+**Pointwise (per window)** — the MATLAB task-vs-baseline design.  At each
+task window, a right-tailed one-sample test of the subjects' GC against
+the *scalar* group-averaged baseline level.  ``--test ttest`` is the
+parametric Student's t (matches ``production_pwgc_data_to_python.m`` and
+the v4 figures); ``--test signrank`` is the non-parametric Wilcoxon
+signed-rank (matches the v3 figures).  No correction across windows —
+these are the raw per-window p-values.
+
+**Cluster-based permutation (over the whole task span)** — the same test
+used for the decoding results (``source_stats_viz.py``): a sign-flip
+one-sample permutation test over the task-window axis via
+``mne.stats.permutation_cluster_1samp_test``, run both in cluster-mass
+mode and in TFCE mode.  This one CONTROLS the family-wise error rate
+across windows, which the pointwise test does not, so it is the test to
+report.  Disable with ``--no-permutation``.
+
+Important difference between the two: the pointwise test compares each
+subject to *the group's* baseline scalar (a one-sample test against a
+constant that was itself estimated from the same subjects).  The
+permutation test uses each subject's OWN baseline mean, i.e. it tests the
+within-subject contrast ``GC(task window) - GC(baseline)``, which is what
+makes the sign-flip null valid.  The permutation result is therefore the
+better-founded of the two; the pointwise one is retained for continuity
+with the MATLAB figures.
+
+On top of the within-edge correction the permutation p-values are also
+corrected across the whole (edge x band) family — Bonferroni and
+Benjamini-Hochberg FDR — in the ``*_fam_bonf`` / ``*_fam_fdr`` columns.
 
 CLI
 ---
-    python granger_stats.py --gc-dir <dir with subject .npz> --task overtProd
-    # or point it at a source/sensor run by its parameters:
+    # point it at ONE directory of subject .npz — everything else is inferred
+    python granger_stats.py --gc-dir <dir with subject .npz>
+
+    # or derive the directory from a run's parameters
     python granger_stats.py --space source --task overtProd --stim-class prodDiff \\
         --method dSPM --atlas HCPMMP1 --feature-mode vertex_selectkbest \\
         --order 10 --win-ms 40 --target-fs 500
 """
 import os
+import re
 import sys
 import glob
 import argparse
@@ -39,6 +66,24 @@ from granger import DEFAULT_BANDS
 from run_granger import gc_tag, roiset_tag, GC_OUTPUT_ROOT
 
 GC_SENSOR_OUTPUT_ROOT = DECODE_OUTPUT_ROOT.parent / 'GC_sensor_space'
+
+# Matches source_stats_viz.py so GC and decoding are tested identically.
+N_PERMUTATIONS = 1024
+TFCE_THRESHOLD = dict(start=0, step=0.2)
+
+
+def infer_task_from_path(gc_dir):
+    """Return 'overtProd'/'perception' if either appears in ``gc_dir``, else None.
+
+    The task only affects the default task-end crop (``config.GC_TASK_END``),
+    but getting it wrong silently changes which windows are tested, so it is
+    read off the output path rather than left to the caller to remember.
+    """
+    parts = re.split(r'[\\/]+', str(gc_dir))
+    for t in ('overtProd', 'perception'):
+        if t in parts:
+            return t
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -186,11 +231,147 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Cluster-based permutation task-vs-baseline
+#   Same estimator as source_stats_viz.py uses for the decoding curves:
+#   mne.stats.permutation_cluster_1samp_test, sign-flip null, tail=1.
+# ─────────────────────────────────────────────────────────────────────
+def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
+                                 task_start_ms, alpha=0.05, task_end_ms=None,
+                                 n_permutations=N_PERMUTATIONS, tfce=True,
+                                 seed=42, n_jobs=1):
+    """Sign-flip cluster permutation of task-vs-baseline, per pair.
+
+    subj_stack : (n_subj, n_pairs, n_win)
+
+    Unlike ``task_vs_baseline`` (which tests every subject against ONE
+    group-level baseline scalar), each subject is here referenced to its
+    OWN baseline mean::
+
+        X[s, w] = GC[s, pair, w] - mean_over_baseline_windows(GC[s, pair, :])
+
+    That makes the contrast a within-subject difference, which is exactly
+    the exchangeability the sign-flip null assumes.  ``tail=1`` keeps the
+    right-tailed "task > baseline" direction of the pointwise test.
+
+    Runs twice: cluster-mass (``threshold=None``, i.e. MNE's default
+    parametric cluster-forming threshold) and TFCE.  Cluster p-values are
+    broadcast onto every window belonging to that cluster, so the returned
+    arrays line up window-for-window with ``task_vs_baseline`` output.
+
+    Returns dict of (n_pairs, n_win) arrays — ``p_cluster``, ``sig_cluster``,
+    ``cluster_id`` (1-based, 0 = not in any cluster), ``tfce_score``,
+    ``p_tfce``, ``sig_tfce`` — plus (n_pairs,) ``p_cluster_min`` /
+    ``p_tfce_min``, the smallest p-value found for that pair (the natural
+    per-edge summary).  Windows outside the task span are NaN / False / 0.
+    """
+    from mne.stats import permutation_cluster_1samp_test
+
+    n_subj, n_pairs, n_win = subj_stack.shape
+    base_mask = (window_ms >= baseline_ms[0]) & (window_ms <= baseline_ms[1])
+    if not base_mask.any():
+        base_mask = np.zeros(n_win, bool); base_mask[0] = True
+    task_mask = window_ms >= task_start_ms
+    if task_end_ms is not None:
+        task_mask &= window_ms <= task_end_ms
+    task_idx = np.where(task_mask)[0]
+
+    out = {
+        'p_cluster': np.full((n_pairs, n_win), np.nan),
+        'sig_cluster': np.zeros((n_pairs, n_win), bool),
+        'cluster_id': np.zeros((n_pairs, n_win), int),
+        'tfce_score': np.full((n_pairs, n_win), np.nan),
+        'p_tfce': np.full((n_pairs, n_win), np.nan),
+        'sig_tfce': np.zeros((n_pairs, n_win), bool),
+        'p_cluster_min': np.full(n_pairs, np.nan),
+        'p_tfce_min': np.full(n_pairs, np.nan),
+    }
+    if task_idx.size < 2:
+        return out
+
+    for pi in range(n_pairs):
+        # within-subject contrast over the task span
+        base = subj_stack[:, pi, base_mask].mean(axis=1)          # (n_subj,)
+        X = subj_stack[:, pi, task_idx] - base[:, None]           # (n_subj, n_task)
+        if not np.isfinite(X).all() or np.allclose(X, 0):
+            # an all-NaN band (e.g. theta dropped by MNE's frequency floor)
+            # or a degenerate constant — leave this pair as NaN
+            continue
+
+        _T, clusters, cl_p, _ = permutation_cluster_1samp_test(
+            X, threshold=None, n_permutations=n_permutations, tail=1,
+            out_type='mask', seed=seed, verbose=False)
+        for ci, (cl, p) in enumerate(zip(clusters, cl_p), start=1):
+            pts = task_idx[cluster_to_mask(cl, task_idx.size)]
+            out['p_cluster'][pi, pts] = p
+            out['cluster_id'][pi, pts] = ci
+            if p < alpha:
+                out['sig_cluster'][pi, pts] = True
+        if len(cl_p):
+            out['p_cluster_min'][pi] = float(np.min(cl_p))
+
+        if tfce:
+            T_tfce, _cl, p_tfce, _ = permutation_cluster_1samp_test(
+                X, threshold=TFCE_THRESHOLD, n_permutations=n_permutations,
+                tail=1, out_type='mask', seed=seed, n_jobs=n_jobs, verbose=False)
+            out['tfce_score'][pi, task_idx] = T_tfce
+            out['p_tfce'][pi, task_idx] = p_tfce
+            out['sig_tfce'][pi, task_idx] = p_tfce < alpha
+            out['p_tfce_min'][pi] = float(np.min(p_tfce))
+    return out
+
+
+def cluster_to_mask(cluster, n):
+    """Normalise one entry of ``permutation_cluster_1samp_test``'s cluster list.
+
+    With ``out_type='mask'`` and 1-D data MNE hands back a ``(slice,)`` tuple
+    rather than a boolean array.  Indexing happens to work either way for 1-D,
+    but ``.sum()``/``~`` do not, so convert once, here.
+    """
+    m = np.zeros(n, bool)
+    m[cluster] = True
+    return m
+
+
+def bh_fdr(pvals):
+    """Benjamini-Hochberg adjusted p-values; NaNs pass through as NaN."""
+    p = np.asarray(pvals, dtype=float)
+    out = np.full(p.shape, np.nan)
+    ok = np.isfinite(p)
+    if not ok.any():
+        return out
+    v = p[ok]
+    order = np.argsort(v)
+    n = v.size
+    adj = v[order] * n / np.arange(1, n + 1)
+    adj = np.minimum.accumulate(adj[::-1])[::-1]     # enforce monotonicity
+    res = np.empty(n)
+    res[order] = np.minimum(adj, 1.0)
+    out[ok] = res
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Plotting
 # ─────────────────────────────────────────────────────────────────────
+def _contiguous_spans(mask):
+    """[(start_idx, end_idx), ...] of each run of True in a 1-D bool array."""
+    mask = np.asarray(mask, bool)
+    if not mask.any():
+        return []
+    d = np.diff(mask.astype(int))
+    starts = list(np.where(d == 1)[0] + 1)
+    ends = list(np.where(d == -1)[0])
+    if mask[0]:
+        starts.insert(0, 0)
+    if mask[-1]:
+        ends.append(mask.size - 1)
+    return list(zip(starts, ends))
+
+
 def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
                        direction, out_path, bands=None, fmt='png', test='ttest',
-                       baseline_ms=None, task_start_ms=None, task_end_ms=None):
+                       baseline_ms=None, task_start_ms=None, task_end_ms=None,
+                       perm_by_band=None):
     """Plot one directed edge (src->tgt) across bands with significance.
 
     direction : 'fxy' (pair i->j) or 'fyx' (pair j->i).
@@ -200,6 +381,10 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
         span — from the baseline start through the task-end crop — so the leading
         pre-baseline segment and the trailing cropped windows (both excluded from
         the stats) are not drawn either.
+    perm_by_band : optional {band: permutation_task_vs_baseline(...) dict}.  When
+        given, windows inside a significant permutation cluster are shaded, so
+        the FWER-controlled result is visually separable from the uncorrected
+        per-window ticks.
     """
     if bands is None:
         bands = DEFAULT_BANDS
@@ -227,13 +412,25 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
                        lw=0, label='baseline window')
         if task_start_ms is not None:
             ax.axvline(task_start_ms, color='0.4', ls=':', lw=1)
+        # FWER-controlled permutation clusters, drawn UNDER the curve
+        title_extra = ''
+        if perm_by_band is not None and b in perm_by_band:
+            pm = perm_by_band[b]
+            spans = _contiguous_spans(pm['sig_cluster'][pair_idx][keep])
+            for k, (s, e) in enumerate(spans):
+                ax.axvspan(wm[s], wm[e], color='#b2182b', alpha=0.12, lw=0,
+                           label='sig. cluster' if k == 0 else None)
+            pmin = pm['p_cluster_min'][pair_idx]
+            if np.isfinite(pmin):
+                title_extra = f'  [cluster p={pmin:.3g}]'
         # significance ticks (task windows only; already within the kept span)
         sig = st['sig'][pair_idx][keep]
         if sig.any():
             ytop = np.nanmax(m + se)
             ax.plot(wm[sig], np.full(int(sig.sum()), ytop * 1.05), 's',
                     color='#b2182b', ms=3)
-        ax.set_title(f'{b} ({bands[b][0]:g}–{bands[b][1]:g} Hz)', fontsize=12)
+        ax.set_title(f'{b} ({bands[b][0]:g}–{bands[b][1]:g} Hz){title_extra}',
+                     fontsize=11)
         ax.axvline(0, color='k', lw=0.8, alpha=0.5)
         ax.set_xlim(lo, hi)
         ax.set_ylabel('GC')
@@ -241,8 +438,11 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
         ax.set_xlabel('window start (ms)')
     test_label = {'ttest': "Student's t",
                   'signrank': 'Wilcoxon signed-rank'}.get(test, test)
-    fig.suptitle(f'Granger causality: {src_name} → {tgt_name}   '
-                 f'(sig: right-tailed {test_label})', fontsize=15)
+    sig_note = f'ticks: right-tailed {test_label} (uncorrected)'
+    if perm_by_band is not None:
+        sig_note += '   |   shading: permutation cluster p<0.05 (FWER)'
+    fig.suptitle(f'Granger causality: {src_name} → {tgt_name}\n{sig_note}',
+                 fontsize=13)
     axes[0].legend(fontsize=9, loc='upper left')
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, format=fmt, bbox_inches='tight')
@@ -254,12 +454,19 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
               alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
-              baseline_dur_ms=100.0, edge_guard_ms=0.0):
+              baseline_dur_ms=100.0, edge_guard_ms=0.0, permutation=True,
+              n_permutations=N_PERMUTATIONS, tfce=True, seed=42, n_jobs=1):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
-    ``test`` selects the task-vs-baseline test ('ttest' or 'signrank').
-    Figure and CSV names are tagged with it, so both tests can be written
-    into the same ``out_dir`` and diffed edge-by-edge.
+    ``test`` selects the POINTWISE task-vs-baseline test ('ttest' or
+    'signrank').  Figure and CSV names are tagged with it, so both tests
+    can be written into the same ``out_dir`` and diffed edge-by-edge.
+
+    ``permutation`` additionally runs the sign-flip cluster permutation
+    test (cluster-mass + TFCE) over the task span, per edge and band, and
+    corrects the resulting p-values across the whole (edge x band) family.
+    That is the FWER-controlled result; the pointwise columns are not
+    corrected across windows at all.
 
     The baseline is the epoch's ACTUAL pre-stimulus baseline period — the
     leading ``baseline_dur_ms`` (100 ms) of the moving-window axis — derived
@@ -299,10 +506,31 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     print(f'  GC baseline window: [{baseline_ms[0]:g}, {baseline_ms[1]:g}] ms '
           f'(epoch leading {baseline_dur_ms:g} ms); '
           f'task windows [{task_start_ms:g}, {end_str}] ms')
+    # The default baseline is the LEADING part of the moving-window axis, which
+    # is only a real pre-stimulus baseline if that axis starts before 0.  The
+    # MNE cwt runs on the short perception crop start at about -45 ms, so the
+    # default "baseline" is almost entirely POST-stimulus and every
+    # task-vs-baseline p-value below would be meaningless.
+    if baseline_ms[1] > 0:
+        frac_post = ((min(baseline_ms[1], float(window_ms[-1])) - max(baseline_ms[0], 0.0))
+                     / (baseline_ms[1] - baseline_ms[0]))
+        print(f'  *** WARNING: the baseline window extends past t=0 '
+              f'({100 * max(0.0, frac_post):.0f}% of it is post-stimulus). '
+              f'The moving-window axis starts at {window_ms[0]:g} ms, so this '
+              f'run has no usable pre-stimulus baseline.\n'
+              f'  *** Task-vs-baseline results here compare the task to ITSELF. '
+              f'Either re-run with a longer crop, or pass an explicit '
+              f'--baseline-start/--baseline-end, or use compare_gc_conditions.py '
+              f'to contrast two conditions instead of testing against baseline.')
 
     roi = agg['roi_names']
     n_pairs = len(agg['pair_i'])
     os.makedirs(out_dir, exist_ok=True)
+
+    if permutation:
+        print(f'  permutation: {n_permutations} sign-flips, cluster-mass'
+              f'{" + TFCE" if tfce else ""}, per edge x band '
+              f'({2 * n_pairs * len(band_names)} tests)')
 
     rows = []
     for direction, key in [('fxy', 'fxy'), ('fyx', 'fyx')]:
@@ -311,6 +539,14 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                                 task_start_ms, alpha, test, task_end_ms)
             for b in band_names
         }
+        perm_by_band = None
+        if permutation:
+            perm_by_band = {
+                b: permutation_task_vs_baseline(
+                    agg[key][b], agg['window_ms'], baseline_ms, task_start_ms,
+                    alpha, task_end_ms, n_permutations, tfce, seed, n_jobs)
+                for b in band_names
+            }
         for pi in range(n_pairs):
             i, j = int(agg['pair_i'][pi]), int(agg['pair_j'][pi])
             if direction == 'fxy':
@@ -320,24 +556,93 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
             fname = os.path.join(out_dir, f'GC_{src}_to_{tgt}_{test}.{fmt}')
             plot_directed_edge(agg, stats_by_band, src, tgt, pi, direction,
                                fname, bands, fmt, test, baseline_ms,
-                               task_start_ms, task_end_ms)
+                               task_start_ms, task_end_ms, perm_by_band)
             for b in band_names:
                 st = stats_by_band[b]
+                pm = perm_by_band[b] if perm_by_band is not None else None
                 for w, wm in enumerate(agg['window_ms']):
-                    rows.append({
+                    row = {
                         'src': src, 'tgt': tgt, 'band': b, 'window_ms': wm,
                         'test': test,
                         'gc_mean': st['mean'][pi, w], 'gc_sem': st['sem'][pi, w],
                         'baseline_mean': st['baseline_mean'][pi],
                         'pval': st['pval'][pi, w], 'sig': st['sig'][pi, w],
-                    })
+                    }
+                    if pm is not None:
+                        row.update({
+                            'p_cluster': pm['p_cluster'][pi, w],
+                            'sig_cluster': pm['sig_cluster'][pi, w],
+                            'cluster_id': pm['cluster_id'][pi, w],
+                            'tfce_score': pm['tfce_score'][pi, w],
+                            'p_tfce': pm['p_tfce'][pi, w],
+                            'sig_tfce': pm['sig_tfce'][pi, w],
+                            'p_cluster_min': pm['p_cluster_min'][pi],
+                            'p_tfce_min': pm['p_tfce_min'][pi],
+                        })
+                    rows.append(row)
+    df = pd.DataFrame(rows)
+
+    # ── correction across the (edge x band) family ──────────────────────
+    # The cluster/TFCE p-values already control FWER across WINDOWS within
+    # one edge x band; nothing yet controls the fact that we ran that test
+    # once per edge and band.  Correct the per-edge minimum p-value over
+    # that family and broadcast it back onto the edge's rows.
+    if permutation:
+        n_fam = 2 * n_pairs * len(band_names)
+        keys = ['src', 'tgt', 'band']
+        for col in ['p_cluster_min', 'p_tfce_min']:
+            fam = df.drop_duplicates(keys)[keys + [col]].copy()
+            fam[col + '_fam_bonf'] = np.minimum(fam[col] * n_fam, 1.0)
+            fam[col + '_fam_fdr'] = bh_fdr(fam[col].to_numpy())
+            df = df.merge(fam.drop(columns=[col]), on=keys, how='left')
+        for base in ['p_cluster_min', 'p_tfce_min']:
+            for kind in ['bonf', 'fdr']:
+                df[f'sig_{base[:-4]}_fam_{kind}'] = \
+                    df[f'{base}_fam_{kind}'] < alpha
+
     csv_path = os.path.join(out_dir, f'gc_task_vs_baseline_stats_{test}.csv')
-    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    df.to_csv(csv_path, index=False)
+
     n_edges = 2 * n_pairs
     print(f'  {len(agg["subjects"])} subjects, {n_edges} directed edges, '
           f'{len(band_names)} bands, test={test} -> {out_dir}')
     print(f'  figures: {n_edges} + stats CSV: {csv_path}')
+    if permutation:
+        _print_perm_summary(df, alpha, out_dir, test)
     return csv_path
+
+
+def _print_perm_summary(df, alpha, out_dir, test):
+    """One line per surviving edge x band, and the same to a .log file."""
+    keys = ['src', 'tgt', 'band']
+    edge = df.drop_duplicates(keys)[keys + [
+        'p_cluster_min', 'p_cluster_min_fam_bonf', 'p_cluster_min_fam_fdr',
+        'p_tfce_min', 'p_tfce_min_fam_fdr']].copy()
+    edge = edge.sort_values('p_cluster_min')
+    lines = ['Permutation task-vs-baseline (right-tailed, sign-flip)',
+             f'  {len(edge)} edge x band tests; alpha={alpha}',
+             '',
+             f'{"edge":>22s} {"band":>10s} {"p_clust":>9s} {"bonf":>9s} '
+             f'{"fdr":>9s} {"p_tfce":>9s} {"tfce_fdr":>9s}']
+    n_raw = n_fdr = 0
+    for _, r in edge.iterrows():
+        if not np.isfinite(r.p_cluster_min):
+            continue
+        n_raw += int(r.p_cluster_min < alpha)
+        n_fdr += int(r.p_cluster_min_fam_fdr < alpha)
+        flag = '  **' if r.p_cluster_min_fam_fdr < alpha else \
+               ('  *' if r.p_cluster_min < alpha else '')
+        lines.append(f'{r.src + "->" + r.tgt:>22s} {r.band:>10s} '
+                     f'{r.p_cluster_min:9.4f} {r.p_cluster_min_fam_bonf:9.4f} '
+                     f'{r.p_cluster_min_fam_fdr:9.4f} {r.p_tfce_min:9.4f} '
+                     f'{r.p_tfce_min_fam_fdr:9.4f}{flag}')
+    lines += ['', f'  {n_raw} edge x band significant uncorrected, '
+                  f'{n_fdr} after FDR across the family',
+              '  (* uncorrected, ** survives FDR)']
+    text = '\n'.join(lines)
+    print('\n' + text)
+    with open(os.path.join(out_dir, f'gc_permutation_summary_{test}.log'), 'w') as fh:
+        fh.write(text + '\n')
 
 
 def _derive_gc_dir(args):
@@ -352,9 +657,16 @@ def _derive_gc_dir(args):
 def parse_args():
     p = argparse.ArgumentParser(description='Group GC stats + plots')
     p.add_argument('--gc-dir', default=None,
-                   help='Directory of subject GC .npz (overrides the derived path)')
-    p.add_argument('--out-dir', default=None, help='Where to write figures/CSV')
-    p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
+                   help='Directory of subject GC .npz (overrides the derived '
+                        'path). This is the recommended way to call the script: '
+                        'point it at ONE results directory and --task is read '
+                        'off the path.')
+    p.add_argument('--out-dir', default=None,
+                   help='Where to write figures/CSV (default: <gc-dir>/group_stats)')
+    p.add_argument('--task', default=None, choices=['perception', 'overtProd'],
+                   help='Only sets the default task-end crop '
+                        '(config.GC_TASK_END). Inferred from --gc-dir when it '
+                        'contains the task name; required otherwise.')
     p.add_argument('--alpha', type=float, default=0.05)
     p.add_argument('--baseline-start', type=float, default=None,
                    help="GC baseline window start (s); default is the epoch's "
@@ -378,7 +690,21 @@ def parse_args():
                    help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
                         "Student's t; matches production_pwgc_data_to_python.m and "
                         "the v4 figures) or 'signrank' (right-tailed Wilcoxon "
-                        "signed-rank; matches the v3 figures)")
+                        "signed-rank; matches the v3 figures). The permutation "
+                        'test below runs alongside it regardless.')
+    p.add_argument('--no-permutation', dest='permutation', action='store_false',
+                   default=True,
+                   help='Skip the sign-flip cluster permutation test (it is on '
+                        'by default and is the FWER-controlled result)')
+    p.add_argument('--n-permutations', type=int, default=N_PERMUTATIONS,
+                   help=f'sign-flips per edge x band (default {N_PERMUTATIONS}, '
+                        'same as the decoding stats)')
+    p.add_argument('--no-tfce', dest='tfce', action='store_false', default=True,
+                   help='Skip the TFCE pass (keeps cluster-mass only; ~2x faster)')
+    p.add_argument('--seed', type=int, default=42,
+                   help='permutation RNG seed, so reruns are reproducible')
+    p.add_argument('--n-jobs', type=int, default=1,
+                   help='parallel jobs inside the TFCE permutation')
     p.add_argument('--format', default='png', choices=['png', 'svg'])
     # For deriving --gc-dir from a run's parameters:
     p.add_argument('--space', default='source', choices=['source', 'sensor'])
@@ -390,7 +716,8 @@ def parse_args():
     p.add_argument('--order', type=int, default=10)
     p.add_argument('--win-ms', type=float, default=40.0)
     p.add_argument('--target-fs', type=float, default=500.0)
-    p.add_argument('--normalize', default='none')
+    p.add_argument('--normalize', default='demean',
+                   help='matches run_granger.py --normalize (part of the path)')
     p.add_argument('--gc-mode', default='pairwise',
                    choices=['pairwise', 'conditional'])
     p.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
@@ -401,17 +728,36 @@ def parse_args():
 
 def main():
     args = parse_args()
-    gc_dir = args.gc_dir if args.gc_dir else str(_derive_gc_dir(args))
+    if args.gc_dir:
+        gc_dir = args.gc_dir
+        task = args.task or infer_task_from_path(gc_dir)
+        if task is None:
+            raise SystemExit(
+                f'Could not infer --task from {gc_dir!r} (no "overtProd" or '
+                '"perception" path component). Pass --task explicitly.')
+        if args.task and args.task != infer_task_from_path(gc_dir) \
+                and infer_task_from_path(gc_dir) is not None:
+            print(f'WARNING: --task {args.task} but the path says '
+                  f'{infer_task_from_path(gc_dir)}; using {args.task}.')
+    else:
+        if args.task is None:
+            raise SystemExit('--task is required when --gc-dir is not given.')
+        gc_dir, task = str(_derive_gc_dir(args)), args.task
     out_dir = args.out_dir if args.out_dir else os.path.join(gc_dir, 'group_stats')
     baseline_ms = None
     if args.baseline_start is not None and args.baseline_end is not None:
         baseline_ms = (args.baseline_start * 1000.0, args.baseline_end * 1000.0)
     task_start_ms = args.task_start * 1000.0 if args.task_start is not None else None
     task_end_ms = args.task_end * 1000.0 if args.task_end is not None else None
-    print(f'GC group stats (test={args.test})\n  gc-dir: {gc_dir}')
-    run_stats(gc_dir, args.task, out_dir, baseline_ms=baseline_ms,
+    print(f'GC group stats (pointwise test={args.test}, '
+          f'permutation={"on" if args.permutation else "off"})\n'
+          f'  gc-dir: {gc_dir}\n  task:   {task}')
+    run_stats(gc_dir, task, out_dir, baseline_ms=baseline_ms,
               task_start_ms=task_start_ms, alpha=args.alpha, fmt=args.format,
-              test=args.test, task_end_ms=task_end_ms, edge_guard_ms=args.edge_guard)
+              test=args.test, task_end_ms=task_end_ms,
+              edge_guard_ms=args.edge_guard, permutation=args.permutation,
+              n_permutations=args.n_permutations, tfce=args.tfce,
+              seed=args.seed, n_jobs=args.n_jobs)
 
 
 if __name__ == '__main__':
