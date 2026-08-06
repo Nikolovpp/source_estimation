@@ -100,6 +100,17 @@ go () {  # go <tag> <logname> <extra args...>
     fi
 }
 
+# Preflight: resolve one config's caches before launching anything. Cheap, and
+# it turns "wrong paths" from a wall of tracebacks into one line, up front.
+if [ "$DRY_RUN" != "1" ]; then
+    _t=${TASKS%% *}; _s=${STIMS%% *}; _m=${METHODS%% *}
+    if ! $RUN --task "$_t" --stim-class "$_s" --method "$_m" --check >/dev/null 2>&1; then
+        echo "PREFLIGHT FAILED — no ROI timeseries caches resolved. Details:" >&2
+        $RUN --task "$_t" --stim-class "$_s" --method "$_m" --check >&2
+        exit 2
+    fi
+fi
+
 t0=$(date +%s)
 echo "configs: $CONFIGS   tasks: $TASKS   stims: $STIMS   methods: $METHODS"
 echo "ROIs: $ROIS"
