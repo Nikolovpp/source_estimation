@@ -107,13 +107,29 @@ PRIMARY_TRIPLES = [
 # Data
 # ─────────────────────────────────────────────────────────────────────
 def load_roi_vertices(path, rois):
-    """Return {roi: (n_trials, n_vertices, n_times)} or reduced (n_trials, n_times)."""
+    """Return {roi: (n_trials, n_vertices, n_times)}, plus the time axis and fs.
+
+    NOTE on axis order. ``decoding_io.save_roi_timeseries`` stores each ROI as
+    ``X_roi.transpose(0, 2, 1)``, i.e. **(n_trials, n_times, n_vertices)** —
+    time on axis 1, vertices last. Everything downstream here wants vertices on
+    axis 1 and time last, so 3-D arrays are transposed back on load. Getting
+    this wrong resamples the vertex axis and yields ROIs of differing length.
+    """
     z = np.load(path, allow_pickle=True)
     out, times = {}, z['times']
+    n_t = len(times)
     for r in rois:
-        for key in (f'vertex__{r}', f'vc__{r}', r):
+        for key in (r, f'vertex__{r}', f'vc__{r}'):
             if key in z.files:
-                out[r] = z[key]
+                v = z[key]
+                if v.ndim == 3:
+                    v = v.transpose(0, 2, 1)          # -> (trials, vertices, time)
+                if v.shape[-1] != n_t:
+                    raise ValueError(
+                        f"{os.path.basename(path)}: ROI '{r}' has {v.shape[-1]} "
+                        f"samples on its last axis but times has {n_t}; "
+                        f"stored shape was {z[key].shape}. Axis order changed?")
+                out[r] = v
                 break
     return out, times, float(z['sfreq']) if 'sfreq' in z.files else None
 
@@ -219,7 +235,8 @@ def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
             det_red = np.linalg.det(S_r[np.ix_(pos[b], pos[b])])
             m3_par[(a, b)] = float(np.log(max(det_red, 1e-300) /
                                           max(det_full, 1e-300)))
-            st, _ = ss_conditional_gc(A, Sig, x=blocks[b], y=blocks[a])
+            # returns a bare float when freqs/fs are omitted
+            st = ss_conditional_gc(A, Sig, x=blocks[b], y=blocks[a])
             m3_ss[(a, b)] = float(st)
         out['m3_par'], out['m3_ss'] = m3_par, m3_ss
 
