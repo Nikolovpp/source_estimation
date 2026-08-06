@@ -69,6 +69,7 @@ from scipy.signal import resample_poly
 from joblib import Parallel, delayed
 
 import config
+from config import find_cached_npz
 from granger import (fit_mvar, pairwise_spectral_gc, conditional_spectral_gc,
                      time_domain_conditional_gc, band_average)
 from granger_statespace import ss_conditional_gc
@@ -105,16 +106,6 @@ PRIMARY_TRIPLES = [
 # ─────────────────────────────────────────────────────────────────────
 # Data
 # ─────────────────────────────────────────────────────────────────────
-def _cache_path(roots, task, atlas, leak, subj, stim):
-    leak_tag = 'leakage_corrected' if leak else 'raw'
-    sub = f'{task}_{atlas}_{leak_tag}'
-    for root in roots:
-        p = os.path.join(root, sub, f'{subj}_{task}_{stim}.npz')
-        if os.path.exists(p):
-            return p
-    return None
-
-
 def load_roi_vertices(path, rois):
     """Return {roi: (n_trials, n_vertices, n_times)} or reduced (n_trials, n_times)."""
     z = np.load(path, allow_pickle=True)
@@ -355,6 +346,8 @@ def main():
     p.add_argument('--stim-class', required=True, choices=['prodDiff', 'percDiff'])
     p.add_argument('--method', required=True, choices=['dSPM', 'LCMV'])
     p.add_argument('--atlas', default='custom')
+    p.add_argument('--feature-mode', default='vertex_selectkbest',
+                   help='which cache directory to read (see config.cache_feat_mode)')
     p.add_argument('--leakage-correction', action='store_true', default=True)
     p.add_argument('--rois', nargs='+',
                    default=['awfa-lh', 'ifc-lh', 'owfa-lh', 'pmc-lh',
@@ -373,6 +366,8 @@ def main():
     p.add_argument('--n-jobs', type=int, default=64)
     p.add_argument('--self-test', action='store_true',
                    help='verify the parametric/state-space identity and exit')
+    p.add_argument('--check', action='store_true',
+                   help='resolve every subject cache, report, and exit without computing')
     if '--self-test' in sys.argv:
         for a in ('--task', '--stim-class', '--method'):
             for act in p._actions:
@@ -399,9 +394,18 @@ def main():
     elif args.triples == 'exhaustive':
         triples = list(itertools.permutations(args.rois, 3))
 
-    subjects = args.subjects or list(config.SUBJECTS)
-    roots = [config.ROI_TIMESERIES_ROOT] + [
-        r for r in os.environ.get('ROI_TIMESERIES_EXTERNAL', '').split(':') if r]
+    subjects = args.subjects or list(config.SUBJECT_IDS)
+    if args.check:
+        found = 0
+        for s_ in subjects:
+            pth = find_cached_npz(args.task, args.method, args.atlas,
+                                  args.feature_mode, args.leakage_correction,
+                                  s_, args.stim_class)
+            print(f'  {s_}: {pth if pth else "MISSING"}')
+            found += pth is not None
+        print(f'{found}/{len(subjects)} caches resolved for '
+              f'{args.task}/{args.method}/{args.atlas}/{args.feature_mode}')
+        sys.exit(0 if found else 2)
     out_root = args.out_root or os.path.join(
         os.path.dirname(config.DECODE_OUTPUT_ROOT), 'GC_routes')
 
@@ -421,15 +425,21 @@ def main():
                                tag, args.stim_class)
         jobs = []
         for s in subjects:
-            path = _cache_path(roots, args.task, args.atlas,
-                               args.leakage_correction, s, args.stim_class)
+            path = find_cached_npz(args.task, args.method, args.atlas,
+                                   args.feature_mode, args.leakage_correction,
+                                   s, args.stim_class)
             if path:
-                jobs.append((path, s))
+                jobs.append((str(path), s))
             else:
                 print(f'  [skip] no cache for {s}')
         if not jobs:
-            print(f'  [skip] {tag}: no subjects found')
-            continue
+            print(f'ERROR: no cached ROI timeseries found for {tag}.', file=sys.stderr)
+            print(f'  looked for task={args.task} method={args.method} '
+                  f'atlas={args.atlas} feature_mode={args.feature_mode} '
+                  f'leakage={args.leakage_correction}', file=sys.stderr)
+            print('  run run_source_localize.py first, or check '
+                  'ROI_TIMESERIES_EXTERNAL in config.env.', file=sys.stderr)
+            sys.exit(2)
         print(f'\n=== {tag}: {len(jobs)} subjects ===')
         t0 = time.time()
         results = Parallel(n_jobs=args.n_jobs, verbose=5)(
