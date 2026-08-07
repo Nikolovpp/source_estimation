@@ -173,19 +173,46 @@ def lcmv_collapse_score(v):
 # ─────────────────────────────────────────────────────────────────────
 # The two estimators, on one window
 # ─────────────────────────────────────────────────────────────────────
+class _Unstable(Exception):
+    """A fit or DARE solve that the data cannot support at this order."""
+
+
+def _nan_like(freqs):
+    return np.full(len(freqs), np.nan)
+
+
 def _both_conditional(X, order, freqs, fs, src, tgt):
     """F_{src->tgt | rest} from both estimators on the SAME fitted MVAR.
 
     Returns (parametric_spec, statespace_spec, parametric_time, statespace_time).
     Fitting once and sharing it is what makes this a comparison of the reduced
     model rather than of two independent fits.
+
+    An over-specified order leaves too few usable points per trial: the MVAR fit
+    becomes near-singular and the DARE ill-conditioned. That is a property of the
+    (window, order) pair, not a bug, so each estimator degrades to NaN
+    independently rather than taking the whole subject down with it.
     """
-    A, Sig = fit_mvar(X, order)
-    par_s = conditional_spectral_gc(X, order, freqs, fs, pairs=[(src, tgt)])[(src, tgt)]
-    td = time_domain_conditional_gc(X, order, pairs=[(src, tgt)])
-    par_t = float(list(td.values())[0])
-    ss_t, ss_s = ss_conditional_gc(A, Sig, x=[tgt], y=[src], freqs=freqs, fs=fs)
-    return par_s, ss_s, par_t, float(ss_t)
+    try:
+        A, Sig = fit_mvar(X, order)
+    except Exception:
+        raise _Unstable('mvar')
+    try:
+        par_s = conditional_spectral_gc(X, order, freqs, fs,
+                                        pairs=[(src, tgt)])[(src, tgt)]
+        td = time_domain_conditional_gc(X, order, pairs=[(src, tgt)])
+        par_t = float(list(td.values())[0])
+    except Exception:
+        par_s, par_t = _nan_like(freqs), np.nan
+    try:
+        ss_t, ss_s = ss_conditional_gc(A, Sig, x=[tgt], y=[src],
+                                       freqs=freqs, fs=fs)
+        ss_t = float(ss_t)
+    except Exception:
+        # scipy raises ValueError on an ill-conditioned generalized Schur
+        # reordering; LinAlgError on a singular solve. Both mean the same thing.
+        ss_s, ss_t = _nan_like(freqs), np.nan
+    return par_s, ss_s, par_t, ss_t
 
 
 def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
@@ -204,17 +231,24 @@ def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
     if want_m0 and scalar and n_roi >= 2:
         a, b = roi_names[0], roi_names[1]
         two = seg[:, [idx[a], idx[b]], :]
-        p_xy, _ = pairwise_spectral_gc(two, order, freqs, fs)
-        A2, S2 = fit_mvar(two, order)
-        _, s_xy = ss_conditional_gc(A2, S2, x=[1], y=[0], freqs=freqs, fs=fs)
-        out['m0_max_abs_diff'] = float(np.max(np.abs(p_xy - s_xy)))
+        try:
+            p_xy, _ = pairwise_spectral_gc(two, order, freqs, fs)
+            A2, S2 = fit_mvar(two, order)
+            _, s_xy = ss_conditional_gc(A2, S2, x=[1], y=[0], freqs=freqs, fs=fs)
+            out['m0_max_abs_diff'] = float(np.max(np.abs(p_xy - s_xy)))
+        except Exception:
+            out['m0_max_abs_diff'] = np.nan
 
     # ---- M1 / M2: fully conditional + time domain, on the joint model ----
     if scalar:
         m1_par, m1_ss, m2_par, m2_ss = {}, {}, {}, {}
         for a, b in itertools.permutations(roi_names, 2):
-            ps, ss, pt, st = _both_conditional(seg, order, freqs, fs,
-                                               idx[a], idx[b])
+            try:
+                ps, ss, pt, st = _both_conditional(seg, order, freqs, fs,
+                                                   idx[a], idx[b])
+            except _Unstable:
+                ps = ss = _nan_like(freqs); pt = st = np.nan
+                out['unstable'] = out.get('unstable', 0) + 1
             m1_par[(a, b)] = ps; m1_ss[(a, b)] = ss
             m2_par[(a, b)] = pt; m2_ss[(a, b)] = st
         out['m1_par'], out['m1_ss'] = m1_par, m1_ss
@@ -223,21 +257,32 @@ def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
     # ---- M3: block GC when the ROIs carry >1 component ----
     else:
         m3_par, m3_ss = {}, {}
-        A, Sig = fit_mvar(seg, order)
+        try:
+            A, Sig = fit_mvar(seg, order)
+        except Exception:
+            out['unstable'] = out.get('unstable', 0) + 1
+            return out
         for a, b in itertools.permutations(roi_names, 2):
             # parametric block GC: reduced model fitted by dropping the source
             keep = [c for r in roi_names if r != a for c in blocks[r]]
             sub = seg[:, keep, :]
             pos = {r: [keep.index(c) for c in blocks[r]]
                    for r in roi_names if r != a}
-            A_r, S_r = fit_mvar(sub, order)
-            det_full = np.linalg.det(Sig[np.ix_(blocks[b], blocks[b])])
-            det_red = np.linalg.det(S_r[np.ix_(pos[b], pos[b])])
-            m3_par[(a, b)] = float(np.log(max(det_red, 1e-300) /
-                                          max(det_full, 1e-300)))
-            # returns a bare float when freqs/fs are omitted
-            st = ss_conditional_gc(A, Sig, x=blocks[b], y=blocks[a])
-            m3_ss[(a, b)] = float(st)
+            try:
+                A_r, S_r = fit_mvar(sub, order)
+                det_full = np.linalg.det(Sig[np.ix_(blocks[b], blocks[b])])
+                det_red = np.linalg.det(S_r[np.ix_(pos[b], pos[b])])
+                m3_par[(a, b)] = float(np.log(max(det_red, 1e-300) /
+                                              max(det_full, 1e-300)))
+            except Exception:
+                m3_par[(a, b)] = np.nan
+            try:
+                # returns a bare float when freqs/fs are omitted
+                m3_ss[(a, b)] = float(ss_conditional_gc(A, Sig, x=blocks[b],
+                                                        y=blocks[a]))
+            except Exception:
+                m3_ss[(a, b)] = np.nan
+                out['unstable'] = out.get('unstable', 0) + 1
         out['m3_par'], out['m3_ss'] = m3_par, m3_ss
 
     # ---- F: triple-wise conditional, F_{a->c | b} on 3 variables ----
@@ -246,7 +291,11 @@ def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
         pair_cache = {}
         for a, b, c in triples:
             three = seg[:, [idx[a], idx[b], idx[c]], :]
-            ps, ss, _, _ = _both_conditional(three, order, freqs, fs, 0, 2)
+            try:
+                ps, ss, _, _ = _both_conditional(three, order, freqs, fs, 0, 2)
+            except _Unstable:
+                ps = ss = _nan_like(freqs)
+                out['unstable'] = out.get('unstable', 0) + 1
             f_par[(a, b, c)] = ps
             f_ss[(a, b, c)] = ss
             if (a, c) not in pair_cache:            # the unconditional baseline
@@ -301,9 +350,11 @@ def run_subject(path, subj, win_ms, order, target_fs, n_pcs, rois, triples,
             X[:, :, s:s + win], order, FREQS, target_fs, rois, blocks,
             triples, want_m0=(wi == 0)))
 
+    n_unstable = sum(w.get('unstable', 0) for w in per_window)
     return dict(subject=subj, window_ms=t_axis[(starts + win // 2).astype(int)],
                 per_window=per_window, collapse=collapse, k_caps=k_caps,
-                n_trials=int(X.shape[0]), elapsed=time.time() - t_start)
+                n_trials=int(X.shape[0]), n_unstable=n_unstable,
+                n_windows=len(per_window), elapsed=time.time() - t_start)
 
 
 def _stack(per_window, key, freqs):
@@ -476,6 +527,10 @@ def main():
                     if v['used'] < v['requested']]
             if caps:
                 print(f"  [PC cap] {res['subject']}: {', '.join(caps)}")
+            if res.get('n_unstable'):
+                print(f"  [unstable] {res['subject']}: {res['n_unstable']} "
+                      f"NaN cells over {res['n_windows']} windows "
+                      f"(order too high for this window?)")
             bad = [f'{r}={c:.2f}' for r, c in res['collapse'].items()
                    if np.isfinite(c) and c > 0.90]
             if bad:
