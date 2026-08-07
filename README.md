@@ -816,3 +816,43 @@ under `GC_sensor_space/`.
 | `granger_stats.py` | Group aggregation, task-vs-baseline stats (pointwise t/signrank + cluster & TFCE permutation), per-edge figures |
 | `compare_gc_conditions.py` | Subject-paired A/B of two GC result directories (any two configs or estimators) |
 | `validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |
+
+### GC route comparison — reading the outputs
+
+`run_granger_routes.py` writes one `.npz` per subject; `granger_routes_stats.py`
+turns a config directory into three CSVs (`missingness`, `arm_contrast`,
+`mediation`).
+
+**Read the missingness report first — it is printed before anything else.**
+This pipeline normally produces no NaN at all, so a NaN is a signal rather than
+noise, and it is **not missing at random**. A (window, edge) cell is marked NaN
+when the estimator cannot support the fit: a singular MVAR, an ill-conditioned
+DARE (scipy's "generalized Schur form" error), or a failed reduced-model
+regression. Those failures concentrate precisely where samples-per-parameter is
+worst — high order, short window, few trials.
+
+The consequence matters for the order sweep in particular: averaging over
+surviving windows at a high order would use a *biased subsample* — the windows
+that happened to be well conditioned — and could make a high order look better
+behaved than it is, inverting the conclusion. So every statistic reports
+`n_valid` and `nan_frac` next to the estimate, cells above `--max-nan-frac`
+(default 0.20) are excluded from group tests and listed by name, and the arm
+contrast is computed only on windows where **both** arms are finite, so the two
+are never compared on different subsets.
+
+If the report reads 0% everywhere, which is the usual case, none of this bites
+and the numbers are the plain ones.
+
+```bash
+python granger_routes_stats.py --gc-dir <GC_routes/.../win60ms_order6_fs200_pc1/prodDiff>
+```
+
+| column | meaning |
+|---|---|
+| `nan_frac`, `n_valid` | how much of the cell survived, and how many subjects entered the test |
+| `ratio_par_over_ss` | parametric ÷ state-space; 1.0 means the reduced model made no difference |
+| `M` | mediation index `1 - F(a->c|b)/F(a->c)`; ~1 means `b` explains the influence away |
+| `family` | `primary` (pre-registered triples) and `exploratory` are FDR-corrected separately |
+
+Mediation and common-drive both push `M` toward 1, so a serial chain needs both
+legs to carry influence — `M` alone is necessary, not sufficient.
