@@ -11,10 +11,10 @@
 #             bivariate GC (identical to parametric BSMART pairwise, 1.67e-16),
 #             3 ROIs give A->B|C. Spectral in both cases — this project does
 #             not compute time-domain GC.
-#   subsets : two triples plus the three named pathways bivariately, so every
-#             pathway appears both conditioned and unconditioned. 5 subsets x 11
-#             feasible cells x 2 tasks x 2 contrasts = 220 runs; trim with
-#             SUBSETS=..., WINDOWS=..., ORDERS=... or TASKS=... .
+#   subsets : two triples plus all six bivariate pairs of the four ROIs, so
+#             every edge appears both conditioned and unconditioned.
+#             8 subsets x 11 feasible cells x 2 tasks x 2 contrasts = 352 runs;
+#             trim with SUBSETS=..., WINDOWS=..., ORDERS=... or TASKS=... .
 #
 # WHY THIS AND NOT THE GC_routes SWEEPS: run_granger_routes.py computes
 # conditional spectral, time-domain and block GC. It stores band-resolved
@@ -95,7 +95,9 @@ TARGET_FS="${TARGET_FS:-200}"
 # Semicolon-separated ROI subsets; each is run as its own sweep. The three
 # named pathways are temporal<->frontal, frontal<->parietal, temporal<->parietal.
 # The two triples give every one of those pairs conditioned on the third ROI;
-# the pairs give the same edges bivariately. pmc-lh is the second frontal node,
+# the pairs cover ALL SIX bivariate combinations of the four ROIs, so every
+# edge that appears in a triple also has an unconditioned counterpart.
+# pmc-lh is the second frontal node,
 # so it needs its own triple rather than being added to the first (that would
 # make the conditioning set two ROIs).
 SUBSETS="${SUBSETS:-\
@@ -103,7 +105,10 @@ awfa-lh ifc-lh tpc-lh; \
 awfa-lh pmc-lh tpc-lh; \
 awfa-lh ifc-lh; \
 ifc-lh tpc-lh; \
-awfa-lh tpc-lh}"
+awfa-lh tpc-lh; \
+awfa-lh pmc-lh; \
+pmc-lh tpc-lh; \
+ifc-lh pmc-lh}"
 # Back-compat: ROIS=... still works and collapses the run to that one subset.
 if [ -n "${ROIS:-}" ]; then SUBSETS="$ROIS"; fi
 IFS=';' read -ra SUBSET_ARR <<< "$SUBSETS"
