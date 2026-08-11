@@ -478,6 +478,16 @@ def conditional_spectral_gc(X, order, freqs, fs, pairs=None):
     return out
 
 
+# Errors that mean "this window's MVAR fit is ill-conditioned", not "the code
+# is wrong". armorf's Morf recursion Choleskys the backward prediction-error
+# covariance (granger.py:131); that matrix loses positive-definiteness when the
+# channels are near-collinear in a window — an LCMV ROI collapse, or simply too
+# few samples for the order. LAPACK reports "k-th leading minor is not positive
+# definite" via LinAlgError; a singular solve gives LinAlgError too, and a
+# degenerate covariance can surface as ValueError.
+_ILL_CONDITIONED = (np.linalg.LinAlgError, ValueError, FloatingPointError)
+
+
 def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
                                  pairs=None):
     """Sliding-window conditional spectral GC for the requested pairs.
@@ -497,12 +507,21 @@ def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
         pairs = [(s, t) for s in range(n) for t in range(n) if s != t]
 
     gc = {p: np.empty((freqs.size, starts.size)) for p in pairs}
+    n_bad = 0
     for w, s in enumerate(starts):
         seg = X[:, :, s:s + win_samples]
-        res = conditional_spectral_gc(seg, order, freqs, fs, pairs=pairs)
+        try:
+            res = conditional_spectral_gc(seg, order, freqs, fs, pairs=pairs)
+        except _ILL_CONDITIONED:
+            # Degrade THIS window to NaN rather than killing the subject — and
+            # with it, under joblib, every other subject in the pool.
+            for p in pairs:
+                gc[p][:, w] = np.nan
+            n_bad += 1
+            continue
         for p in pairs:
             gc[p][:, w] = res[p]
-    return {'gc': gc, 'win_start': starts}
+    return {'gc': gc, 'win_start': starts, 'n_unstable': n_bad}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -551,16 +570,26 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
     f_yx = np.empty((n_f, n_win))
     d_xy = np.empty((n_f, n_win)) if trgc else None
 
+    n_bad = 0
     for w, s in enumerate(starts):
         seg = X[:, :, s:s + win_samples]
-        fxy, fyx = pairwise_spectral_gc(seg, order, freqs, fs)
+        try:
+            fxy, fyx = pairwise_spectral_gc(seg, order, freqs, fs)
+            if trgc:
+                dxy, _ = time_reversed_pairwise_gc(seg, order, freqs, fs)
+        except _ILL_CONDITIONED:
+            f_xy[:, w] = f_yx[:, w] = np.nan
+            if trgc:
+                d_xy[:, w] = np.nan
+            n_bad += 1
+            continue
         f_xy[:, w] = fxy
         f_yx[:, w] = fyx
         if trgc:
-            dxy, _ = time_reversed_pairwise_gc(seg, order, freqs, fs)
             d_xy[:, w] = dxy
 
-    result = {'f_xy': f_xy, 'f_yx': f_yx, 'win_start': starts}
+    result = {'f_xy': f_xy, 'f_yx': f_yx, 'win_start': starts,
+              'n_unstable': n_bad}
     if trgc:
         result['d_xy'] = d_xy
     return result

@@ -257,6 +257,9 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
             Xmv, order=order, freqs=freqs, fs=fs,
             win_samples=win_samples, step=step, pairs=directed, n_jobs=n_jobs,
         )
+        if res.get('n_unstable'):
+            print(f"    [unstable] {res['n_unstable']}/{len(res['win_start'])} "
+                  f"windows had an ill-conditioned fit and are NaN", flush=True)
         band_ed = {p: band_average(res['gc'][p], freqs, bands) for p in directed}
         for k, (i, j) in enumerate(pairs):
             for b in band_names:
@@ -269,6 +272,9 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                 X, order=order, freqs=freqs, fs=fs,
                 win_samples=win_samples, step=step, trgc=use_trgc,
             )
+            if res.get('n_unstable'):
+                print(f"    [unstable] {res['n_unstable']}/{len(res['win_start'])} "
+                      f"windows had an ill-conditioned fit and are NaN", flush=True)
             b_xy = band_average(res['f_xy'], freqs, bands)
             b_yx = band_average(res['f_yx'], freqs, bands)
             b_d = band_average(res['d_xy'], freqs, bands) if use_trgc else None
