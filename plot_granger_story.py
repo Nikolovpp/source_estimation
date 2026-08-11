@@ -143,76 +143,82 @@ def story1():
 
 
 def story2():
-    """Q2 - window, order, inverse and task: which one drives the difference?"""
-    import pandas as pd
-    # ══════════ Q2 — does it depend on the parameters? ══════════
-    fig,ax=plt.subplots(2,2,figsize=(12.6,8.0))
-    wins=[40,60,80,120]
-    A=ax[0][0]
-    for meas,col,lab in (('m1',SS,'conditional spectral'),('m2',PAR,'time-domain')):
-        y=[]
-        for wm in wins:
-            _,bb,_,stt=G('B_winsweep',f'win{wm}ms_order6_fs200_pc1')
-            bi2=bb.index('theta')
-            y.append(np.nanmean(cat(stt,meas+'_par',bi2))/np.nanmean(cat(stt,meas+'_ss',bi2)))
-        A.plot(wins,y,color=col,lw=2.3,marker='o',ms=6,label=lab,zorder=3)
-        for a_,b_ in zip(wins,y): A.annotate(f'{b_:.2f}',(a_,b_),textcoords='offset points',
-                                              xytext=(0,-15),ha='center',fontsize=8.5,color=col)
-    A.axhline(1,color=INK,lw=1.2,ls=(0,(4,3))); A.axhline(0,color='#b2182b',lw=1.2)
-    A.set(xlabel='sliding window (ms), order 6',ylabel='parametric ÷ state-space',
-          title='(a) WINDOW — the time-domain estimator fails\nbelow ~80 ms, and goes negative at 40 ms')
-    A.legend(fontsize=8.5,frameon=False,loc='lower right')
-    B=ax[0][1]
-    for tag,subs_,xs,ls,mk in (('C_ordersweep_win60',[2,4,6,8],[2,4,6,8],'-','o'),
-                               ('C_ordersweep_win120',[4,8,12,16,20],[4,8,12,16,20],'--','s')):
-        wm=60 if '60' in tag else 120
-        for meas,col in (('m1',SS),('m2',PAR)):
-            y=[]
-            for o in subs_:
-                _,bb,_,stt=G(tag,f'win{wm}ms_order{o}_fs200_pc1'); bi2=bb.index('theta')
-                y.append(np.nanmean(cat(stt,meas+'_par',bi2))/np.nanmean(cat(stt,meas+'_ss',bi2)))
-            B.plot(xs,y,color=col,lw=2.1,ls=ls,marker=mk,ms=5,zorder=3)
-    B.axhline(1,color=INK,lw=1.2,ls=(0,(4,3)))
-    for h,l in ((dict(color=SS,lw=2),'conditional spectral'),(dict(color=PAR,lw=2),'time-domain'),
-                (dict(color=INK,lw=1.6,ls='-'),'60 ms window'),(dict(color=INK,lw=1.6,ls='--'),'120 ms window')):
-        B.plot([],[],**h,label=l)
-    B.set(xlabel='model order',ylabel='parametric ÷ state-space',
-          title='(b) ORDER — at 120 ms nothing breaks.\nThe window is the cause, not the order')
-    B.legend(fontsize=8,frameon=False,loc='lower left',ncol=2)
-    C=ax[1][0]; xs=np.arange(len(wins))
-    for k,(meth,hatch) in enumerate((('dSPM',None),('LCMV','//'))):
-        y=[]
-        for wm in wins:
-            _,bb,_,stt=G('B_winsweep',f'win{wm}ms_order6_fs200_pc1',meth=meth); bi2=bb.index('theta')
-            y.append(np.nanmean(cat(stt,'m1_par',bi2))/np.nanmean(cat(stt,'m1_ss',bi2)))
-        C.bar(xs+(k-0.5)*0.36,y,0.36,color=SS,alpha=(1.0 if k==0 else 0.55),
-              hatch=hatch,edgecolor='white',label=meth,zorder=3)
-    C.set(xticks=xs,xticklabels=[f'{w} ms' for w in wins],ylim=(0.85,1.0),
-          ylabel='parametric ÷ state-space (m1)',
-          title='(c) SOURCE ESTIMATOR — dSPM vs LCMV differ by ~1%.\nThe inverse is not what drives this')
-    C.legend(fontsize=8.5,frameon=False)
-    D=ax[1][1]
-    for k,(task,stim,mk) in enumerate((('overtProd','prodDiff','o'),('perception','percDiff','^'))):
-        for meas,col in (('m1',SS),('m2',PAR)):
-            y=[]
-            for o in [2,4,6,8]:
-                _,bb,_,stt=G('C_ordersweep_win60',f'win60ms_order{o}_fs200_pc1',task=task,stim=stim)
-                bi2=bb.index('theta')
-                y.append(np.nanmean(cat(stt,meas+'_par',bi2))/np.nanmean(cat(stt,meas+'_ss',bi2)))
-            D.plot([2,4,6,8],y,color=col,lw=2.0,marker=mk,ms=6,
-                   ls=('-' if k==0 else '--'),zorder=3)
-    D.axhline(1,color=INK,lw=1.2,ls=(0,(4,3)))
-    D.plot([],[],color=INK,marker='o',ls='-',label='overtProd / prodDiff')
-    D.plot([],[],color=INK,marker='^',ls='--',label='perception / percDiff')
-    D.set(xlabel='model order (60 ms window)',ylabel='parametric ÷ state-space',xticks=[2,4,6,8],
-          title='(d) TASK — the collapse replicates exactly.\nNot a property of one dataset')
-    D.legend(fontsize=8.5,frameon=False,loc='lower left')
-    for a in ax.ravel():
-        sns.despine(ax=a); a.grid(axis='y',color=MUT,alpha=0.2,lw=0.6); a.set_axisbelow(True)
-    fig.suptitle('Q2 · Does the difference depend on the analysis choices?   '
-                 'Only on the WINDOW. Order, inverse and task leave it unchanged.',fontsize=12,y=1.005)
-    fig.tight_layout(); fig.savefig(f'{OUT}/story2_parameter_dependence.png',dpi=175,
-                                    bbox_inches='tight',facecolor='white'); plt.close(fig)
+    """Q2 - which analysis choice drives the difference?
+
+    Both estimators are plotted as ABSOLUTE GC rather than as a ratio: a
+    ratio of group means is undefined in meaning once the numerator crosses
+    zero, and it hides magnitude entirely. The failure is quantified as the
+    percentage of parametric values below zero, which is bounded and stays
+    interpretable exactly where the ratio stopped being so.
+    """
+    def series(tag,subs,task='overtProd',stim='prodDiff',meth='dSPM',band='theta'):
+        """absolute GC per arm, and the % of parametric values that are negative."""
+        out=[]
+        for sub in subs:
+            _,b,_,st=G(tag,sub,task=task,stim=stim,meth=meth); bi=b.index(band)
+            d={}
+            for meas in ('m1','m2'):
+                p_,s_=cat(st,meas+'_par',bi),cat(st,meas+'_ss',bi)
+                ok=np.isfinite(p_)&np.isfinite(s_)
+                d[meas]=dict(par=p_[ok].mean(),ss=s_[ok].mean(),
+                             par_sem=p_[ok].std()/np.sqrt(ok.sum()),
+                             ss_sem=s_[ok].std()/np.sqrt(ok.sum()),
+                             neg=100*(p_[ok]<0).mean())
+            out.append(d)
+        return out
+
+    def twoarm(ax,x,rows,meas,xlabel,title,xticks=None,logy=False):
+        for arm,col,lab in (('par',PAR,'parametric'),('ss',SS,'state-space')):
+            y=[r[meas][arm] for r in rows]; e=[r[meas][arm+'_sem'] for r in rows]
+            ax.errorbar(x,y,yerr=e,color=col,lw=2.1,marker='o',ms=5.5,capsize=3,
+                        zorder=3,label=lab)
+        ax.axhline(0,color='#b2182b',lw=1.4,zorder=2)
+        neg=[r[meas]['neg'] for r in rows]
+        for xi,n_,yv in zip(x,neg,[r[meas]['par'] for r in rows]):
+            if n_>1: ax.annotate(f'{n_:.0f}% <0',(xi,yv),textcoords='offset points',
+                                 xytext=(0,-16),ha='center',fontsize=8,color='#b2182b')
+        ax.set(xlabel=xlabel,ylabel='Granger causality',title=title)
+        if xticks is not None: ax.set_xticks(xticks)
+        sns.despine(ax=ax); ax.grid(axis='y',color=MUT,alpha=0.2,lw=0.6); ax.set_axisbelow(True)
+
+    fig,ax=plt.subplots(2,3,figsize=(15.6,8.4))
+    wins=[40,60,80,120]; wsub=[f'win{w}ms_order6_fs200_pc1' for w in wins]
+    rw=series('B_winsweep',wsub)
+    twoarm(ax[0][0],wins,rw,'m2','sliding window (ms), order 6',
+           '(a) WINDOW · time-domain GC\nparametric falls below zero as the window shrinks',xticks=wins)
+    ax[0][0].legend(fontsize=8.5,frameon=False,loc='upper left')
+    twoarm(ax[1][0],wins,rw,'m1','sliding window (ms), order 6',
+           '(d) WINDOW · conditional spectral GC\nsame sweep, no failure — the arms track',xticks=wins)
+
+    o60=[2,4,6,8]; r60=series('C_ordersweep_win60',[f'win60ms_order{o}_fs200_pc1' for o in o60])
+    twoarm(ax[0][1],o60,r60,'m2','model order  ·  60 ms window',
+           '(b) ORDER at 60 ms · time-domain GC\nthe gap opens at order 6',xticks=o60)
+    o120=[4,8,12,16,20]; r120=series('C_ordersweep_win120',[f'win120ms_order{o}_fs200_pc1' for o in o120])
+    twoarm(ax[0][2],o120,r120,'m2','model order  ·  120 ms window',
+           '(c) ORDER at 120 ms · same orders, longer window\nno gap, no negatives — the window is the cause',xticks=o120)
+    twoarm(ax[1][1],o60,r60,'m1','model order  ·  60 ms window',
+           '(e) ORDER at 60 ms · conditional spectral\nunaffected',xticks=o60)
+
+    # (f) inverse and task, as the % of impossible values — one bounded number
+    F=ax[1][2]; w=np.arange(len(wins))
+    for k,(meth,alpha) in enumerate((('dSPM',1.0),('LCMV',0.55))):
+        rr=series('B_winsweep',wsub,meth=meth)
+        F.bar(w+(k-0.5)*0.34,[r['m2']['neg'] for r in rr],0.34,color=PAR,alpha=alpha,
+              edgecolor='white',label=f'{meth}  (overtProd)',zorder=3)
+    rp=series('B_winsweep',wsub,task='perception',stim='percDiff')
+    F.plot(w,[r['m2']['neg'] for r in rp],color=INK,lw=1.8,marker='^',ms=7,ls='--',
+           zorder=4,label='perception (dSPM)')
+    F.set(xticks=w,xticklabels=[f'{x} ms' for x in wins],ylabel='% of parametric values below zero',
+          xlabel='sliding window, order 6',
+          title='(f) INVERSE and TASK · the failure rate is\nunchanged by either')
+    F.legend(fontsize=8,frameon=False); sns.despine(ax=F)
+    F.grid(axis='y',color=MUT,alpha=0.2,lw=0.6); F.set_axisbelow(True)
+
+    fig.suptitle('Q2 · Which analysis choice drives the difference?   Both estimators are plotted directly — '
+                 'the gap between the lines IS the disagreement.\n'
+                 'Red line = zero, which Granger causality cannot cross.',fontsize=11.5,y=1.02)
+    fig.tight_layout()
+    fig.savefig(f'{OUT}/story2_parameter_dependence.png',dpi=175,bbox_inches='tight',facecolor='white')
 
 
 def story3():
