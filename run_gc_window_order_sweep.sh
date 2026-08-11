@@ -6,6 +6,9 @@
 #   orders  : 2, 4, 6, 10
 #   tasks   : overtProd, perception
 #   stims   : prodDiff, percDiff
+#   gc-mode : pairwise (parametric BSMART) by default; GC_MODE=conditional
+#             runs the state-space arm. Spectral in both cases — this project
+#             does not use time-domain GC.
 #   pairs   : the three dual-stream pathways, via a 4-ROI subset
 #             temporal<->frontal (awfa<->ifc), frontal<->parietal (ifc<->tpc),
 #             temporal<->parietal (awfa<->tpc); pmc included as the second
@@ -37,6 +40,7 @@
 #   DRY_RUN=1 bash run_gc_window_order_sweep.sh          # print commands only
 #   TASKS=overtProd STIMS=prodDiff bash run_gc_window_order_sweep.sh
 #   WINDOWS="60" ORDERS="6" bash run_gc_window_order_sweep.sh   # time one cell
+#   GC_MODE=conditional bash run_gc_window_order_sweep.sh       # state-space arm
 set -u
 
 cd "$(dirname "$0")"
@@ -69,6 +73,15 @@ ATLAS="${ATLAS:-custom}"
 FEAT="${FEAT:-vertex_selectkbest}"
 LEAK="${LEAK:---leakage-correction}"          # "" for raw
 NORMALIZE="${NORMALIZE:-demean}"              # ERP removal; part of the path
+# pairwise    = bivariate parametric (BSMART) spectral GC — what the manuscript
+#               reports, and the default here.
+# conditional = state-space conditional spectral GC (Barnett & Seth 2015), each
+#               edge conditioned on the other ROIs in --roi-subset.
+# These are DIFFERENT QUANTITIES, not two estimators of one quantity. For
+# pairwise spectral GC the parametric and state-space estimators are provably
+# identical (measured 8e-16 here), so there is no separate estimator arm to run
+# — the estimator choice only becomes live once you condition.
+GC_MODE="${GC_MODE:-pairwise}"
 TARGET_FS="${TARGET_FS:-200}"
 ROIS="${ROIS:-awfa-lh tpc-lh ifc-lh pmc-lh}"
 NJOBS="${NJOBS:-64}"
@@ -106,6 +119,7 @@ echo "tasks:   $TASKS"
 echo "stims:   $STIMS"
 echo "windows: $WINDOWS ms      orders: $ORDERS"
 echo "method:  $METHOD   ROIs: $ROIS   normalize: $NORMALIZE"
+echo "gc-mode: $GC_MODE"
 echo "$n_total configurations, 20 subjects each"
 echo
 
@@ -116,14 +130,14 @@ for S in $STIMS; do
 for W in $WINDOWS; do
 for O in $ORDERS; do
     feasible "$W" "$O" || continue
-    tag="${T}_${S}_win${W}ms_order${O}"
+    tag="${T}_${S}_${GC_MODE}_win${W}ms_order${O}"
     log="$LOG_DIR/${tag}.log"
     n_done=$(( n_done + 1 ))
     echo "[$n_done/$n_total] $tag"
 
     # shellcheck disable=SC2086
     CMD="python run_granger.py --task $T --stim-class $S --method $METHOD \
-        --atlas $ATLAS --feature-mode $FEAT $LEAK \
+        --atlas $ATLAS --feature-mode $FEAT $LEAK --gc-mode $GC_MODE \
         --win-ms $W --order $O --target-fs $TARGET_FS --normalize $NORMALIZE \
         --roi-subset $ROIS --n-jobs $NJOBS"
 
