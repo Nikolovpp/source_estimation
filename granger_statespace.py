@@ -203,19 +203,37 @@ def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
     if pairs is None:
         pairs = [(s, t) for s in range(n) for t in range(n) if s != t]
 
+    # An ill-conditioned window is a data property, not a bug. The joint VAR
+    # fit Choleskys the backward prediction-error covariance in armorf's Morf
+    # recursion (granger.py); that matrix loses positive-definiteness when the
+    # channels are near-collinear in a window — an LCMV ROI collapse, or too
+    # few samples for the order. Raising here kills the joblib pool and with it
+    # EVERY subject in the run, so degrade this window to NaN and count it.
+    # A singular solve raises LinAlgError too; a degenerate covariance can
+    # surface as ValueError.
+    _ILL = (np.linalg.LinAlgError, ValueError, FloatingPointError)
+    nan_col = {p: np.full(freqs.size, np.nan) for p in pairs}
+
     def _win(s):
         seg = X[:, :, s:s + win_samples]
-        res = statespace_conditional_gc(seg, order, freqs, fs, pairs=pairs)
+        try:
+            res = statespace_conditional_gc(seg, order, freqs, fs, pairs=pairs)
+        except _ILL:
+            return None
         return {p: res[p][1] for p in pairs}      # spectral part only
 
     outs = Parallel(n_jobs=n_jobs, prefer='processes')(
         delayed(_win)(int(s)) for s in starts)
 
     gc = {p: np.empty((freqs.size, starts.size)) for p in pairs}
+    n_bad = 0
     for w, o in enumerate(outs):
+        if o is None:
+            o = nan_col
+            n_bad += 1
         for p in pairs:
             gc[p][:, w] = o[p]
-    return {'gc': gc, 'win_start': starts}
+    return {'gc': gc, 'win_start': starts, 'n_unstable': n_bad}
 
 
 def statespace_conditional_gc(X, order, freqs=None, fs=None, pairs=None):
