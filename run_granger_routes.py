@@ -27,6 +27,7 @@ differ at all:
                              mis-wired.
   M1  conditional spectral   6-ROI joint model, F_{a->b | all others}.
   M2  pairwise time-domain   where the dual-regression bias lives.
+      OFF by default (--time-domain): this project reports spectral GC only.
   M3  block GC               FIXPC-k ROI blocks (k>1); the reduced block model
                              is ARMA, so the two estimators should diverge most.
   F   triple-wise conditional  F_{a->c | b} on a 3-variable model, for EVERY
@@ -181,7 +182,7 @@ def _nan_like(freqs):
     return np.full(len(freqs), np.nan)
 
 
-def _both_conditional(X, order, freqs, fs, src, tgt):
+def _both_conditional(X, order, freqs, fs, src, tgt, want_m2=False):
     """F_{src->tgt | rest} from both estimators on the SAME fitted MVAR.
 
     Returns (parametric_spec, statespace_spec, parametric_time, statespace_time).
@@ -200,8 +201,15 @@ def _both_conditional(X, order, freqs, fs, src, tgt):
     try:
         par_s = conditional_spectral_gc(X, order, freqs, fs,
                                         pairs=[(src, tgt)])[(src, tgt)]
-        td = time_domain_conditional_gc(X, order, pairs=[(src, tgt)])
-        par_t = float(list(td.values())[0])
+        # The parametric time-domain value needs a SECOND regression (the
+        # reduced model, fitted at an order known to be wrong — see
+        # GC_fundamentals/reduced_model_explained.md). This project reports
+        # spectral GC only, so it is opt-in via --time-domain.
+        if want_m2:
+            td = time_domain_conditional_gc(X, order, pairs=[(src, tgt)])
+            par_t = float(list(td.values())[0])
+        else:
+            par_t = np.nan
     except Exception:
         par_s, par_t = _nan_like(freqs), np.nan
     try:
@@ -216,7 +224,7 @@ def _both_conditional(X, order, freqs, fs, src, tgt):
 
 
 def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
-                   want_m0=False):
+                   want_m0=False, want_m2=False):
     """All measures for ONE window of one subject.
 
     ``seg``   : (n_trials, n_channels, n_win) with channels grouped by ROI
@@ -239,20 +247,21 @@ def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
         except Exception:
             out['m0_max_abs_diff'] = np.nan
 
-    # ---- M1 / M2: fully conditional + time domain, on the joint model ----
+    # ---- M1 (+ M2 when asked): conditional spectral on the joint model ----
     if scalar:
         m1_par, m1_ss, m2_par, m2_ss = {}, {}, {}, {}
         for a, b in itertools.permutations(roi_names, 2):
             try:
                 ps, ss, pt, st = _both_conditional(seg, order, freqs, fs,
-                                                   idx[a], idx[b])
+                                                   idx[a], idx[b], want_m2)
             except _Unstable:
                 ps = ss = _nan_like(freqs); pt = st = np.nan
                 out['unstable'] = out.get('unstable', 0) + 1
             m1_par[(a, b)] = ps; m1_ss[(a, b)] = ss
             m2_par[(a, b)] = pt; m2_ss[(a, b)] = st
         out['m1_par'], out['m1_ss'] = m1_par, m1_ss
-        out['m2_par'], out['m2_ss'] = m2_par, m2_ss
+        if want_m2:
+            out['m2_par'], out['m2_ss'] = m2_par, m2_ss
 
     # ---- M3: block GC when the ROIs carry >1 component ----
     else:
@@ -310,7 +319,7 @@ def analyse_window(seg, order, freqs, fs, roi_names, blocks, triples,
 # One subject, one configuration
 # ─────────────────────────────────────────────────────────────────────
 def run_subject(path, subj, win_ms, order, target_fs, n_pcs, rois, triples,
-                step_ms=5.0, normalize='demean'):
+                step_ms=5.0, normalize='demean', want_m2=False):
     t_start = time.time()
     vert, times, fs_in = load_roi_vertices(path, rois)
     missing = [r for r in rois if r not in vert]
@@ -348,7 +357,7 @@ def run_subject(path, subj, win_ms, order, target_fs, n_pcs, rois, triples,
     for wi, s in enumerate(starts):
         per_window.append(analyse_window(
             X[:, :, s:s + win], order, FREQS, target_fs, rois, blocks,
-            triples, want_m0=(wi == 0)))
+            triples, want_m0=(wi == 0), want_m2=want_m2))
 
     n_unstable = sum(w.get('unstable', 0) for w in per_window)
     return dict(subject=subj, window_ms=t_axis[(starts + win // 2).astype(int)],
@@ -428,6 +437,12 @@ def main():
     p.add_argument('--triples', choices=['none', 'primary', 'exhaustive'],
                    default='none')
     p.add_argument('--normalize', default='demean', choices=['none', 'demean'])
+    p.add_argument('--time-domain', action='store_true',
+                   help='also compute time-domain GC (M2). Off by default: this '
+                        'project reports spectral GC only, and the parametric '
+                        'time-domain value costs a second regression fitted at '
+                        'an order known to be wrong. Kept for reproducing the '
+                        'theory-chapter figures.')
     p.add_argument('--subjects', nargs='+', default=None)
     p.add_argument('--config-tag', default='run')
     p.add_argument('--out-root', default=None)
@@ -513,7 +528,7 @@ def main():
         results = Parallel(n_jobs=args.n_jobs, verbose=5)(
             delayed(run_subject)(pth, s, win_ms, order, args.target_fs, n_pcs,
                                  args.rois, triples, args.step_ms,
-                                 args.normalize)
+                                 args.normalize, args.time_domain)
             for pth, s in jobs)
         n_ok = 0
         for res in results:
