@@ -297,9 +297,112 @@ def story3():
     print('wrote story3')
 
 
+def story4(edge_drop_ms=15.0):
+    """The science figure: directed flow above baseline, tested as the manuscript does.
+
+    Uses PAIRWISE SPECTRAL GC with no conditioning (``f_pair``) - the quantity
+    this project actually reports, and the one for which the parametric and
+    state-space estimators are provably identical. The estimator debate does not
+    touch this figure.
+
+    Each direction is tested against its own baseline (one-sided, FDR), which is
+    the manuscript's test; it is NOT a forward-vs-backward asymmetry test.
+
+    ``edge_drop_ms`` discards window centres within this distance of the epoch
+    start before anything else. Those windows are estimated from partial data:
+    measured here, the first two sit 87% below the plateau, and anchoring a
+    baseline on them makes every later window look elevated. Dropping them is a
+    pre-specifiable rule that does not depend on knowing the answer.
+
+    The default is 15 ms — the three windows the measurement actually supports.
+    Do not raise it casually: perception epochs start at -200 ms, so a 100 ms
+    drop pushes the first usable centre to -70 ms and empties the manuscript's
+    [-200, -100] baseline entirely. The guard below turns that into an error
+    rather than a panel of silent NaNs.
+    """
+    import pandas as pd
+    BANDS4 = [('theta', 'theta 4-8'), ('low_beta', 'low beta 12-18'),
+              ('high_beta', 'high beta 18-30')]
+    HYP = {'perception': [('awfa-lh', 'ifc-lh'), ('awfa-lh', 'pmc-lh'),
+                          ('tpc-lh', 'ifc-lh'), ('tpc-lh', 'pmc-lh')],
+           'overtProd': [('pmc-lh', 'awfa-lh'), ('ifc-lh', 'awfa-lh'),
+                         ('pmc-lh', 'tpc-lh'), ('ifc-lh', 'tpc-lh')]}
+    TITLE = {'perception': 'PERCEPTION · inverse model  (sensory → motor)',
+             'overtProd': 'PRODUCTION · forward model  (motor → sensory)'}
+    BASE_MS = 100.0                      # baseline width, after the edge drop
+
+    fig, axes = plt.subplots(len(BANDS4), 2, figsize=(14.4, 3.1 * len(BANDS4)),
+                             squeeze=False)
+    rep = []
+    for col, task in enumerate(('perception', 'overtProd')):
+        stim = 'percDiff' if task == 'perception' else 'prodDiff'
+        subs, bands, win, st = load_dir(
+            f'{R}/{task}/dSPM/custom/F_triples/win60ms_order6_fs200_pc1/{stim}')
+        keep = win >= win[0] + edge_drop_ms          # drop the unusable edge
+        win_k = win[keep]
+        if task == 'perception':
+            blo, bhi = -200.0, -100.0               # as in the manuscript
+        else:
+            blo, bhi = win_k[0], win_k[0] + BASE_MS  # earliest USABLE 100 ms
+        bm = (win_k >= blo) & (win_k <= bhi)
+        if not bm.any():
+            raise ValueError(
+                f'{task}: baseline [{blo:.0f}, {bhi:.0f}] ms contains no window '
+                f'centres after an edge drop of {edge_drop_ms:.0f} ms (first '
+                f'usable centre {win_k[0]:+.0f} ms). Lower edge_drop_ms or move '
+                f'the baseline.')
+        for r, (bd, bl) in enumerate(BANDS4):
+            ax = axes[r][col]
+            bi = bands.index(bd)
+            for (a, b), c in zip(HYP[task], sns.color_palette('crest', 4)):
+                k = f'f_pair__{a}__{b}'
+                if k not in st:
+                    continue
+                A = st[k][:, bi][:, keep]
+                d = A - A[:, bm].mean(1, keepdims=True)
+                m, s_ = d.mean(0), d.std(0) / np.sqrt(d.shape[0])
+                ax.plot(win_k, m, color=c, lw=1.5, zorder=3, label=f'{sh(a)}→{sh(b)}')
+                ax.fill_between(win_k, m - s_, m + s_, color=c, alpha=0.18, lw=0)
+                p = np.array([ttest_rel(d[:, i], np.zeros(d.shape[0])).pvalue
+                              if d[:, i].std() else 1.0 for i in range(d.shape[1])])
+                p = np.array([p[i] / 2 if d[:, i].mean() > 0 else 1.0
+                              for i in range(d.shape[1])])      # one-sided
+                q = bh_fdr(p)
+                sig = q < 0.05
+                if sig.any():
+                    ax.plot(win_k[sig], np.full(sig.sum(), ax.get_ylim()[0]), '|',
+                            color=c, ms=6, zorder=5)
+                rep.append(dict(task=task, band=bd, edge=f'{sh(a)}→{sh(b)}',
+                                pct_sig=100 * sig.mean(),
+                                peak=m[win_k > bhi].max() if (win_k > bhi).any() else np.nan))
+            ax.axhline(0, color=INK, lw=1.2)
+            ax.axvline(0, color=INK, lw=0.9, ls=(0, (3, 3)))
+            ax.axvspan(blo, bhi, color=MUT, alpha=0.18, lw=0)
+            if r == 0:
+                ax.set_title(TITLE[task], fontsize=10.5, loc='left', color=INK)
+            ax.set_ylabel(f'{bl}\nGC change from baseline', fontsize=9)
+            if r == len(BANDS4) - 1:
+                ax.set_xlabel('time (ms)   ·   0 = onset', fontsize=9)
+            ax.legend(fontsize=7.5, frameon=False, ncol=2, loc='upper left')
+            sns.despine(ax=ax)
+            ax.grid(axis='y', color=MUT, alpha=0.2, lw=0.6)
+            ax.set_axisbelow(True)
+    fig.suptitle('Directed flow above baseline — PAIRWISE SPECTRAL GC, no conditioning\n'
+                 '20 subjects, mean ± SEM. Grey = baseline. Ticks = FDR < 0.05 above baseline. '
+                 f'First {edge_drop_ms:.0f} ms of window centres dropped (partial-data edge).\n'
+                 'This quantity is identical under the parametric and state-space '
+                 'estimators, so the estimator choice cannot affect it.',
+                 fontsize=10.5, y=1.03)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, 'story4_directed_flow_for_decoding.png'),
+                dpi=170, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    pd.DataFrame(rep).to_csv(os.path.join(OUT, 'story4_baseline_tests.csv'), index=False)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
-    for fn in (story1, story2, story3):
+    for fn in (story1, story2, story3, story4):
         fn(); print(f'  {fn.__name__} done')
     print(f'figures in {OUT}')
 
