@@ -185,17 +185,21 @@ def story2():
     wins=[40,60,80,120]; wsub=[f'win{w}ms_order6_fs200_pc1' for w in wins]
     rw=series('B_winsweep',wsub)
     twoarm(ax[0][0],wins,rw,'m2','sliding window (ms), order 6',
-           '(a) WINDOW · time-domain GC\nparametric falls below zero as the window shrinks',xticks=wins)
-    ax[0][0].legend(fontsize=8.5,frameon=False,loc='upper left')
+           '(a) WINDOW · time-domain GC\nthe parametric mean itself goes negative at 40 ms',xticks=wins)
+    # headroom so the legend sits in clear space rather than over the 40 ms point
+    y0, y1 = ax[0][0].get_ylim()
+    ax[0][0].set_ylim(y0, y1 + 0.34 * (y1 - y0))
+    ax[0][0].legend(fontsize=8.5, loc='upper left', frameon=True,
+                    framealpha=0.92, facecolor='white', edgecolor='none')
     twoarm(ax[1][0],wins,rw,'m1','sliding window (ms), order 6',
-           '(d) WINDOW · conditional spectral GC\nsame sweep, no failure — the arms track',xticks=wins)
+           '(d) WINDOW · conditional spectral GC\nsame sweep, no negatives at all — the arms track',xticks=wins)
 
     o60=[2,4,6,8]; r60=series('C_ordersweep_win60',[f'win60ms_order{o}_fs200_pc1' for o in o60])
     twoarm(ax[0][1],o60,r60,'m2','model order  ·  60 ms window',
            '(b) ORDER at 60 ms · time-domain GC\nthe gap opens at order 6',xticks=o60)
     o120=[4,8,12,16,20]; r120=series('C_ordersweep_win120',[f'win120ms_order{o}_fs200_pc1' for o in o120])
     twoarm(ax[0][2],o120,r120,'m2','model order  ·  120 ms window',
-           '(c) ORDER at 120 ms · same orders, longer window\nno gap, no negatives — the window is the cause',xticks=o120)
+           '(c) ORDER at 120 ms · same orders, longer window\nthe gap narrows and the failure rate drops, but never to zero',xticks=o120)
     twoarm(ax[1][1],o60,r60,'m1','model order  ·  60 ms window',
            '(e) ORDER at 60 ms · conditional spectral\nunaffected',xticks=o60)
 
@@ -210,7 +214,7 @@ def story2():
            zorder=4,label='perception (dSPM)')
     F.set(xticks=w,xticklabels=[f'{x} ms' for x in wins],ylabel='% of parametric values below zero',
           xlabel='sliding window, order 6',
-          title='(f) INVERSE and TASK · the failure rate is\nunchanged by either')
+          title='(f) INVERSE and TASK · the failure rate tracks the\nwindow, not the inverse or the task')
     F.legend(fontsize=8,frameon=False); sns.despine(ax=F)
     F.grid(axis='y',color=MUT,alpha=0.2,lw=0.6); F.set_axisbelow(True)
 
