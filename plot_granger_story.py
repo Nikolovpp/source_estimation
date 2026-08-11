@@ -189,7 +189,7 @@ def story2():
     # headroom so the legend sits in clear space rather than over the 40 ms point
     y0, y1 = ax[0][0].get_ylim()
     ax[0][0].set_ylim(y0, y1 + 0.34 * (y1 - y0))
-    ax[0][0].legend(fontsize=8.5, loc='upper left', frameon=True,
+    ax[0][0].legend(fontsize=8.5, loc='upper right', frameon=True,
                     framealpha=0.92, facecolor='white', edgecolor='none')
     twoarm(ax[1][0],wins,rw,'m1','sliding window (ms), order 6',
            '(d) WINDOW · conditional spectral GC\nsame sweep, no negatives at all — the arms track',xticks=wins)
@@ -203,20 +203,28 @@ def story2():
     twoarm(ax[1][1],o60,r60,'m1','model order  ·  60 ms window',
            '(e) ORDER at 60 ms · conditional spectral\nunaffected',xticks=o60)
 
-    # (f) inverse and task, as the % of impossible values — one bounded number
-    F=ax[1][2]; w=np.arange(len(wins))
-    for k,(meth,alpha) in enumerate((('dSPM',1.0),('LCMV',0.55))):
-        rr=series('B_winsweep',wsub,meth=meth)
-        F.bar(w+(k-0.5)*0.34,[r['m2']['neg'] for r in rr],0.34,color=PAR,alpha=alpha,
-              edgecolor='white',label=f'{meth}  (overtProd)',zorder=3)
-    rp=series('B_winsweep',wsub,task='perception',stim='percDiff')
-    F.plot(w,[r['m2']['neg'] for r in rp],color=INK,lw=1.8,marker='^',ms=7,ls='--',
-           zorder=4,label='perception (dSPM)')
-    F.set(xticks=w,xticklabels=[f'{x} ms' for x in wins],ylabel='% of parametric values below zero',
+    # (f) inverse and task, as the % of impossible values - one bounded number.
+    # Task gets the hue, inverse the shading, so all four bars sit side by side.
+    F = ax[1][2]
+    w = np.arange(len(wins))
+    TASKC = {'overtProd': PAR, 'perception': sns.color_palette('colorblind')[2]}
+    combos = [('overtProd', 'prodDiff', 'dSPM'), ('overtProd', 'prodDiff', 'LCMV'),
+              ('perception', 'percDiff', 'dSPM'), ('perception', 'percDiff', 'LCMV')]
+    bw = 0.2
+    for k, (tk, sm, mth) in enumerate(combos):
+        rr = series('B_winsweep', wsub, task=tk, stim=sm, meth=mth)
+        F.bar(w + (k - 1.5) * bw, [r['m2']['neg'] for r in rr], bw,
+              color=TASKC[tk], alpha=(1.0 if mth == 'dSPM' else 0.55),
+              edgecolor='white', zorder=3,
+              label=f'{tk} · {mth}')
+    F.set(xticks=w, xticklabels=[f'{x} ms' for x in wins],
+          ylabel='% of parametric values below zero',
           xlabel='sliding window, order 6',
           title='(f) INVERSE and TASK · the failure rate tracks the\nwindow, not the inverse or the task')
-    F.legend(fontsize=8,frameon=False); sns.despine(ax=F)
-    F.grid(axis='y',color=MUT,alpha=0.2,lw=0.6); F.set_axisbelow(True)
+    F.legend(fontsize=7.5, frameon=False, ncol=2)
+    sns.despine(ax=F)
+    F.grid(axis='y', color=MUT, alpha=0.2, lw=0.6)
+    F.set_axisbelow(True)
 
     fig.suptitle('Q2 · Which analysis choice drives the difference?   Both estimators are plotted directly — '
                  'the gap between the lines IS the disagreement.\n'
