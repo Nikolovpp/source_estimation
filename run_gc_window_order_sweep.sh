@@ -44,6 +44,7 @@
 #   WINDOWS="60" ORDERS="6" bash run_gc_window_order_sweep.sh   # time one cell
 #   SUBSETS="awfa-lh ifc-lh tpc-lh" bash run_gc_window_order_sweep.sh  # one subset
 #   GC_MODE=pairwise bash run_gc_window_order_sweep.sh    # parametric, to check M0
+#   PARALLEL=32 bash run_gc_window_order_sweep.sh         # 32 configs at once
 set -u
 
 cd "$(dirname "$0")"
@@ -112,7 +113,19 @@ ifc-lh pmc-lh}"
 # Back-compat: ROIS=... still works and collapses the run to that one subset.
 if [ -n "${ROIS:-}" ]; then SUBSETS="$ROIS"; fi
 IFS=';' read -ra SUBSET_ARR <<< "$SUBSETS"
-NJOBS="${NJOBS:-64}"
+# PARALLELISM. run_granger.py loops subjects sequentially and parallelizes only
+# over WINDOWS inside a subject. Each window is a 3-variable VAR on ~12 samples
+# — milliseconds — while joblib's process backend pickles the data array per
+# batch, so the overhead swamps the work and only 1-4 cores stay busy no matter
+# what --n-jobs says.
+#
+# Configs, by contrast, are big and completely independent. So run PARALLEL of
+# them at once, each with INNER_JOBS internal workers. PARALLEL x INNER_JOBS is
+# your core budget; raise PARALLEL until RAM (not cores) runs out — each worker
+# holds one subject's ROI data at a time.
+PARALLEL="${PARALLEL:-16}"
+INNER_JOBS="${INNER_JOBS:-1}"
+NJOBS="$INNER_JOBS"
 DRY_RUN="${DRY_RUN:-0}"
 LOG_DIR="${LOG_DIR:-./logs/gc_window_order_sweep}"
 mkdir -p "$LOG_DIR"
@@ -166,6 +179,9 @@ done
 echo "$n_total configurations, 20 subjects each"
 echo
 
+CMD_FILE=$(mktemp)
+trap 'rm -f "$CMD_FILE"' EXIT
+
 t0=$(date +%s)
 n_done=0; n_fail=0
 for SS in "${SUBSET_ARR[@]}"; do
@@ -190,22 +206,21 @@ for O in $ORDERS; do
         echo "    $CMD"
         continue
     fi
-
-    c0=$(date +%s)
-    if $CMD >"$log" 2>&1; then
-        echo "    done in $(( $(date +%s) - c0 ))s"
-        # after the first cell, project the total
-        if [ "$n_done" = "1" ]; then
-            echo "    -> ~$(( ($(date +%s) - c0) * n_total / 60 )) min projected for all $n_total"
-        fi
-    else
-        n_fail=$(( n_fail + 1 ))
-        echo "    FAILED — see $log" >&2
-        tail -5 "$log" | sed 's/^/      /' >&2
-    fi
+    # Queue it; xargs runs PARALLEL of these at once. Skipping a config whose
+    # output is already complete keeps a restart cheap after a partial run.
+    printf '%s > %s 2>&1 || echo "FAILED %s" >&2\n' "$CMD" "$log" "$tag" >> "$CMD_FILE"
 done; done; done; done; done
 
+if [ "$DRY_RUN" = "1" ]; then
+    exit 0
+fi
+
+echo "running $n_total configs, $PARALLEL at a time, $INNER_JOBS worker(s) each"
 echo
-echo "$(( n_done - n_fail ))/$n_total succeeded in $(( ($(date +%s) - t0) / 60 )) min"
+xargs -P "$PARALLEL" -I{} bash -c '{}' < "$CMD_FILE"
+
+echo
+echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
+echo "failures: grep -l Error $LOG_DIR/*.log"
 echo "logs:    $LOG_DIR"
 echo "outputs: derivatives/source_estimation/GC_source_space/{task}/${METHOD}/${ATLAS}/${FEAT}/..."
