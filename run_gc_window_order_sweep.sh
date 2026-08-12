@@ -120,10 +120,20 @@ IFS=';' read -ra SUBSET_ARR <<< "$SUBSETS"
 # what --n-jobs says.
 #
 # Configs, by contrast, are big and completely independent. So run PARALLEL of
-# them at once, each with INNER_JOBS internal workers. PARALLEL x INNER_JOBS is
-# your core budget; raise PARALLEL until RAM (not cores) runs out — each worker
-# holds one subject's ROI data at a time.
-PARALLEL="${PARALLEL:-16}"
+# them at once, each with INNER_JOBS internal workers.
+#
+# START LOW AND MEASURE. Core count is NOT the ceiling. Each worker reads a
+# multi-GB vertex cache, and when those caches live on a shared/network drive
+# the I/O contention stalls the whole box long before RAM or cores run out —
+# PARALLEL=56 on a 64-core, 256 GB machine took the system down. Step up from
+# the default and watch, rather than reasoning from free memory:
+#
+#   ps -o rss=,comm= -C python | awk '{s+=$1; n++} END \
+#       {print n" workers, "s/1048576" GB, "s/n/1048576" GB each"}'
+#   iostat -x 5      # %util near 100 on the cache volume = I/O bound, back off
+#
+# Double it only once the box is comfortably idle at the current value.
+PARALLEL="${PARALLEL:-8}"
 INNER_JOBS="${INNER_JOBS:-1}"
 NJOBS="$INNER_JOBS"
 DRY_RUN="${DRY_RUN:-0}"
