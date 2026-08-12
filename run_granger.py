@@ -337,18 +337,30 @@ def roiset_tag(roi_subset):
     return f'rois_{len(names)}x_{h}'
 
 
-def save_subject_gc(result, subj, task, stim_class, method, atlas,
-                    feature_mode, leakage_correction, order, win_ms,
-                    target_fs, normalize, output_root=GC_OUTPUT_ROOT,
-                    gc_mode='pairwise', roi_subset=None):
+def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
+                     leakage_correction, order, win_ms, target_fs, normalize,
+                     output_root=GC_OUTPUT_ROOT, gc_mode='pairwise',
+                     roi_subset=None):
+    """Where this subject's result lands. Single source of truth, so the
+    skip-if-exists check in main() cannot drift from where save writes."""
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
         / gc_tag(order, win_ms, target_fs, normalize, gc_mode)
         / roiset_tag(roi_subset) / stim_class
     )
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f'{subj}_{task}_{stim_class}.npz'
+    return out_dir / f'{subj}_{task}_{stim_class}.npz'
+
+
+def save_subject_gc(result, subj, task, stim_class, method, atlas,
+                    feature_mode, leakage_correction, order, win_ms,
+                    target_fs, normalize, output_root=GC_OUTPUT_ROOT,
+                    gc_mode='pairwise', roi_subset=None):
+    out_file = subject_out_path(
+        subj, task, stim_class, method, atlas, feature_mode,
+        leakage_correction, order, win_ms, target_fs, normalize,
+        output_root, gc_mode, roi_subset)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
 
     save = {
         'roi_names': np.array(result['roi_names']),
@@ -447,6 +459,7 @@ def main():
     print(f'  Normalize:    {args.normalize}   TRGC: {args.trgc}')
     print(f'  GC mode:      {args.gc_mode}')
     print(f'  Subjects:     {len(subjects)}   n_jobs: {args.n_jobs}')
+    print(f'  Overwrite:    {args.overwrite}')
     print()
 
     if args.atlas in SPEECH_ROIS:
@@ -490,7 +503,20 @@ def main():
 
     total_start = time.time()
     ok, failed = 0, []
+    n_skip = 0
     for subj in subjects:
+        # --overwrite was declared but never read, so every re-run recomputed
+        # work already on disk. Check before touching the cache: a finished
+        # config should cost nothing to re-enter.
+        done = subject_out_path(
+            subj, args.task, args.stim_class, args.method, args.atlas,
+            args.feature_mode, args.leakage_correction, args.order,
+            args.win_ms, args.target_fs, args.normalize,
+            gc_mode=args.gc_mode, roi_subset=subset)
+        if done.exists() and not args.overwrite:
+            n_skip += 1
+            continue
+
         npz = find_cached_npz(args.task, args.method, args.atlas,
                               args.feature_mode, args.leakage_correction,
                               subj, args.stim_class)
