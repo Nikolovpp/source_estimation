@@ -44,6 +44,7 @@
 #   SUBSETS="awfa-lh ifc-lh tpc-lh" bash run_gc_window_order_sweep.sh  # one subset
 #   GC_MODE=pairwise bash run_gc_window_order_sweep.sh    # parametric, to check M0
 #   PARALLEL=32 bash run_gc_window_order_sweep.sh         # 32 configs at once
+#   SCOPE=bivariate bash run_gc_window_order_sweep.sh     # only the 2-ROI pairs
 set -u
 
 cd "$(dirname "$0")"
@@ -111,9 +112,9 @@ TARGET_FS="${TARGET_FS:-200}"
 # pmc-lh is the second frontal node,
 # so it needs its own triple rather than being added to the first (that would
 # make the conditioning set two ROIs).
+#awfa-lh ifc-lh tpc-lh; \
+#awfa-lh pmc-lh tpc-lh; \
 SUBSETS="${SUBSETS:-\
-awfa-lh ifc-lh tpc-lh; \
-awfa-lh pmc-lh tpc-lh; \
 awfa-lh ifc-lh; \
 ifc-lh tpc-lh; \
 awfa-lh tpc-lh; \
@@ -123,6 +124,26 @@ ifc-lh pmc-lh}"
 # Back-compat: ROIS=... still works and collapses the run to that one subset.
 if [ -n "${ROIS:-}" ]; then SUBSETS="$ROIS"; fi
 IFS=';' read -ra SUBSET_ARR <<< "$SUBSETS"
+# SCOPE filters the list by subset size without retyping it. The triple-wise
+# cells are already on disk, so SCOPE=bivariate is the fast way to run only the
+# arm being recomputed. (Leaving it at 'all' is also fine — finished configs are
+# skipped — but it still stats 20 files per triple cell.)
+SCOPE="${SCOPE:-all}"
+if [ "$SCOPE" != "all" ]; then
+    _keep=()
+    for _s in "${SUBSET_ARR[@]}"; do
+        _n=$(echo "$_s" | wc -w)
+        case "$SCOPE" in
+            bivariate)  [ "$_n" -eq 2 ] && _keep+=("$_s") ;;
+            triplewise) [ "$_n" -eq 3 ] && _keep+=("$_s") ;;
+            *) echo "ERROR: SCOPE must be all, bivariate or triplewise" >&2; exit 2 ;;
+        esac
+    done
+    if [ ${#_keep[@]} -eq 0 ]; then
+        echo "ERROR: SCOPE=$SCOPE left no subsets" >&2; exit 2
+    fi
+    SUBSET_ARR=("${_keep[@]}")
+fi
 # PARALLELISM. run_granger.py loops subjects sequentially and parallelizes only
 # over WINDOWS inside a subject. Each window is a 3-variable VAR on ~12 samples
 # — milliseconds — while joblib's process backend pickles the data array per
@@ -135,7 +156,7 @@ IFS=';' read -ra SUBSET_ARR <<< "$SUBSETS"
 # START LOW AND MEASURE. Core count is NOT the ceiling. Each worker reads a
 # multi-GB vertex cache, and when those caches live on a shared/network drive
 # the I/O contention stalls the whole box long before RAM or cores run out —
-# PARALLEL=56 on a 64-core, 256 GB machine took the system down. Step up from
+# PARALLEL=8 on a 64-core, 256 GB machine took the system down. Step up from
 # the default and watch, rather than reasoning from free memory:
 #
 #   ps -o rss=,comm= -C python | awk '{s+=$1; n++} END \
