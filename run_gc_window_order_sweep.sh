@@ -112,9 +112,16 @@ TARGET_FS="${TARGET_FS:-200}"
 # pmc-lh is the second frontal node,
 # so it needs its own triple rather than being added to the first (that would
 # make the conditioning set two ROIs).
-#awfa-lh ifc-lh tpc-lh; \
-#awfa-lh pmc-lh tpc-lh; \
+# Keep BOTH arms listed here and select with SCOPE at call time — commenting a
+# line out breaks SCOPE=triplewise, and a trailing "\" inside a "#" comment does
+# not continue the line anyway, so the entry silently vanishes rather than being
+# preserved for later.
+#   SCOPE=bivariate   -> the six pairs
+#   SCOPE=triplewise  -> the two triples
+#   SCOPE=all         -> everything (default; finished cells are skipped)
 SUBSETS="${SUBSETS:-\
+awfa-lh ifc-lh tpc-lh; \
+awfa-lh pmc-lh tpc-lh; \
 awfa-lh ifc-lh; \
 ifc-lh tpc-lh; \
 awfa-lh tpc-lh; \
