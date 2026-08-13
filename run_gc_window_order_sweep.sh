@@ -7,10 +7,9 @@
 #   tasks   : overtProd, perception
 #   stims   : prodDiff, percDiff
 #   estimator: state-space (Barnett & Seth 2015) throughout. The analysis is
-#             set by SUBSET SIZE, not by a second estimator: 2 ROIs give
-#             bivariate GC (identical to parametric BSMART pairwise, 1.67e-16),
-#             3 ROIs give A->B|C. Spectral in both cases — this project does
-#             not compute time-domain GC.
+#             set by SUBSET SIZE: 2 ROIs -> pairwise (bivariate, identical to
+#             state-space at 1.67e-16), 3 ROIs -> conditional A->B|C. Spectral
+#             in both cases — this project does not compute time-domain GC.
 #   subsets : two triples plus all six bivariate pairs of the four ROIs, so
 #             every edge appears both conditioned and unconditioned.
 #             8 subsets x 11 feasible cells x 2 tasks x 2 contrasts = 352 runs;
@@ -81,17 +80,28 @@ NORMALIZE="${NORMALIZE:-demean}"              # ERP removal; part of the path
 # is then chosen by how many ROIs each subset holds, because --gc-mode
 # conditional conditions each edge on the OTHER ROIs in the subset:
 #
-#   2 ROIs -> conditioning set empty -> bivariate GC. Provably identical to
-#             parametric BSMART pairwise; measured at 1.67e-16 by the M0 check
-#             in run_granger_routes.py --self-test.
+#   2 ROIs -> --gc-mode pairwise. NOT conditional: an empty conditioning set
+#             makes granger_statespace degenerate (see below). Pairwise IS the
+#             bivariate quantity, and equals state-space to 1.67e-16 (M0).
 #   3 ROIs -> conditioned on the single remaining ROI -> A->B|C, the
 #             hypothesis-based triple-wise form.
 #   4+     -> conditioned on everything else, which is the all-ROI conditioning
 #             this project deliberately moved away from.
 #
-# So there is no parametric arm here. Run GC_MODE=pairwise if you want to
-# confirm the M0 identity on a specific result.
-GC_MODE="${GC_MODE:-conditional}"
+# AUTO is the default and picks the mode per subset. Do NOT force conditional
+# on a 2-ROI subset: the conditioning set is then EMPTY, and granger_statespace
+# cannot factor that — cholesky(parcov(SIG, w, x)) degenerates and EVERY window
+# returns NaN, silently, for every subject. Measured: 248 configs, 1,244,994 of
+# 1,245,572 windows NaN. A 2-ROI subset must use --gc-mode pairwise, which is
+# the bivariate quantity anyway and is identical to state-space (M0: 1.67e-16).
+GC_MODE="${GC_MODE:-auto}"
+mode_for () {  # mode_for <subset>
+    if [ "$GC_MODE" != "auto" ]; then echo "$GC_MODE"; return; fi
+    case $(trim "$1" | wc -w) in
+        2) echo pairwise ;;
+        *) echo conditional ;;
+    esac
+}
 TARGET_FS="${TARGET_FS:-200}"
 # Semicolon-separated ROI subsets; each is run as its own sweep. The three
 # named pathways are temporal<->frontal, frontal<->parietal, temporal<->parietal.
@@ -181,10 +191,10 @@ echo "tasks:   $TASKS"
 echo "stims:   $STIMS"
 echo "windows: $WINDOWS ms      orders: $ORDERS"
 echo "method:  $METHOD   normalize: $NORMALIZE"
-echo "gc-mode: $GC_MODE   (analysis set by subset size)"
+echo "gc-mode: $GC_MODE   (2 ROIs -> pairwise, 3+ -> conditional)"
 echo "subsets:"
 for SS in "${SUBSET_ARR[@]}"; do
-    printf '   %-28s %s\n' "$(label "$SS")" "$(scope "$SS")"
+    printf '   %-28s %-11s %s\n' "$(label "$SS")" "$(scope "$SS")" "$(mode_for "$SS")"
 done
 echo "$n_total configurations, 20 subjects each"
 echo
@@ -201,14 +211,15 @@ for S in $STIMS; do
 for W in $WINDOWS; do
 for O in $ORDERS; do
     feasible "$W" "$O" || continue
-    tag="${T}_${S}_$(label "$SS")_$(scope "$SS")_win${W}ms_order${O}"
+    MODE=$(mode_for "$SS")
+    tag="${T}_${S}_$(label "$SS")_$(scope "$SS")_${MODE}_win${W}ms_order${O}"
     log="$LOG_DIR/${tag}.log"
     n_done=$(( n_done + 1 ))
     echo "[$n_done/$n_total] $tag"
 
     # shellcheck disable=SC2086
     CMD="python run_granger.py --task $T --stim-class $S --method $METHOD \
-        --atlas $ATLAS --feature-mode $FEAT $LEAK --gc-mode $GC_MODE \
+        --atlas $ATLAS --feature-mode $FEAT $LEAK --gc-mode $MODE \
         --win-ms $W --order $O --target-fs $TARGET_FS --normalize $NORMALIZE \
         --roi-subset $SS --n-jobs $NJOBS"
 
