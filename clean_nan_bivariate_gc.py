@@ -25,8 +25,27 @@ import argparse
 import collections
 import numpy as np
 
-ROOT = ('/mnt/r/phd_thesis/Research/SpeechProduction/EEG/derivatives/'
-        'source_estimation/GC_source_space')
+def _default_root():
+    """Derive the GC root from config.env, like every other runner here.
+
+    Hardcoding an absolute path silently found nothing on the workstation,
+    whose project root is /media/maxlab_sharedrive/... rather than /mnt/r/...
+    Reuse run_granger.py's own GC_OUTPUT_ROOT so the two cannot disagree about
+    where results live.
+    """
+    try:
+        from run_granger import GC_OUTPUT_ROOT
+        return str(GC_OUTPUT_ROOT)
+    except Exception:
+        try:
+            import config
+            return str(config.DERIVATIVES_ROOT / 'source_estimation'
+                       / 'GC_source_space')
+        except Exception:
+            return ''
+
+
+ROOT = _default_root()
 
 
 def bivariate_dirs(root):
@@ -65,9 +84,21 @@ def main():
                     help='actually remove the bivariate directories')
     args = ap.parse_args()
 
+    if not args.root:
+        print('could not resolve the GC root from config.env — '
+              'pass --root explicitly', file=sys.stderr)
+        return 2
+    print(f'root: {args.root}')
+    if not os.path.isdir(args.root):
+        print(f'that directory does not exist — pass --root explicitly',
+              file=sys.stderr)
+        return 2
+
     dirs = bivariate_dirs(args.root)
     if not dirs:
-        print('no bivariate (2-ROI) directories found — nothing to do')
+        n_any = len(glob.glob(f'{args.root}/**/rois_*', recursive=True))
+        print(f'no bivariate (2-ROI) directories found among {n_any} '
+              f'rois_* directories — nothing to do')
         return 0
 
     files = [f for d in dirs for f in glob.glob(f'{d}/**/*.npz', recursive=True)]
