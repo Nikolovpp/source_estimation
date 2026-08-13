@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Delete every bivariate (2-ROI) GC output so the sweep can recompute them.
+"""Delete obsolete GC subset outputs: bivariate (2-ROI) and 4-ROI leftovers.
 
 WHY. run_gc_window_order_sweep.sh forced --gc-mode conditional on every subset.
 For a 2-ROI subset the conditioning set is EMPTY, which granger_statespace
@@ -8,10 +8,14 @@ NaN; the few that survived returned ln 2 (0.6931), the value GC takes when the
 variance ratio degenerates to exactly 2. Either way the numbers are junk.
 Fixed in ee563e9 — 2-ROI subsets now run with --gc-mode pairwise.
 
-WHAT IT TOUCHES. Every ``rois_<A>-<B>/`` directory under GC_source_space whose
-subset holds exactly two ROIs, in ANY gc-mode. Triple-wise output is never a
-candidate, so the 88 good triple cells are untouched and will be skipped by the
-next sweep rather than recomputed.
+WHAT IT TOUCHES. By default subset sizes 2 and 4, in ANY gc-mode:
+  2 ROIs — the degenerate conditional-mode output described above; recomputed
+           by the next sweep in pairwise mode.
+  4 ROIs — leftovers from before the SUBSETS loop existed, i.e. the all-ROI
+           conditioning this project deliberately moved away from. Nothing
+           regenerates these; they are simply stale.
+The 3-ROI triple-wise arm is NEVER a default target — those cells are good data
+and the next sweep skips them.
 
     conda activate mne
     python clean_nan_bivariate_gc.py              # report only, deletes nothing
@@ -48,11 +52,15 @@ def _default_root():
 ROOT = _default_root()
 
 
-def bivariate_dirs(root):
-    """Every rois_* directory whose subset holds exactly two ROIs."""
+def target_dirs(root, sizes):
+    """Every rois_* directory whose subset size is in ``sizes``.
+
+    3-ROI directories are the triple-wise arm and are never a default target:
+    those 88 cells are good data, and the next sweep skips them.
+    """
     out = []
     for d in glob.glob(f'{root}/**/rois_*', recursive=True):
-        if os.path.isdir(d) and os.path.basename(d)[len('rois_'):].count('-lh') == 2:
+        if os.path.isdir(d) and os.path.basename(d)[len('rois_'):].count('-lh') in sizes:
             out.append(d)
     return sorted(out)
 
@@ -80,8 +88,15 @@ def summarise(files):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default=ROOT)
+    ap.add_argument('--sizes', type=int, nargs='+', default=[2, 4],
+                    help='subset sizes to remove. Default 2 (bivariate — the '
+                         'degenerate conditional-mode output, to be recomputed '
+                         'in pairwise mode) and 4 (leftovers from before the '
+                         'SUBSETS loop, the all-ROI conditioning this project '
+                         'moved away from). 3 is the triple-wise arm and is '
+                         'kept unless you ask for it explicitly.')
     ap.add_argument('--delete', action='store_true',
-                    help='actually remove the bivariate directories')
+                    help='actually remove the matching directories')
     args = ap.parse_args()
 
     if not args.root:
@@ -94,11 +109,16 @@ def main():
               file=sys.stderr)
         return 2
 
-    dirs = bivariate_dirs(args.root)
+    sizes = set(args.sizes)
+    if 3 in sizes:
+        print('WARNING: --sizes includes 3, the triple-wise arm — that is the '
+              'good data.', file=sys.stderr)
+    print(f'removing subset sizes: {sorted(sizes)}')
+    dirs = target_dirs(args.root, sizes)
     if not dirs:
         n_any = len(glob.glob(f'{args.root}/**/rois_*', recursive=True))
-        print(f'no bivariate (2-ROI) directories found among {n_any} '
-              f'rois_* directories — nothing to do')
+        print(f'no matching directories found among {n_any} rois_* '
+              f'directories — nothing to do')
         return 0
 
     files = [f for d in dirs for f in glob.glob(f'{d}/**/*.npz', recursive=True)]
@@ -107,10 +127,11 @@ def main():
         'pairwise' if '_pairwise' in d else
         'conditional' if '_conditional' in d else 'other' for d in dirs)
 
-    print(f'{len(dirs)} bivariate directories, {len(files)} files\n')
+    print(f'{len(dirs)} directories, {len(files)} files\n')
     print('  by subset:')
     for s, n in sorted(by_subset.items()):
-        print(f'    {s:<34} {n:>3} config dirs')
+        n_roi = s[len('rois_'):].count('-lh')
+        print(f'    {s:<36} {n:>3} config dirs  ({n_roi} ROIs)')
     print('\n  by gc-mode:')
     for m, n in sorted(by_mode.items()):
         print(f'    {m:<34} {n:>3} config dirs')
@@ -135,7 +156,8 @@ def main():
             except OSError:
                 pass
     print(f'\ndeleted {len(files)} files in {len(dirs)} directories')
-    print('the next sweep will recompute the bivariate arm in pairwise mode')
+    print('the next sweep recomputes the bivariate arm in pairwise mode; '
+          '4-ROI subsets are no longer in SUBSETS and will not come back')
     return 0
 
 
