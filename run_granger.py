@@ -138,7 +138,8 @@ def normalize_ensemble(x, mode):
 def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                        target_fs=500.0, step=1, freqs=None, bands=None,
                        normalize='none', demean_trials=True, trgc=False,
-                       tmin=None, tmax=None, gc_mode='pairwise', n_jobs=1):
+                       tmin=None, tmax=None, gc_mode='pairwise', n_jobs=1,
+                       diagnostics=True):
     """Moving-window Geweke GC for one subject, all ROI pairs.
 
     ``gc_mode='pairwise'`` runs bivariate BSMART GC per pair.
@@ -252,6 +253,13 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
     use_trgc = trgc and gc_mode == 'pairwise'
     dtr = {b: np.full((n_pairs, n_win), np.nan) for b in band_names} if use_trgc else None
 
+    # Per-window model validation, collected across whatever fits are run.
+    # rho >= 1 means the fitted VAR is non-minimum-phase: numerically it
+    # succeeded, but its spectral GC is meaningless. Ding et al. (2000) Fig. 7
+    # show exactly this happening after stimulus onset when the ensemble mean
+    # is left in, so it is also the check that justifies --normalize demean.
+    diag_rho, diag_cons = [], []
+
     if gc_mode == 'conditional':
         from granger_statespace import moving_window_conditional_gc
         Xmv = np.transpose(V, (1, 0, 2))               # (n_ep, n_roi, n_t)
@@ -259,10 +267,14 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         res = moving_window_conditional_gc(
             Xmv, order=order, freqs=freqs, fs=fs,
             win_samples=win_samples, step=step, pairs=directed, n_jobs=n_jobs,
+            diagnostics=diagnostics,
         )
         if res.get('n_unstable'):
             print(f"    [unstable] {res['n_unstable']}/{len(res['win_start'])} "
                   f"windows had an ill-conditioned fit and are NaN", flush=True)
+        if diagnostics:
+            diag_rho.append(res['rho'])
+            diag_cons.append(res['cons'])
         band_ed = {p: band_average(res['gc'][p], freqs, bands) for p in directed}
         for k, (i, j) in enumerate(pairs):
             for b in band_names:
@@ -274,6 +286,7 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
             res = moving_window_pairwise_gc(
                 X, order=order, freqs=freqs, fs=fs,
                 win_samples=win_samples, step=step, trgc=use_trgc,
+                diagnostics=diagnostics,
             )
             if res.get('n_unstable'):
                 print(f"    [unstable] {res['n_unstable']}/{len(res['win_start'])} "
@@ -281,19 +294,22 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
             b_xy = band_average(res['f_xy'], freqs, bands)
             b_yx = band_average(res['f_yx'], freqs, bands)
             b_d = band_average(res['d_xy'], freqs, bands) if use_trgc else None
-            return i, j, b_xy, b_yx, b_d
+            return i, j, b_xy, b_yx, b_d, res.get('rho'), res.get('cons')
 
         out = Parallel(n_jobs=n_jobs, prefer='processes')(
             delayed(_pair_gc)(i, j) for i, j in pairs
         )
         pos = {(i, j): k for k, (i, j) in enumerate(pairs)}
-        for i, j, b_xy, b_yx, b_d in out:
+        for i, j, b_xy, b_yx, b_d, r_, c_ in out:
             k = pos[(i, j)]
             for b in band_names:
                 fxy[b][k] = b_xy[b]
                 fyx[b][k] = b_yx[b]
                 if use_trgc:
                     dtr[b][k] = b_d[b]
+            if diagnostics and r_ is not None:
+                diag_rho.append(r_)
+                diag_cons.append(c_)
 
     result = {
         'roi_names': roi_names,
@@ -305,21 +321,37 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         'fxy': fxy,
         'fyx': fyx,
         'fs': fs,
+        'n_epochs': int(V.shape[1]),
     }
     if use_trgc:
         result['dtrgc'] = dtr
+    if diagnostics and diag_rho:
+        # (n_fits, n_windows) — one row per pair in pairwise mode, one row
+        # total in conditional mode (a single joint fit serves every edge).
+        result['rho'] = np.atleast_2d(np.stack(diag_rho))
+        result['consistency'] = np.atleast_2d(np.stack(diag_cons))
     return result
 
 
 # ─────────────────────────────────────────────────────────────────────
 # IO
 # ─────────────────────────────────────────────────────────────────────
-def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise'):
+def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
+           demean_trials=True):
+    """Directory segment identifying the GC configuration.
+
+    Every parameter that changes the numbers must appear here, or two runs
+    silently overwrite each other. ``demean_trials`` was missing: it is on by
+    default, so the suffix appears only when it is turned OFF and no existing
+    path changes.
+    """
     t = f'order{order}_win{win_ms:g}ms_fs{target_fs:g}'
     if normalize != 'none':
         t += f'_{normalize}'
     if gc_mode != 'pairwise':
         t += f'_{gc_mode}'
+    if not demean_trials:
+        t += '_notrialdemean'
     return t
 
 
@@ -343,13 +375,13 @@ def roiset_tag(roi_subset):
 def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
                      leakage_correction, order, win_ms, target_fs, normalize,
                      output_root=GC_OUTPUT_ROOT, gc_mode='pairwise',
-                     roi_subset=None):
+                     roi_subset=None, demean_trials=True):
     """Where this subject's result lands. Single source of truth, so the
     skip-if-exists check in main() cannot drift from where save writes."""
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
-        / gc_tag(order, win_ms, target_fs, normalize, gc_mode)
+        / gc_tag(order, win_ms, target_fs, normalize, gc_mode, demean_trials)
         / roiset_tag(roi_subset) / stim_class
     )
     return out_dir / f'{subj}_{task}_{stim_class}.npz'
@@ -358,11 +390,11 @@ def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
 def save_subject_gc(result, subj, task, stim_class, method, atlas,
                     feature_mode, leakage_correction, order, win_ms,
                     target_fs, normalize, output_root=GC_OUTPUT_ROOT,
-                    gc_mode='pairwise', roi_subset=None):
+                    gc_mode='pairwise', roi_subset=None, demean_trials=True):
     out_file = subject_out_path(
         subj, task, stim_class, method, atlas, feature_mode,
         leakage_correction, order, win_ms, target_fs, normalize,
-        output_root, gc_mode, roi_subset)
+        output_root, gc_mode, roi_subset, demean_trials)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     save = {
@@ -380,6 +412,14 @@ def save_subject_gc(result, subj, task, stim_class, method, atlas,
     if 'dtrgc' in result:
         for b, arr in result['dtrgc'].items():
             save[f'dtrgc_{b}'] = arr
+    # Model validation, persisted so it never has to be recomputed by
+    # re-running the sweep. n_epochs is the divisor behind --normalize zscore's
+    # per-time-point ensemble SD, so it belongs with the numbers it scales.
+    if 'n_epochs' in result:
+        save['n_epochs'] = np.array(result['n_epochs'])
+    for k in ('rho', 'consistency'):
+        if k in result:
+            save[k] = result[k]
     np.savez_compressed(out_file, **save)
     return out_file
 
@@ -423,6 +463,14 @@ def parse_args():
     p.add_argument('--fstep', type=float, default=1.0)
     p.add_argument('--tmin', type=float, default=None, help='GC window start (s); default full epoch')
     p.add_argument('--tmax', type=float, default=None, help='GC window end (s); default full epoch')
+    p.add_argument('--no-diagnostics', dest='diagnostics',
+                   action='store_false', default=True,
+                   help='Skip per-window model validation (companion spectral '
+                        'radius + MVGC consistency). ON by default: a fit can '
+                        'succeed numerically and still be non-minimum-phase, '
+                        'whose spectral GC is meaningless, and nothing else in '
+                        'the pipeline detects that. Costs one extra MVAR fit '
+                        'per window.')
     p.add_argument('--normalize', default='demean',
                    choices=['none', 'demean', 'zscore'],
                    help="Across-trial ensemble normalization. DEFAULT 'demean' "
@@ -507,6 +555,7 @@ def main():
     total_start = time.time()
     ok, failed = 0, []
     n_skip = 0
+    all_rho, all_cons, all_n = [], [], []
     for subj in subjects:
         # --overwrite was declared but never read, so every re-run recomputed
         # work already on disk. Check before touching the cache: a finished
@@ -515,7 +564,8 @@ def main():
             subj, args.task, args.stim_class, args.method, args.atlas,
             args.feature_mode, args.leakage_correction, args.order,
             args.win_ms, args.target_fs, args.normalize,
-            gc_mode=args.gc_mode, roi_subset=subset)
+            gc_mode=args.gc_mode, roi_subset=subset,
+            demean_trials=args.demean_trials)
         if done.exists() and not args.overwrite:
             n_skip += 1
             continue
@@ -549,21 +599,62 @@ def main():
             demean_trials=args.demean_trials, trgc=args.trgc,
             tmin=args.tmin, tmax=args.tmax,
             gc_mode=args.gc_mode, n_jobs=args.n_jobs,
+            diagnostics=args.diagnostics,
         )
         out_file = save_subject_gc(
             result, subj, args.task, args.stim_class, args.method,
             args.atlas, args.feature_mode, args.leakage_correction,
             args.order, args.win_ms, args.target_fs, args.normalize,
             gc_mode=args.gc_mode, roi_subset=args.roi_subset,
+            demean_trials=args.demean_trials,
         )
         n_pairs = result['pair_i'].size
+        n_ep = result.get('n_epochs')
         print(f'  {subj}: {len(roi_data)} ROIs, {n_pairs} pairs, '
-              f'{result["window_ms"].size} windows in '
+              f'{result["window_ms"].size} windows, N={n_ep} epochs in '
               f'{(time.time()-t0)/60:.1f} min -> {out_file.name}')
+        if 'rho' in result:
+            r = np.asarray(result['rho'], float)
+            c = np.asarray(result['consistency'], float)
+            n_fin = int(np.isfinite(r).sum())
+            n_nmp = int((r >= 1.0).sum())
+            # The ensemble SD at each time point is estimated from N epochs;
+            # its relative standard error is ~1/sqrt(2N). That is the jitter
+            # --normalize zscore would divide by, so report it next to N.
+            jit = 100.0 / np.sqrt(2.0 * n_ep) if n_ep else float('nan')
+            print(f'    [model] rho median {np.nanmedian(r):.3f}, '
+                  f'max {np.nanmax(r) if n_fin else float("nan"):.3f}, '
+                  f'non-minimum-phase (rho>=1) {n_nmp}/{n_fin} fits  |  '
+                  f'consistency median {100*np.nanmedian(c):.1f}%  |  '
+                  f'ensemble-SD jitter 1/sqrt(2N) = {jit:.1f}%', flush=True)
+            all_rho.append(r.ravel())
+            all_cons.append(c.ravel())
+            all_n.append(n_ep)
         ok += 1
 
     print(f'\n{ok}/{len(subjects)} subjects done in '
           f'{(time.time()-total_start)/60:.1f} min')
+    if all_rho:
+        r = np.concatenate(all_rho)
+        c = np.concatenate(all_cons)
+        n_fin = int(np.isfinite(r).sum())
+        n_nmp = int((r >= 1.0).sum())
+        N = np.array(all_n, float)
+        print('\nMODEL VALIDATION (Ding et al. 2000; MVGC stats/consistency.m)')
+        print(f'  epochs N:            {N.mean():.0f} mean, '
+              f'{N.min():.0f}-{N.max():.0f} range over {len(N)} subjects')
+        print(f'  ensemble-SD jitter:  {100/np.sqrt(2*N.mean()):.1f}% mean, '
+              f'{100/np.sqrt(2*N.min()):.1f}% worst  '
+              f'(1/sqrt(2N); the divisor --normalize zscore would apply)')
+        print(f'  spectral radius rho: {np.nanmedian(r):.3f} median, '
+              f'{np.nanpercentile(r, 95):.3f} p95' if n_fin else
+              '  spectral radius rho: no finite fits')
+        print(f'  NON-MINIMUM-PHASE:   {n_nmp}/{n_fin} fits '
+              f'({100*n_nmp/max(n_fin, 1):.2f}%) have rho>=1 — their spectral '
+              f'GC is not interpretable')
+        print(f'  consistency:         {100*np.nanmedian(c):.1f}% median, '
+              f'{100*np.nanpercentile(c, 5):.1f}% p5   '
+              f'(MVGC calls >80% reasonable; Ding et al. report ~90%)')
     if failed:
         print(f'FAILED/SKIPPED: {", ".join(failed)}')
 

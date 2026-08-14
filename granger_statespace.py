@@ -180,19 +180,25 @@ def ss_conditional_gc(A, SIG, x, y, freqs=None, fs=None):
 
 
 def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
-                                 pairs=None, n_jobs=1):
+                                 pairs=None, n_jobs=1, diagnostics=False):
     """Sliding-window state-space conditional spectral GC.
 
     Fits the full multivariate VAR once per window (all signals jointly)
     and derives each requested directed pair's conditional GC from it.
     Parallelizes over windows (each window is one joint fit + DARE solves).
 
+    ``diagnostics`` additionally returns per-window model validation (the
+    companion spectral radius and MVGC's consistency statistic), at the cost
+    of one extra ``fit_mvar`` per window.
+
     Returns
     -------
     dict
         ``gc`` : {(src, tgt): (n_freqs, n_windows)}.
         ``win_start`` : (n_windows,).
+        If ``diagnostics``: ``rho``, ``cons`` : (n_windows,).
     """
+    from granger import window_diagnostics
     from joblib import Parallel, delayed
 
     X = np.asarray(X, dtype=float)
@@ -217,26 +223,43 @@ def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
     def _win(s):
         seg = X[:, :, s:s + win_samples]
         try:
-            res = statespace_conditional_gc(seg, order, freqs, fs, pairs=pairs)
+            if diagnostics:
+                res, A_w, _ = statespace_conditional_gc(
+                    seg, order, freqs, fs, pairs=pairs, return_model=True)
+                diag = window_diagnostics(seg, order, A_w)
+            else:
+                res = statespace_conditional_gc(seg, order, freqs, fs,
+                                                pairs=pairs)
+                diag = None
         except _ILL:
-            return None
-        return {p: res[p][1] for p in pairs}      # spectral part only
+            # The fit itself failed, so there is no model to diagnose.
+            return None, ((np.nan, np.nan) if diagnostics else None)
+        return {p: res[p][1] for p in pairs}, diag   # spectral part only
 
     outs = Parallel(n_jobs=n_jobs, prefer='processes')(
         delayed(_win)(int(s)) for s in starts)
 
     gc = {p: np.empty((freqs.size, starts.size)) for p in pairs}
+    rho = np.full(starts.size, np.nan) if diagnostics else None
+    cons = np.full(starts.size, np.nan) if diagnostics else None
     n_bad = 0
-    for w, o in enumerate(outs):
+    for w, (o, diag) in enumerate(outs):
+        if diagnostics and diag is not None:
+            rho[w], cons[w] = diag
         if o is None:
             o = nan_col
             n_bad += 1
         for p in pairs:
             gc[p][:, w] = o[p]
-    return {'gc': gc, 'win_start': starts, 'n_unstable': n_bad}
+    out = {'gc': gc, 'win_start': starts, 'n_unstable': n_bad}
+    if diagnostics:
+        out['rho'] = rho
+        out['cons'] = cons
+    return out
 
 
-def statespace_conditional_gc(X, order, freqs=None, fs=None, pairs=None):
+def statespace_conditional_gc(X, order, freqs=None, fs=None, pairs=None,
+                              return_model=False):
     """Fit the full VAR once and compute state-space conditional GC.
 
     Parameters
@@ -259,4 +282,6 @@ def statespace_conditional_gc(X, order, freqs=None, fs=None, pairs=None):
     out = {}
     for src, tgt in pairs:
         out[(src, tgt)] = ss_conditional_gc(A, SIG, tgt, src, freqs, fs)
+    if return_model:
+        return out, A, SIG
     return out
