@@ -81,20 +81,23 @@ NORMALIZE="${NORMALIZE:-demean}"              # ERP removal; part of the path
 # is then chosen by how many ROIs each subset holds, because --gc-mode
 # conditional conditions each edge on the OTHER ROIs in the subset:
 #
-#   2 ROIs -> --gc-mode pairwise. NOT conditional: an empty conditioning set
-#             makes granger_statespace degenerate (see below). Pairwise IS the
-#             bivariate quantity, and equals state-space to 1.67e-16 (M0).
+#   2 ROIs -> --gc-mode pairwise, the bivariate quantity.
 #   3 ROIs -> conditioned on the single remaining ROI -> A->B|C, the
 #             hypothesis-based triple-wise form.
 #   4+     -> conditioned on everything else, which is the all-ROI conditioning
 #             this project deliberately moved away from.
 #
-# AUTO is the default and picks the mode per subset. Do NOT force conditional
-# on a 2-ROI subset: the conditioning set is then EMPTY, and granger_statespace
-# cannot factor that — cholesky(parcov(SIG, w, x)) degenerates and EVERY window
-# returns NaN, silently, for every subject. Measured: 248 configs, 1,244,994 of
-# 1,245,572 windows NaN. A 2-ROI subset must use --gc-mode pairwise, which is
-# the bivariate quantity anyway and is identical to state-space (M0: 1.67e-16).
+# AUTO is the default and picks the mode per subset. It is a labelling choice,
+# not a correctness one: --gc-mode conditional on a 2-ROI subset gives the SAME
+# numbers (verified, 4.4e-16), because ss_conditional_gc branches on an empty
+# conditioning set exactly as MVGC's autocov_to_smvgc.m does ("if isempty(z)
+# % unconditional"). auto keeps the output path and the log honest about which
+# quantity was computed.
+#
+# An earlier comment here blamed a 2-ROI NaN wipeout on that empty conditioning
+# set. That was wrong: the cause was the --normalize axis bug in
+# compute_subject_gc (ff2cdd6, fixed 95bd838), which made the pair rank 1 and
+# every covariance singular. See validate_granger_normalize.py.
 GC_MODE="${GC_MODE:-auto}"
 mode_for () {  # mode_for <subset>
     if [ "$GC_MODE" != "auto" ]; then echo "$GC_MODE"; return; fi

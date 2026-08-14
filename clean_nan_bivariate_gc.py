@@ -8,14 +8,15 @@ fit fails; for 3 ROIs it costs one rank of three and 93% of windows are NaN,
 with the surviving 7% no longer ranking the true edge first. See
 validate_granger_normalize.py. Fixed 2026-08-13; all of it must be recomputed.
 
-A separate earlier defect hit the 2-ROI arm as well: the sweep forced
---gc-mode conditional on every subset, and with an EMPTY conditioning set
-cholesky(parcov(SIG, w, x)) degenerates. Fixed in ee563e9 — 2-ROI subsets now
-run --gc-mode pairwise.
+NOT a second bug. The 2-ROI wipeout was once blamed on the sweep forcing
+--gc-mode conditional, on the theory that an empty conditioning set makes
+cholesky(parcov(SIG, w, x)) degenerate. That was wrong. ss_conditional_gc
+branches on an empty z exactly as MVGC's autocov_to_smvgc.m does ("if
+isempty(z) % unconditional"), and with the normalize bug fixed a 2-ROI subset
+in conditional mode reproduces pairwise GC to 4.4e-16. One cause, not two.
 
 WHAT IT TOUCHES. By default subset sizes 2, 3 and 4, in ANY gc-mode:
-  2 ROIs — degenerate conditional-mode output AND the normalize bug;
-           recomputed by the next sweep in pairwise mode.
+  2 ROIs — the normalize bug; recomputed by the next sweep in pairwise mode.
   3 ROIs — the triple-wise arm. Was good data before 2026-07-29; every cell on
            disk now postdates the normalize bug. Recomputed by SCOPE=triplewise.
   4 ROIs — leftovers from before the SUBSETS loop existed, i.e. the all-ROI
