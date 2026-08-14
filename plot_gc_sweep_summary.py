@@ -31,8 +31,18 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-D = ('/mnt/r/phd_thesis/Research/SpeechProduction/EEG/derivatives/'
-     'source_estimation/GC_source_space')
+def _root():
+    """Derive the GC root from config.env like the runners do.
+
+    A hardcoded /mnt/r path silently found nothing on the workstation, whose
+    project root is /media/maxlab_sharedrive/... — and "0 completed configs"
+    reads as "the sweep produced nothing", not as "wrong machine".
+    """
+    from run_granger import GC_OUTPUT_ROOT
+    return str(GC_OUTPUT_ROOT)
+
+
+D = _root()
 OUT = f'{D}/_figures_sweep'
 os.makedirs(OUT, exist_ok=True)
 
@@ -49,13 +59,30 @@ def sh(r):
 
 
 def scan():
-    """-> {(task, stim, subset): {(win, order): [files]}}"""
+    """-> {(task, stim, subset, config): {(win, order): [files]}}
+
+    Matches ANY gc-mode. The glob used to require ``*conditional`` in the
+    config directory, from when the sweep forced conditional mode on every
+    subset. 2-ROI subsets now run pairwise, whose tag carries no mode suffix,
+    so that glob would have found none of the bivariate arm and reported
+    "0 completed configs" — silently, right after the rerun that produced it.
+
+    Everything AFTER the order/window/fs stem — the normalize mode, the
+    gc-mode, _perclass, _notrialdemean — is part of the group key, not folded
+    into the cell. Grouping on (window, order) alone would have averaged the
+    A/B arms together into a single line, which is worse than finding nothing.
+    """
     out = collections.defaultdict(lambda: collections.defaultdict(list))
-    for f in glob.glob(f'{D}/**/*conditional/rois_*/*/*.npz', recursive=True):
+    for f in glob.glob(f'{D}/**/rois_*/*/*.npz', recursive=True):
         p = f.split('GC_source_space/')[1].split('/')
+        if len(p) < 8:
+            continue
         task, cfg, subset, stim = p[0], p[5], p[6].replace('rois_', ''), p[7]
-        m = re.match(r'order(\d+)_win(\d+)ms', cfg)
-        out[(task, stim, subset)][(int(m.group(2)), int(m.group(1)))].append(f)
+        m = re.match(r'order(\d+)_win(\d+)ms_fs(\d+)_?(.*)$', cfg)
+        if m is None:
+            continue
+        arm = m.group(4) or 'none'
+        out[(task, stim, subset, arm)][(int(m.group(2)), int(m.group(1)))].append(f)
     return out
 
 
@@ -76,7 +103,7 @@ def band_mean(files, band):
     return {e: np.array(v) for e, v in acc.items()}
 
 
-def figure(task, stim, subset, cells):
+def figure(task, stim, subset, arm, cells):
     good = {k: v for k, v in cells.items() if len(v) == N_EXPECT}
     skipped = {k: len(v) for k, v in cells.items() if len(v) != N_EXPECT}
     if not good:
@@ -133,12 +160,12 @@ def figure(task, stim, subset, cells):
                             for (w, o), n in sorted(skipped.items())))
     fig.suptitle(
         f'{task} · {stim} · {" + ".join(sh(r) for r in subset.split("-lh")[:-1])}'
-        f'   [{scope}]\n'
-        f'LCMV, state-space, n={N_EXPECT}, mean±SEM over subjects; '
+        f'   [{scope}]   config: {arm}\n'
+        f'LCMV, n={N_EXPECT}, mean±SEM over subjects; '
         f'GC averaged over time after dropping {EDGE_DROP} edge windows{note}',
         fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.99 - 0.035 * len(BANDS) / 3])
-    p = f'{OUT}/sweep_{task}_{stim}_{subset}.png'
+    p = f'{OUT}/sweep_{task}_{stim}_{subset}_{arm}.png'
     fig.savefig(p, dpi=150)
     plt.close(fig)
     return p, len(good), skipped
@@ -147,7 +174,11 @@ def figure(task, stim, subset, cells):
 if __name__ == '__main__':
     cells = scan()
     print(f'{sum(len(v) for v in cells.values())} completed configs '
-          f'across {len(cells)} (task, stim, subset) groups\n')
+          f'across {len(cells)} (task, stim, subset, config) groups')
+    if not cells:
+        print(f'nothing found under {D} — wrong machine, or the sweep has '
+              f'not written anything yet')
+    print()
     for key in sorted(cells):
         res = figure(*key, cells[key])
         if res is None:

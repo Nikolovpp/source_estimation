@@ -21,8 +21,18 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-R = ('/mnt/r/phd_thesis/Research/SpeechProduction/EEG/derivatives/'
-     'source_estimation/GC_routes')
+def _derivatives():
+    """Derive the derivatives root from config.env rather than hardcoding.
+
+    A hardcoded /mnt/r path finds nothing on the workstation (project root
+    /media/maxlab_sharedrive/...) and reports it as "no data", not as
+    "wrong machine".
+    """
+    from config import DECODE_OUTPUT_ROOT
+    return DECODE_OUTPUT_ROOT.parent
+
+
+R = str(_derivatives() / 'GC_routes')
 OUT = f'{R}/_figures'
 os.makedirs(OUT, exist_ok=True)
 
