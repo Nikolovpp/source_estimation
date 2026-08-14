@@ -18,12 +18,22 @@
 #                            demeaning "can introduce large bias in VAR model
 #                            estimation"; Ding et al. do it anyway, over the
 #                            whole trial. Untested here, one flag to check.
+#   arm D  demean per class  removes the ERP WITHIN each stimulus class.
+#                            GC pools both classes, so the pooled removal in
+#                            arms A-C leaves the between-class evoked
+#                            difference in: class A keeps +delta/2, class B
+#                            -delta/2, a deterministic class-locked waveform.
+#                            On a synthetic 25 ms ROI-to-ROI latency
+#                            difference, pooled removal left a theta peak of
+#                            1.80 where per-class gave 0.93.
 #
-# WHY ARM B MIGHT LOSE. The ensemble SD is estimated from N epochs, so it
-# jitters by ~1/sqrt(2N). Ding et al. had 888 trials (~2.4%); if N here is ~90
-# it is ~7.5%, and that jitter is independent across time points, so dividing
-# by it WHITENS the signal and deflates GC. Run report_gc_diagnostics.py first
-# to get the real N and the real jitter for this data.
+# ARM B'S COST IS SMALLER THAN IT LOOKED. The ensemble SD is estimated from N
+# epochs and jitters by ~1/sqrt(2N), which whitens. Measured on this data
+# (report_gc_diagnostics.py): N is 234 mean for perception and 202 for
+# production, so the jitter is 4.6-5.0% against Ding et al.'s 2.4% at 888
+# trials — about 2x, entering as ~0.2% of added variance. Not enough to reject
+# step 3 on noise grounds. Arm B now turns on one question only: does the
+# high-beta production effect survive removing the power modulation?
 #
 # WHY ARM B MIGHT ALSO CHANGE THE ANSWER. The surviving effect in this project
 # is high-beta suppression during production, and movement-related beta
@@ -58,6 +68,7 @@ WIN_MS="${WIN_MS:-60}"
 ROIS="${ROIS:-awfa-lh ifc-lh}"        # the pathway carrying the headline effect
 NORMALIZE_ARMS="${NORMALIZE_ARMS:-demean zscore}"
 RUN_ARM_C="${RUN_ARM_C:-1}"           # --no-demean-trials probe
+RUN_ARM_D="${RUN_ARM_D:-1}"           # --normalize-per-class probe
 
 METHOD="${METHOD:-LCMV}"
 ATLAS="${ATLAS:-custom}"
@@ -77,18 +88,20 @@ n_total=0
 for TS in $TASKS_STIMS; do for A in $NORMALIZE_ARMS; do for O in $ORDERS; do
     n_total=$(( n_total + 1 ))
 done; done; done
-if [ "$RUN_ARM_C" = "1" ]; then
+for ARM in C D; do
+    eval "on=\$RUN_ARM_$ARM"
+    [ "$on" = "1" ] || continue
     for TS in $TASKS_STIMS; do for O in $ORDERS; do
         n_total=$(( n_total + 1 ))
     done; done
-fi
+done
 
 echo "GC preprocessing A/B"
 echo "  task:stim   : $TASKS_STIMS"
 echo "  window      : ${WIN_MS} ms @ ${TARGET_FS} Hz"
 echo "  orders      : $ORDERS"
 echo "  ROIs        : $ROIS   (gc-mode $GC_MODE)"
-echo "  arms        : $NORMALIZE_ARMS$([ "$RUN_ARM_C" = 1 ] && echo ' + no-demean-trials')"
+echo "  arms        : $NORMALIZE_ARMS$([ "$RUN_ARM_C" = 1 ] && echo ' + no-demean-trials')$([ "$RUN_ARM_D" = 1 ] && echo ' + per-class')"
 echo "  method      : $METHOD / $ATLAS / $FEAT $LEAK"
 echo "  $n_total configs, 20 subjects each, $PARALLEL at a time"
 echo
@@ -138,6 +151,16 @@ if [ "$RUN_ARM_C" = "1" ]; then
     done
 fi
 
+if [ "$RUN_ARM_D" = "1" ]; then
+    for TS in $TASKS_STIMS; do
+        TASK="${TS%%:*}"; STIM="${TS##*:}"
+        for O in $ORDERS; do
+            queue "${TASK}_${STIM}_demean_perClass_win${WIN_MS}ms_order${O}" \
+                  "--normalize demean --normalize-per-class"
+        done
+    done
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
@@ -153,6 +176,8 @@ echo "Compare the arms on:"
 echo "  1. sign and rank of awfa->ifc          (does the effect survive?)"
 echo "  2. the band carrying it                (does high beta hold under zscore?)"
 echo "  3. rho>=1 count                        (does an arm buy model validity?)"
+echo "  5. arm D vs arm A                      (how much of the effect was the"
+echo "                                          between-class evoked difference?)"
 echo "  4. consistency median                  (relative only — see"
 echo "                                          report_gc_diagnostics.py)"
 echo

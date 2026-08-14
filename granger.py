@@ -243,6 +243,22 @@ def var_consistency(X, A):
     MVGC's header calls ``> 0.8`` "reasonable consistency"; Ding et al. report
     ~90% for cortical ERPs in 50 ms windows.  ``norm`` is the matrix 2-norm,
     matching MATLAB's default (NOT numpy's Frobenius default).
+
+    CAVEAT ON CENTERING.  MVGC is self-consistent here because
+    ``tsdata_to_var`` demeans before fitting, so its ``E`` and this function's
+    ``X`` are centered the same way.  ``fit_mvar`` ports ``armorf``, which
+    fits RAW second moments and does not demean, so ``A`` comes from
+    uncentered data while the residuals below are formed on centered data.
+    The mismatch is proportional to the pooled mean, which the pipeline's
+    ``demean_trials`` (and ``--normalize demean``) drive to ~0 — measured
+    residual covariance matches ``Sigma`` to 0.4% under the production config.
+    It would matter under ``--no-demean-trials --normalize none``.
+
+    NOT AN ABSOLUTE MEASURE OF MODEL ADEQUACY.  It reduces to
+    ``1 - ||Sigma|| / ||Rr||``, i.e. the share of the process's own variance
+    predictable from its past, and is invariant to scaling the whole process.
+    A CORRECT model on a noisy process scores ~55%.  Compare arms with it;
+    do not pass or fail one in isolation.
     """
     X = np.asarray(X, dtype=float)
     if X.ndim == 2:
