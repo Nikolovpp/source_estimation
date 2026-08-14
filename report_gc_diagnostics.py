@@ -118,10 +118,14 @@ def report_counts(args):
 def report_grid(args):
     """Section 3: rho and consistency over the sweep's window x order grid.
 
-    Runs the REAL pipeline (compute_subject_gc) so the numbers are the ones
-    the sweep produces, with freqs cut to a single bin: the diagnostics come
-    from the MVAR fit and do not depend on the frequency grid, so the spectral
-    GC that would otherwise dominate the runtime is not needed.
+    Runs the REAL pipeline (compute_subject_gc) on the production frequency
+    grid, so these are the numbers the sweep produces rather than an
+    approximation of them.
+
+    An earlier version cut freqs to one bin on the theory that the diagnostics
+    come from the MVAR fit and so do not need the spectrum. True, but useless:
+    measured, the fit dominates and the reduced grid saved 1% (1.26s vs 1.25s)
+    while leaving theta with no bin, which band_average correctly rejected.
     """
     from decoding_io import _load_cached_roi_data
     from run_granger import compute_subject_gc
@@ -161,7 +165,7 @@ def report_grid(args):
                         r = compute_subject_gc(
                             roi_data, times, sfreq, order=order,
                             win_ms=win_ms, target_fs=args.target_fs,
-                            freqs=np.array([10.0]), normalize=args.normalize,
+                            normalize=args.normalize,
                             gc_mode='pairwise', n_jobs=1, diagnostics=True)
                     except Exception as e:
                         print(f'    {subj}: {type(e).__name__}: {str(e)[:60]}')
