@@ -222,16 +222,19 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         V = V - V.mean(axis=2, keepdims=True)
 
     # Optional ensemble normalization (default none = BSMART).
-    # V is (n_trials, n_chan, n_times) and normalize_ensemble expects
-    # (n_trials, n_times) — so it must be handed one CHANNEL at a time and
-    # stacked back on axis 1. Iterating trials instead (V[r], shape
-    # (n_chan, n_times)) makes its axis-0 mean a cross-CHANNEL average, i.e. a
-    # per-trial common-average reference over the ROIs — not ERP removal, and
-    # actively harmful here because it mixes the very channels whose directed
-    # coupling is being measured.
+    # V is (n_roi, n_trials, n_times) — see the stack above, V[i] in the
+    # pairwise branch, and the transpose in the conditional branch.
+    # normalize_ensemble takes (n_trials, n_times) and averages over axis 0,
+    # so it must be handed one ROI at a time: V[r]. That axis-0 mean is then
+    # the mean over TRIALS, i.e. the ERP.
+    # Do NOT iterate V[:, c, :] — that is one EPOCH, whose axis-0 mean is a
+    # cross-ROI average, i.e. a common-average reference over the very
+    # channels whose directed coupling is being measured. For a 2-ROI subset
+    # it makes them exactly antisymmetric (rank 1) and every MVAR fit fails.
+    # See validate_granger_normalize.py; this was the ff2cdd6 regression.
     if normalize != 'none':
-        V = np.stack([normalize_ensemble(V[:, c, :], normalize)
-                      for c in range(V.shape[1])], axis=1)
+        V = np.stack([normalize_ensemble(V[r], normalize)
+                      for r in range(V.shape[0])], axis=0)
 
     win_samples = max(2, round(win_ms / 1000.0 * fs))
     starts = np.arange(0, V.shape[2] - win_samples + 1, step)

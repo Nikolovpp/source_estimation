@@ -1,21 +1,30 @@
 #!/usr/bin/env python
-"""Delete obsolete GC subset outputs: bivariate (2-ROI) and 4-ROI leftovers.
+"""Delete GC subset outputs invalidated by the --normalize axis bug.
 
-WHY. run_gc_window_order_sweep.sh forced --gc-mode conditional on every subset.
-For a 2-ROI subset the conditioning set is EMPTY, which granger_statespace
-cannot factor: cholesky(parcov(SIG, w, x)) degenerates. Most windows came back
-NaN; the few that survived returned ln 2 (0.6931), the value GC takes when the
-variance ratio degenerates to exactly 2. Either way the numbers are junk.
-Fixed in ee563e9 — 2-ROI subsets now run with --gc-mode pairwise.
+WHY. Every ``_demean`` directory was written with the ff2cdd6 regression in
+compute_subject_gc, which subtracted a cross-ROI average instead of the ERP.
+For 2 ROIs that makes the pair exactly antisymmetric (rank 1) and every MVAR
+fit fails; for 3 ROIs it costs one rank of three and 93% of windows are NaN,
+with the surviving 7% no longer ranking the true edge first. See
+validate_granger_normalize.py. Fixed 2026-08-13; all of it must be recomputed.
 
-WHAT IT TOUCHES. By default subset sizes 2 and 4, in ANY gc-mode:
-  2 ROIs — the degenerate conditional-mode output described above; recomputed
-           by the next sweep in pairwise mode.
+A separate earlier defect hit the 2-ROI arm as well: the sweep forced
+--gc-mode conditional on every subset, and with an EMPTY conditioning set
+cholesky(parcov(SIG, w, x)) degenerates. Fixed in ee563e9 — 2-ROI subsets now
+run --gc-mode pairwise.
+
+WHAT IT TOUCHES. By default subset sizes 2, 3 and 4, in ANY gc-mode:
+  2 ROIs — degenerate conditional-mode output AND the normalize bug;
+           recomputed by the next sweep in pairwise mode.
+  3 ROIs — the triple-wise arm. Was good data before 2026-07-29; every cell on
+           disk now postdates the normalize bug. Recomputed by SCOPE=triplewise.
   4 ROIs — leftovers from before the SUBSETS loop existed, i.e. the all-ROI
            conditioning this project deliberately moved away from. Nothing
            regenerates these; they are simply stale.
-The 3-ROI triple-wise arm is NEVER a default target — those cells are good data
-and the next sweep skips them.
+
+Pass --sizes explicitly to keep an arm (e.g. ``--sizes 2`` to rerun only the
+pairs first). The pre-2026-07-29 directories carry no ``_demean`` in their
+config tag, so they are distinguishable if any turn out to be worth keeping.
 
     conda activate mne
     python clean_nan_bivariate_gc.py              # report only, deletes nothing
@@ -53,11 +62,7 @@ ROOT = _default_root()
 
 
 def target_dirs(root, sizes):
-    """Every rois_* directory whose subset size is in ``sizes``.
-
-    3-ROI directories are the triple-wise arm and are never a default target:
-    those 88 cells are good data, and the next sweep skips them.
-    """
+    """Every rois_* directory whose subset size is in ``sizes``."""
     out = []
     for d in glob.glob(f'{root}/**/rois_*', recursive=True):
         if os.path.isdir(d) and os.path.basename(d)[len('rois_'):].count('-lh') in sizes:
@@ -66,8 +71,14 @@ def target_dirs(root, sizes):
 
 
 def summarise(files):
-    """How much of what we are about to delete was actually usable."""
+    """How much of what we are about to delete was actually usable.
+
+    Report the finite FRACTION, not a has-any-finite-value count: under the
+    normalize bug a file is typically 93% NaN, which "400 files with some
+    finite values" would have made look healthy.
+    """
     n_nan = n_data = 0
+    tot = fin = 0
     for f in files[:400]:                       # cap: this is a report, not a proof
         try:
             z = np.load(f, allow_pickle=True)
@@ -76,25 +87,25 @@ def summarise(files):
         keys = [k for k in z.files if k.startswith(('fxy_', 'fyx_'))]
         if not keys:
             continue
-        finite = sum(int(np.isfinite(np.asarray(z[k], dtype=float)).sum())
-                     for k in keys)
-        if finite:
+        v = np.concatenate([np.asarray(z[k], dtype=float).ravel() for k in keys])
+        tot += v.size
+        n_f = int(np.isfinite(v).sum())
+        fin += n_f
+        if n_f:
             n_data += 1
         else:
             n_nan += 1
-    return n_nan, n_data
+    return n_nan, n_data, (100.0 * fin / tot if tot else float('nan'))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default=ROOT)
-    ap.add_argument('--sizes', type=int, nargs='+', default=[2, 4],
-                    help='subset sizes to remove. Default 2 (bivariate — the '
-                         'degenerate conditional-mode output, to be recomputed '
-                         'in pairwise mode) and 4 (leftovers from before the '
-                         'SUBSETS loop, the all-ROI conditioning this project '
-                         'moved away from). 3 is the triple-wise arm and is '
-                         'kept unless you ask for it explicitly.')
+    ap.add_argument('--sizes', type=int, nargs='+', default=[2, 3, 4],
+                    help='subset sizes to remove. Default 2, 3 and 4 — every '
+                         'cell on disk was written with the ff2cdd6 normalize '
+                         'bug and has to be recomputed. Narrow it (e.g. '
+                         '--sizes 2) to rerun one arm at a time.')
     ap.add_argument('--delete', action='store_true',
                     help='actually remove the matching directories')
     args = ap.parse_args()
@@ -110,9 +121,6 @@ def main():
         return 2
 
     sizes = set(args.sizes)
-    if 3 in sizes:
-        print('WARNING: --sizes includes 3, the triple-wise arm — that is the '
-              'good data.', file=sys.stderr)
     print(f'removing subset sizes: {sorted(sizes)}')
     dirs = target_dirs(args.root, sizes)
     if not dirs:
@@ -136,9 +144,10 @@ def main():
     for m, n in sorted(by_mode.items()):
         print(f'    {m:<34} {n:>3} config dirs')
 
-    n_nan, n_data = summarise(files)
-    print(f'\n  sampled contents: {n_nan} all-NaN, {n_data} with some finite '
-          f'values (of {min(len(files), 400)} checked)')
+    n_nan, n_data, pct = summarise(files)
+    print(f'\n  sampled contents ({min(len(files), 400)} files): {n_nan} '
+          f'all-NaN, {n_data} partly finite — {pct:.1f}% of all GC values '
+          f'are finite')
 
     if not args.delete:
         print(f'\nDRY RUN — {len(files)} files in {len(dirs)} directories would '
