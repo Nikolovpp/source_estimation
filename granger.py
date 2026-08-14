@@ -54,6 +54,13 @@ from scipy.linalg import cholesky, inv
 # ─────────────────────────────────────────────────────────────────────
 # MVAR estimation — faithful port of BSMART armorf.m
 # ─────────────────────────────────────────────────────────────────────
+# An ill-conditioned window is a data property, not a bug: near-collinear
+# channels (an LCMV ROI collapse) or too few samples for the order make the
+# Morf recursion's Cholesky fail. Callers degrade the window to NaN and count
+# it rather than killing the run.
+_ILL_CONDITIONED = (np.linalg.LinAlgError, ValueError, FloatingPointError)
+
+
 def _mct(M):
     """MATLAB ``chol(M)'`` : lower-triangular transpose of the upper
     Cholesky factor.  ``scipy.linalg.cholesky(M, lower=False)`` returns
@@ -179,6 +186,110 @@ def fit_mvar(X, order):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Model validation — stability and consistency
+#
+# These are the two diagnostics Ding, Bressler, Yang & Liang (2000, Biol.
+# Cybern. 83:35-45) use to validate short-window MVAR fits to ERP data, and
+# the second is the one MVGC ships as stats/consistency.m (citing that same
+# paper).  Both are needed here because a fit can be numerically successful
+# and still be invalid: fit_mvar returns without complaint for a
+# non-minimum-phase model, whose spectral GC is meaningless.
+# ─────────────────────────────────────────────────────────────────────
+def var_spectral_radius(A):
+    """Spectral radius of the VAR companion matrix (MVGC ``var_specrad``).
+
+    The fitted process is stable (stationary) iff this is < 1.  Ding et al.
+    report ``log`` of it as the Stability Index and show it going POSITIVE
+    after stimulus onset when the ensemble mean is left in the data — i.e.
+    the ERP alone can push the fit out of the stable region.
+    """
+    A = np.asarray(A, dtype=float)
+    n, _, p = A.shape
+    top = np.concatenate([A[:, :, k] for k in range(p)], axis=1)  # (n, p*n)
+    if p == 1:
+        return float(np.max(np.abs(np.linalg.eigvals(top))))
+    pn = p * n
+    A1 = np.zeros((pn, pn))
+    A1[:n] = top
+    A1[n:, :pn - n] = np.eye(pn - n)
+    return float(np.max(np.abs(np.linalg.eigvals(A1))))
+
+
+def var_residuals(X, A):
+    """Residuals ``E(t) = X(t) - sum_k A_k X(t-k)`` for ``t = p .. m-1``.
+
+    ``X`` is ``(n_trials, n_signals, n_times)``; returns
+    ``(n_trials, n_signals, n_times - p)``.
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 2:
+        X = X[np.newaxis]
+    m = X.shape[2]
+    p = A.shape[2]
+    E = X[:, :, p:].copy()
+    for k in range(1, p + 1):
+        E -= np.einsum('ij,rjt->rit', A[:, :, k - 1], X[:, :, p - k:m - k])
+    return E
+
+
+def var_consistency(X, A):
+    """Proportion of the data's correlation structure the VAR reproduces.
+
+    Port of MVGC ``stats/consistency.m`` (Ding et al. 2000, Eq. 12).  Compares
+    the covariance of the data with that of the model's one-step prediction:
+
+        cons = 1 - ||Rs - Rr|| / ||Rr||
+
+    MVGC's header calls ``> 0.8`` "reasonable consistency"; Ding et al. report
+    ~90% for cortical ERPs in 50 ms windows.  ``norm`` is the matrix 2-norm,
+    matching MATLAB's default (NOT numpy's Frobenius default).
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 2:
+        X = X[np.newaxis]
+    Nr, n, m = X.shape
+    p = A.shape[2]
+    if m - p < 1:
+        return np.nan
+    # MVGC demeans (per variable, over time and trials pooled) first.
+    mu = X.transpose(1, 0, 2).reshape(n, -1).mean(axis=1)
+    Xd = X - mu[np.newaxis, :, np.newaxis]
+
+    E = var_residuals(Xd, A)
+    M = Nr * (m - p)
+    if M < 2:
+        return np.nan
+    Xc = Xd[:, :, p:].transpose(1, 0, 2).reshape(n, M)
+    Ec = E.transpose(1, 0, 2).reshape(n, M)
+    Y = Xc - Ec                                   # one-step prediction
+    Rr = (Xc @ Xc.T) / (M - 1)
+    Rs = (Y @ Y.T) / (M - 1)
+    den = np.linalg.norm(Rr, 2)
+    if not np.isfinite(den) or den == 0:
+        return np.nan
+    return float(1.0 - np.linalg.norm(Rs - Rr, 2) / den)
+
+
+def window_diagnostics(seg, order, A=None):
+    """``(spectral_radius, consistency)`` for one window's MVAR fit.
+
+    Pass ``A`` when the caller has already fitted this window — the GC paths
+    all do — so the diagnostics cost an eigendecomposition and one residual
+    pass rather than a second Morf recursion. Refitting instead doubled the
+    runtime of a pairwise config.
+
+    Returns ``(nan, nan)`` rather than raising: an ill-conditioned window is a
+    data property, and the caller is already recording it as such.
+    """
+    try:
+        if A is None:
+            A, _ = fit_mvar(seg, order)
+        return var_spectral_radius(A), var_consistency(seg, A)
+    except _ILL_CONDITIONED:
+        return np.nan, np.nan
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Model-order selection
 # ─────────────────────────────────────────────────────────────────────
 def order_criteria(X, max_order, min_order=1):
@@ -254,7 +365,7 @@ def spectral_transfer(A, Sigma, freqs, fs):
 # ─────────────────────────────────────────────────────────────────────
 # Bivariate (pairwise) spectral Granger causality
 # ─────────────────────────────────────────────────────────────────────
-def pairwise_spectral_gc(X, order, freqs, fs):
+def pairwise_spectral_gc(X, order, freqs, fs, return_model=False):
     """Bivariate Geweke spectral Granger causality for a signal pair.
 
     Parameters
@@ -272,6 +383,9 @@ def pairwise_spectral_gc(X, order, freqs, fs):
         Spectral GC x -> y (seed -> target).
     f_yx : np.ndarray, shape (n_freqs,)
         Spectral GC y -> x (target -> seed).
+    A, Sigma : only if ``return_model`` — the fitted VAR, so a caller wanting
+        model diagnostics does not have to fit the same window twice. The
+        returned values are unchanged, so the BSMART match still holds.
 
     Notes
     -----
@@ -313,6 +427,8 @@ def pairwise_spectral_gc(X, order, freqs, fs):
     # Numerical guard: tiny negative arguments from round-off -> 0.
     f_xy = np.where(np.isfinite(f_xy), np.maximum(f_xy, 0.0), 0.0)
     f_yx = np.where(np.isfinite(f_yx), np.maximum(f_yx, 0.0), 0.0)
+    if return_model:
+        return f_xy, f_yx, A, Sigma
     return f_xy, f_yx
 
 
@@ -485,9 +601,6 @@ def conditional_spectral_gc(X, order, freqs, fs, pairs=None):
 # few samples for the order. LAPACK reports "k-th leading minor is not positive
 # definite" via LinAlgError; a singular solve gives LinAlgError too, and a
 # degenerate covariance can surface as ValueError.
-_ILL_CONDITIONED = (np.linalg.LinAlgError, ValueError, FloatingPointError)
-
-
 def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
                                  pairs=None):
     """Sliding-window conditional spectral GC for the requested pairs.
@@ -528,7 +641,7 @@ def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
 # Moving-window driver (matches BSMART mov_bi_ga)
 # ─────────────────────────────────────────────────────────────────────
 def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
-                              trgc=False):
+                              trgc=False, diagnostics=False):
     """Sliding-window bivariate spectral GC across time.
 
     For each window position the AR model is fit on the trial ensemble
@@ -549,6 +662,10 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
         Window step in samples (BSMART uses 1).
     trgc : bool
         If True, also return Diff-TRGC per window.
+    diagnostics : bool
+        If True, also return per-window model validation: the companion
+        spectral radius and MVGC's consistency statistic.  Costs one extra
+        ``fit_mvar`` per window.
 
     Returns
     -------
@@ -556,6 +673,7 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
         ``f_xy``, ``f_yx`` : (n_freqs, n_windows) spectral GC.
         ``win_start`` : (n_windows,) window start sample indices.
         If ``trgc``: ``d_xy`` : (n_freqs, n_windows) Diff-TRGC (x->y).
+        If ``diagnostics``: ``rho``, ``cons`` : (n_windows,).
     """
     X = np.asarray(X, dtype=float)
     if X.ndim != 3 or X.shape[1] != 2:
@@ -569,12 +687,19 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
     f_xy = np.empty((n_f, n_win))
     f_yx = np.empty((n_f, n_win))
     d_xy = np.empty((n_f, n_win)) if trgc else None
+    rho = np.full(n_win, np.nan) if diagnostics else None
+    cons = np.full(n_win, np.nan) if diagnostics else None
 
     n_bad = 0
     for w, s in enumerate(starts):
         seg = X[:, :, s:s + win_samples]
         try:
-            fxy, fyx = pairwise_spectral_gc(seg, order, freqs, fs)
+            if diagnostics:
+                fxy, fyx, A_w, _ = pairwise_spectral_gc(
+                    seg, order, freqs, fs, return_model=True)
+                rho[w], cons[w] = window_diagnostics(seg, order, A_w)
+            else:
+                fxy, fyx = pairwise_spectral_gc(seg, order, freqs, fs)
             if trgc:
                 dxy, _ = time_reversed_pairwise_gc(seg, order, freqs, fs)
         except _ILL_CONDITIONED:
@@ -592,6 +717,9 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
               'n_unstable': n_bad}
     if trgc:
         result['d_xy'] = d_xy
+    if diagnostics:
+        result['rho'] = rho
+        result['cons'] = cons
     return result
 
 
