@@ -165,6 +165,30 @@ def load_gc_group(gc_dir, bands=None):
 #   ttest    -> right-tailed one-sample Student's t (production_pwgc_data_to_python.m, v4 figs)
 #   signrank -> right-tailed Wilcoxon signed-rank   (v3 figs)
 # ─────────────────────────────────────────────────────────────────────
+MIN_SUBJECTS = 3          # below this a one-sample test is not worth reporting
+
+
+def _baseline_mask(window_ms, baseline_ms):
+    """Boolean mask of the baseline windows — raising if it selects nothing.
+
+    Both test functions used to fall back to ``base_mask[0] = True`` when the
+    requested range caught no window, i.e. they silently made the ENTIRE
+    baseline the single first window — the one window most contaminated by the
+    moving-window edge, and biased low, which pushes every task-vs-baseline
+    test toward significance. A baseline range that matches nothing is a
+    caller error, not something to paper over.
+    """
+    m = (window_ms >= baseline_ms[0]) & (window_ms <= baseline_ms[1])
+    if not m.any():
+        raise ValueError(
+            f'baseline window [{baseline_ms[0]:g}, {baseline_ms[1]:g}] ms '
+            f'contains no moving-window centre; the axis runs '
+            f'{window_ms[0]:g}..{window_ms[-1]:g} ms in steps of about '
+            f'{np.diff(window_ms).mean() if window_ms.size > 1 else 0:.1f} ms. '
+            f'Pass --baseline-start/--baseline-end that overlap it.')
+    return m
+
+
 def _right_tailed_pval(x, m, test):
     """Right-tailed one-sample p-value of samples ``x`` against scalar ``m``.
 
@@ -208,26 +232,43 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
     ``baseline_mean`` (n_pairs,).
     """
     n_subj, n_pairs, n_win = subj_stack.shape
-    subj_mean = subj_stack.mean(axis=0)
-    sem = subj_stack.std(axis=0, ddof=1) / np.sqrt(n_subj)
+    # NaN-AWARE THROUGHOUT. run_granger degrades an ill-conditioned window to
+    # NaN rather than killing the subject, so NaNs are an expected input, not a
+    # corruption. With plain mean/std a single NaN in one subject's BASELINE
+    # made baseline_mean NaN and took the whole edge down: measured on
+    # synthetic data with a real effect, 20/20 significant windows -> 0/20,
+    # silently. Windows are now tested on whatever subjects are finite there,
+    # and n_used records how many that was.
+    subj_mean = np.nanmean(subj_stack, axis=0)
+    n_finite = np.isfinite(subj_stack).sum(axis=0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        sem = np.nanstd(subj_stack, axis=0, ddof=1) / np.sqrt(
+            np.maximum(n_finite, 1))
+    sem[n_finite < 2] = np.nan
 
-    base_mask = (window_ms >= baseline_ms[0]) & (window_ms <= baseline_ms[1])
-    if not base_mask.any():
-        base_mask = np.zeros(n_win, bool); base_mask[0] = True
-    baseline_mean = subj_mean[:, base_mask].mean(axis=1)      # (n_pairs,)
+    base_mask = _baseline_mask(window_ms, baseline_ms)
+    baseline_mean = np.nanmean(subj_mean[:, base_mask], axis=1)   # (n_pairs,)
 
     task_mask = window_ms >= task_start_ms
     if task_end_ms is not None:
         task_mask &= window_ms <= task_end_ms
     pval = np.full((n_pairs, n_win), np.nan)
     sig = np.zeros((n_pairs, n_win), bool)
+    n_used = np.zeros((n_pairs, n_win), int)
     for pi in range(n_pairs):
+        if not np.isfinite(baseline_mean[pi]):
+            continue                       # no usable baseline for this edge
         for w in np.where(task_mask)[0]:
-            p = _right_tailed_pval(subj_stack[:, pi, w], baseline_mean[pi], test)
+            x = subj_stack[:, pi, w]
+            x = x[np.isfinite(x)]
+            n_used[pi, w] = x.size
+            if x.size < MIN_SUBJECTS:
+                continue
+            p = _right_tailed_pval(x, baseline_mean[pi], test)
             pval[pi, w] = p
             sig[pi, w] = p < alpha
     return {'mean': subj_mean, 'sem': sem, 'pval': pval, 'sig': sig,
-            'baseline_mean': baseline_mean}
+            'baseline_mean': baseline_mean, 'n_used': n_used}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -267,9 +308,7 @@ def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
     from mne.stats import permutation_cluster_1samp_test
 
     n_subj, n_pairs, n_win = subj_stack.shape
-    base_mask = (window_ms >= baseline_ms[0]) & (window_ms <= baseline_ms[1])
-    if not base_mask.any():
-        base_mask = np.zeros(n_win, bool); base_mask[0] = True
+    base_mask = _baseline_mask(window_ms, baseline_ms)
     task_mask = window_ms >= task_start_ms
     if task_end_ms is not None:
         task_mask &= window_ms <= task_end_ms
@@ -284,18 +323,32 @@ def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
         'sig_tfce': np.zeros((n_pairs, n_win), bool),
         'p_cluster_min': np.full(n_pairs, np.nan),
         'p_tfce_min': np.full(n_pairs, np.nan),
+        'n_subj_used': np.zeros(n_pairs, int),
     }
     if task_idx.size < 2:
         return out
 
     for pi in range(n_pairs):
-        # within-subject contrast over the task span
-        base = subj_stack[:, pi, base_mask].mean(axis=1)          # (n_subj,)
+        # within-subject contrast over the task span. Use each subject's own
+        # baseline, NaN-aware: an ill-conditioned window in the baseline should
+        # cost that window, not the subject.
+        base = np.nanmean(subj_stack[:, pi, base_mask], axis=1)   # (n_subj,)
         X = subj_stack[:, pi, task_idx] - base[:, None]           # (n_subj, n_task)
-        if not np.isfinite(X).all() or np.allclose(X, 0):
-            # an all-NaN band (e.g. theta dropped by MNE's frequency floor)
-            # or a degenerate constant — leave this pair as NaN
+
+        # The sign-flip null needs a complete matrix, so DROP SUBJECTS with a
+        # gap rather than the whole pair. The old guard was
+        # `if not np.isfinite(X).all(): continue`, which meant one NaN window
+        # in one subject silently discarded the FWER-controlled test for that
+        # edge entirely — measured: cluster p 0.0039 -> NaN. Dropping windows
+        # instead is not an option here: it would break the contiguity the
+        # clustering is defined over.
+        good = np.isfinite(X).all(axis=1) & np.isfinite(base)
+        out['n_subj_used'][pi] = int(good.sum())
+        if good.sum() < MIN_SUBJECTS:
             continue
+        X = X[good]
+        if np.allclose(X, 0):
+            continue                      # degenerate constant
 
         _T, clusters, cl_p, _ = permutation_cluster_1samp_test(
             X, threshold=None, n_permutations=n_permutations, tail=1,
@@ -525,7 +578,27 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
 
     roi = agg['roi_names']
     n_pairs = len(agg['pair_i'])
+    n_subj_total = len(agg['subjects'])
     os.makedirs(out_dir, exist_ok=True)
+
+    # How much of the input is NaN, up front. run_granger writes NaN for
+    # ill-conditioned windows, and every test below silently runs on fewer
+    # subjects when it hits one — the CSV records the effective n per cell,
+    # but a run that is largely NaN should say so before any p-value is read.
+    n_tot = n_nan = 0
+    for key in ('fxy', 'fyx'):
+        for b in band_names:
+            a = agg[key][b]
+            n_tot += a.size
+            n_nan += int((~np.isfinite(a)).sum())
+    if n_nan:
+        print(f'  *** {100 * n_nan / n_tot:.1f}% of the loaded GC values are '
+              f'NaN (ill-conditioned MVAR windows). Tests below use whatever '
+              f'subjects are finite per window; see the n_subj / n_subj_perm '
+              f'columns in the CSV.')
+        if n_nan / n_tot > 0.5:
+            print('  *** MORE THAN HALF the input is NaN. Check the run\'s '
+                  '[unstable] counts before interpreting anything here.')
 
     if permutation:
         print(f'  permutation: {n_permutations} sign-flips, cluster-mass'
@@ -567,6 +640,10 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                         'gc_mean': st['mean'][pi, w], 'gc_sem': st['sem'][pi, w],
                         'baseline_mean': st['baseline_mean'][pi],
                         'pval': st['pval'][pi, w], 'sig': st['sig'][pi, w],
+                        # How many subjects actually entered this cell. Less
+                        # than n means some had a NaN (ill-conditioned) window
+                        # here; without this the loss is invisible in the CSV.
+                        'n_subj': st['n_used'][pi, w],
                     }
                     if pm is not None:
                         row.update({
@@ -578,6 +655,7 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                             'sig_tfce': pm['sig_tfce'][pi, w],
                             'p_cluster_min': pm['p_cluster_min'][pi],
                             'p_tfce_min': pm['p_tfce_min'][pi],
+                            'n_subj_perm': pm['n_subj_used'][pi],
                         })
                     rows.append(row)
     df = pd.DataFrame(rows)
@@ -587,6 +665,13 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     # one edge x band; nothing yet controls the fact that we ran that test
     # once per edge and band.  Correct the per-edge minimum p-value over
     # that family and broadcast it back onto the edge's rows.
+    # NOTE ON THE TWO CORRECTIONS WHEN TESTS ARE MISSING. Bonferroni divides
+    # by n_fam, every test ATTEMPTED, including edge x band cells that came
+    # back NaN (too few finite subjects). bh_fdr ranks only the cells that
+    # produced a p-value. So with missing cells the two correct over different
+    # denominators — Bonferroni the more conservative of them. That is the safe
+    # direction and is left as is, but the difference is real: read the
+    # n_subj_perm column before comparing the two columns.
     if permutation:
         n_fam = 2 * n_pairs * len(band_names)
         keys = ['src', 'tgt', 'band']
