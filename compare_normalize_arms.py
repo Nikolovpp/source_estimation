@@ -146,6 +146,63 @@ def main():
                           + ''.join(f'{v:>11.1f}%' for v in diffs))
             print()
 
+    order_stability(args)
+
+
+def order_stability(args):
+    """Which arm survives changing the model order — the sweep's own question.
+
+    The arms are nearly indistinguishable on magnitude; where they differ is
+    whether the answer holds when an arbitrary modelling choice changes. For
+    each arm this reports the top band at each order, whether it flips, and the
+    mean absolute change in band GC.
+    """
+    if len(args.orders) < 2:
+        return
+    lo, hi = min(args.orders), max(args.orders)
+    print('=' * 78)
+    print(f'ORDER STABILITY: order {lo} vs order {hi}, same data')
+    print('=' * 78)
+    print(f'{"task":<11} {"edge":<20} {"arm":<20} {"top@" + str(lo):>10} '
+          f'{"top@" + str(hi):>10} {"flip":>6} {"mean |d|":>9}')
+    bands = list(DEFAULT_BANDS)
+    flips = collections.Counter()
+    tot = 0
+    for task, stim in TASKS:
+        per = {}
+        for o in (lo, hi):
+            for lab, suf in ARM_TAGS:
+                per[(o, lab)], _ = load_arm(task, stim, o, args.win_ms,
+                                            args.target_fs, suf, args.rois)
+        if not per.get((lo, 'A demean')):
+            continue
+        for src, tgt in sorted({(a, b) for a, b, _ in per[(lo, 'A demean')]}):
+            for lab, _ in ARM_TAGS:
+                v = {}
+                for o in (lo, hi):
+                    d = per[(o, lab)]
+                    if not d:
+                        v = None; break
+                    v[o] = {b: np.nanmean(list(
+                        d.get((src, tgt, b), {0: np.nan}).values()))
+                        for b in bands}
+                if v is None:
+                    continue
+                t_lo = max(bands, key=lambda b: v[lo][b])
+                t_hi = max(bands, key=lambda b: v[hi][b])
+                rel = 100 * np.nanmean([abs(v[hi][b] - v[lo][b]) / abs(v[lo][b])
+                                        for b in bands])
+                flips[lab] += t_lo != t_hi
+                print(f'{task:<11} {src + "->" + tgt:<20} {lab:<20} '
+                      f'{t_lo:>10} {t_hi:>10} '
+                      f'{"YES" if t_lo != t_hi else "-":>6} {rel:>8.0f}%')
+            tot += 1
+            print()
+    if tot:
+        print(f'band-ranking flips over {tot} task x direction cells:')
+        for lab, _ in ARM_TAGS:
+            print(f'  {lab:<22} {flips[lab]}/{tot}')
+
 
 if __name__ == '__main__':
     sys.exit(main())
