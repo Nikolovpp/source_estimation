@@ -507,7 +507,7 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
               alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
-              baseline_dur_ms=100.0, edge_guard_ms=0.0, permutation=True,
+              baseline_dur_ms=100.0, edge_guard_ms=30.0, permutation=True,
               n_permutations=N_PERMUTATIONS, tfce=True, seed=42, n_jobs=1):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
@@ -530,15 +530,29 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     default (earlier this was a hardcoded interior window shifted 50 ms off the
     epoch start; that was wrong — it cut into the genuine baseline).
 
-    ``edge_guard_ms`` (default 0) optionally drops the very first moving
-    window(s): the single first window is a computational edge point (an
-    isolated one-window drop at the epoch start — verified at -1500 ms in
-    overtProd AND -200 ms in perception, jumping straight back to the interior
-    level, i.e. not the sustained baseline low), but it is one window in a
-    100 ms average (negligible), so it is kept by default.  Set e.g.
-    ``--edge-guard 4`` to drop it.  The trailing MVAR-boundary windows (a sharp
-    spike in the last ~2 windows) are dropped separately by the task-end crop
-    (config.GC_TASK_END).  Override any of this with --baseline-start/
+    ``edge_guard_ms`` (default 30) drops the leading moving windows before the
+    baseline starts.  It used to default to 0, on the reading that the epoch
+    edge costs a single window — TRUE AT A 120 ms WINDOW, and wrong at the
+    windows this project actually sweeps.  Measured on the pre-bug ``_none``
+    files (120 subject files, both tasks, n=20 each), against the median of the
+    interior half:
+
+        win120 : leading 1 window below 90% of plateau
+        win60  : leading 4-6 windows, sitting at 46-68% of plateau
+
+    The contaminated span of SIGNAL is roughly fixed (~20-30 ms), so a longer
+    window dilutes it and a shorter one does not.  With a 100 ms baseline at a
+    5 ms step that is 6 of 20 windows at ~60%, biasing the baseline about 12%
+    LOW — and since the test is right-tailed "task > baseline", a low baseline
+    inflates every p-value in the one direction that manufactures significance.
+    Set ``--edge-guard 0`` to reproduce the old behaviour.
+
+    The trailing end is worse than previously documented: at 60 ms the last
+    6-16 windows are DEPRESSED to 46-79% of plateau, not the "sharp spike in
+    the last ~2 windows" this docstring used to claim.  For the task span that
+    is handled by the task-end crop (config.GC_TASK_END); it is called out here
+    because anything that averages the full axis (e.g. the sweep summary) has
+    to drop it explicitly.  Override any of this with --baseline-start/
     --baseline-end / --task-start / --task-end / --edge-guard.
     """
     if bands is None:
@@ -766,11 +780,14 @@ def parse_args():
                    help='GC task windows end here (s), dropping the trailing '
                         'edge; default from config.GC_TASK_END[task]. Pass a '
                         'value beyond the last window to disable the crop.')
-    p.add_argument('--edge-guard', type=float, default=0.0,
-                   help='ms trimmed off the leading baseline to drop the single '
-                        'first moving window (an isolated computational edge '
-                        'point). Default 0 (keep the full, genuine baseline); '
-                        'set e.g. 4 to drop the first window.')
+    p.add_argument('--edge-guard', type=float, default=30.0,
+                   help='ms of epoch onset trimmed before the baseline starts. '
+                        'Default 30, measured: at a 60 ms window the leading '
+                        '4-6 windows sit at 46-68%% of the interior plateau, '
+                        'which biases a 100 ms baseline ~12%% LOW and inflates '
+                        'the right-tailed task>baseline test. At 120 ms only '
+                        'the first window is affected. Use 0 to reproduce the '
+                        'old behaviour.')
     p.add_argument('--test', default='ttest', choices=['ttest', 'signrank'],
                    help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
                         "Student's t; matches production_pwgc_data_to_python.m and "

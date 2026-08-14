@@ -12,9 +12,12 @@ window and the model order? x = model order, one line per window. If the lines
 sit on top of each other the measure is robust; if they cross or invert, the
 parameter choice is doing the work.
 
-EDGE WINDOWS. The first three window centres are estimated from partial data
-(measured: the first two sit ~87% below plateau in production) and are dropped
-before averaging. Everything after that is averaged over time.
+EDGE WINDOWS. An epoch-onset/offset transient depresses the first and last
+windows. Measured on the pre-bug _none files: at a 60 ms window the leading
+4-6 windows and trailing 6-16 sit at 46-79% of the interior plateau; at 120 ms
+only the first window is affected, because a longer window dilutes the same
+contaminated span. So the guard is expressed in MILLISECONDS of epoch edge
+(EDGE_MS) and converted to windows using each run's own step.
 
 INCOMPLETE CELLS. A config with fewer than 20 subjects is skipped and listed,
 never silently averaged over a different n than its neighbours.
@@ -51,7 +54,14 @@ LABEL = {'theta': 'theta 4–8 Hz', 'low_beta': 'low beta 12–18 Hz',
          'high_beta': 'high beta 18–30 Hz'}
 WCOL = {40: '#4575b4', 60: '#1a9850', 80: '#d73027'}
 N_EXPECT = 20
-EDGE_DROP = 3                      # windows, not ms
+# MEASURED, not assumed. On the pre-bug _none files (120 subject files, both
+# tasks, n=20 each) the epoch-onset transient contaminates a fixed span of
+# SIGNAL, so the number of affected WINDOWS is that span divided by the step:
+#   win60  : leading 4-6 windows (20-30 ms), trailing 6-16 windows
+#   win120 : leading 1 window, trailing 0-2  (a longer window dilutes it)
+# The old EDGE_DROP = 3 was too few at 60 ms and dropped nothing at the
+# trailing end, where the depression is deeper (down to 46% of plateau).
+EDGE_MS = 30.0                     # ms of epoch edge to discard, each end
 
 
 def sh(r):
@@ -86,11 +96,21 @@ def scan():
     return out
 
 
+def edge_drop(window_ms):
+    """How many windows EDGE_MS covers at this run's step. Never more than a
+    quarter of the axis, so a short run degrades rather than empties."""
+    if window_ms.size < 2:
+        return 0
+    step = float(np.median(np.diff(window_ms)))
+    return int(min(np.ceil(EDGE_MS / max(step, 1e-9)), window_ms.size // 4))
+
+
 def band_mean(files, band):
     """-> {(src, tgt): (n_subj,)} band GC, averaged over non-edge windows."""
     acc = collections.defaultdict(list)
     for f in files:
         z = np.load(f, allow_pickle=True)
+        k_drop = edge_drop(np.asarray(z['window_ms'], float))
         rois = [str(r) for r in z['roi_names']]
         for a, (i, j) in enumerate(zip(z['pair_i'], z['pair_j'])):
             for key, edge in ((f'fxy_{band}', (rois[i], rois[j])),
@@ -99,7 +119,8 @@ def band_mean(files, band):
                     continue
                 v = np.asarray(z[key])
                 v = v[a] if v.ndim == 2 else v
-                acc[edge].append(np.nanmean(v[EDGE_DROP:]))
+                acc[edge].append(np.nanmean(
+                    v[k_drop:len(v) - k_drop] if k_drop else v))
     return {e: np.array(v) for e, v in acc.items()}
 
 
@@ -162,7 +183,8 @@ def figure(task, stim, subset, arm, cells):
         f'{task} · {stim} · {" + ".join(sh(r) for r in subset.split("-lh")[:-1])}'
         f'   [{scope}]   config: {arm}\n'
         f'LCMV, n={N_EXPECT}, mean±SEM over subjects; '
-        f'GC averaged over time after dropping {EDGE_DROP} edge windows{note}',
+        f'GC averaged over time after dropping {EDGE_MS:g} ms at each '
+        f'epoch edge{note}',
         fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.99 - 0.035 * len(BANDS) / 3])
     p = f'{OUT}/sweep_{task}_{stim}_{subset}_{arm}.png'
