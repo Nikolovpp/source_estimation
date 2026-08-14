@@ -5,6 +5,13 @@
 # Both change stored output, so deciding either one after the 264-config sweep
 # means running the sweep again. Both are cheap to settle here.
 #
+#   arm 0  none              NO ERP removal. BSMART-faithful and what the
+#                            legacy runs used. Included so the cost of the
+#                            correction is measured, not assumed: Ding et al.
+#                            (2000) Fig. 7 show the fit going non-minimum-phase
+#                            after stimulus onset without it, and the model
+#                            validation block in each log now tests that
+#                            directly on this data (rho>=1 count).
 #   arm A  demean            ensemble-mean (ERP) removal only. Current default.
 #                            = Ding, Bressler, Yang & Liang (2000) step 2.
 #   arm B  zscore            + point-by-point ensemble-SD normalisation.
@@ -66,7 +73,7 @@ TASKS_STIMS="${TASKS_STIMS:-perception:percDiff overtProd:prodDiff}"
 ORDERS="${ORDERS:-6 10}"
 WIN_MS="${WIN_MS:-60}"
 ROIS="${ROIS:-awfa-lh ifc-lh}"        # the pathway carrying the headline effect
-NORMALIZE_ARMS="${NORMALIZE_ARMS:-demean zscore}"
+NORMALIZE_ARMS="${NORMALIZE_ARMS:-none demean zscore}"
 RUN_ARM_C="${RUN_ARM_C:-1}"           # --no-demean-trials probe
 RUN_ARM_D="${RUN_ARM_D:-1}"           # --normalize-per-class probe
 
@@ -175,7 +182,8 @@ echo "spectral radius, the non-minimum-phase count, and consistency."
 echo "Compare the arms on:"
 echo "  1. sign and rank of awfa->ifc          (does the effect survive?)"
 echo "  2. the band carrying it                (does high beta hold under zscore?)"
-echo "  3. rho>=1 count                        (does an arm buy model validity?)"
+echo "  3. rho>=1 count                        (arm 0 vs A is Ding Fig. 7:"
+echo "                                          does ERP removal buy stability?)"
 echo "  5. arm D vs arm A                      (how much of the effect was the"
 echo "                                          between-class evoked difference?)"
 echo "  4. consistency median                  (relative only — see"
