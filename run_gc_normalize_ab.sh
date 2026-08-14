@@ -69,6 +69,20 @@
 #   PARALLEL=6 bash run_gc_normalize_ab.sh
 set -u
 
+# --progress: summarise a run in flight from another shell, without touching it.
+if [ "${1:-}" = "--progress" ]; then
+    LOG_DIR="${LOG_DIR:-logs/gc_normalize_ab}"
+    printf '%-52s %6s %8s\n' config subjects status
+    for f in "$LOG_DIR"/*.log; do
+        [ -e "$f" ] || { echo "no logs in $LOG_DIR yet"; exit 0; }
+        done_n=$(grep -c 'windows, N=' "$f" 2>/dev/null || echo 0)
+        if grep -q 'subjects done in' "$f" 2>/dev/null; then st=finished
+        else st=running; fi
+        printf '%-52s %4s/20 %8s\n' "$(basename "$f" .log)" "$done_n" "$st"
+    done
+    exit 0
+fi
+
 TASKS_STIMS="${TASKS_STIMS:-perception:percDiff overtProd:prodDiff}"
 ORDERS="${ORDERS:-6 10}"
 WIN_MS="${WIN_MS:-60}"
@@ -117,7 +131,8 @@ echo "by N, and it reads N from the vertex caches on the shared drive."
 echo
 
 CMD_FILE=$(mktemp)
-trap 'rm -f "$CMD_FILE"' EXIT
+DONE_FILE=$(mktemp)
+trap 'rm -f "$CMD_FILE" "$DONE_FILE"' EXIT
 t0=$(date +%s)
 n=0
 
@@ -134,8 +149,36 @@ queue () {   # queue <tag> <extra-args...>
         echo "    $CMD"
         return
     fi
-    printf '%s > %s 2>&1 || echo "FAILED %s" >&2\n' "$CMD" "$log" "$tag" \
-        >> "$CMD_FILE"
+    # Each config reports to STDERR (unredirected) as it finishes, with its
+    # own elapsed time and a running count. Without this the terminal stays
+    # silent for hours: every config's stdout goes to its log file, and xargs
+    # prints nothing until the whole queue drains.
+    #
+    # NUL-delimited, and consumed by `xargs -0 -n1 bash -c 'eval "$0"'` rather
+    # than `xargs -I{} bash -c '{}'`. The {} form substitutes into the argument
+    # WITHOUT shell quoting, so any nested quote in the reporting block breaks
+    # the command it is attached to.
+    printf '%s\0' "
+s=\$(date +%s)
+$CMD > '$log' 2>&1
+rc=\$?
+e=\$(( (\$(date +%s) - s + 30) / 60 ))
+echo x >> '$DONE_FILE'
+d=\$(wc -l < '$DONE_FILE')
+if [ \$rc -eq 0 ]; then
+    u=\$(grep -c '\[unstable\]' '$log' 2>/dev/null || true)
+    if [ \"\${u:-0}\" -gt 0 ]; then
+        printf '  [%s/%s] ok    %s  %s min  (%s subj had unstable windows)\\n' \\
+            \"\$d\" '$n_total' '$tag' \"\$e\" \"\$u\" >&2
+    else
+        printf '  [%s/%s] ok    %s  %s min\\n' \\
+            \"\$d\" '$n_total' '$tag' \"\$e\" >&2
+    fi
+else
+    printf '  [%s/%s] FAIL  %s  (see %s)\\n' \\
+        \"\$d\" '$n_total' '$tag' '$log' >&2
+fi
+" >> "$CMD_FILE"
 }
 
 for TS in $TASKS_STIMS; do
@@ -172,7 +215,11 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
-xargs -P "$PARALLEL" -I{} bash -c '{}' < "$CMD_FILE"
+echo "running $n_total configs, $PARALLEL at a time; each reports as it finishes."
+echo "Per-subject progress is inside the logs:  tail -f $LOG_DIR/*.log"
+echo "Or from another shell:  bash run_gc_normalize_ab.sh --progress"
+echo
+xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$CMD_FILE"
 
 echo
 echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
