@@ -231,7 +231,8 @@ echo "$n_total configurations, 20 subjects each"
 echo
 
 CMD_FILE=$(mktemp)
-trap 'rm -f "$CMD_FILE"' EXIT
+DONE_FILE=$(mktemp)
+trap 'rm -f "$CMD_FILE" "$DONE_FILE"' EXIT
 
 t0=$(date +%s)
 n_done=0; n_fail=0
@@ -260,7 +261,31 @@ for O in $ORDERS; do
     fi
     # Queue it; xargs runs PARALLEL of these at once. Skipping a config whose
     # output is already complete keeps a restart cheap after a partial run.
-    printf '%s > %s 2>&1 || echo "FAILED %s" >&2\n' "$CMD" "$log" "$tag" >> "$CMD_FILE"
+    #
+    # Each config reports to STDERR as it finishes. Without this the terminal
+    # is silent for the whole run — every config's stdout goes to its log, so
+    # a 352-config sweep looks identical to a hung one for hours.
+    # NUL-delimited and eval'd from $0, because `xargs -I{}` substitutes
+    # without shell quoting and mangles any nested quote below.
+    printf '%s\0' "
+s=\$(date +%s)
+$CMD > '$log' 2>&1
+rc=\$?
+e=\$(( (\$(date +%s) - s + 30) / 60 ))
+echo x >> '$DONE_FILE'
+d=\$(wc -l < '$DONE_FILE')
+if [ \$rc -eq 0 ]; then
+    u=\$(grep -c '\[unstable\]' '$log' 2>/dev/null || true)
+    if [ \"\${u:-0}\" -gt 0 ]; then
+        printf '  [%s/%s] ok    %s  %s min  (%s subj had unstable windows)\\n' \\
+            \"\$d\" '$n_total' '$tag' \"\$e\" \"\$u\" >&2
+    else
+        printf '  [%s/%s] ok    %s  %s min\\n' \"\$d\" '$n_total' '$tag' \"\$e\" >&2
+    fi
+else
+    printf '  [%s/%s] FAIL  %s  (see %s)\\n' \"\$d\" '$n_total' '$tag' '$log' >&2
+fi
+" >> "$CMD_FILE"
 done; done; done; done; done
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -268,8 +293,9 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 echo "running $n_total configs, $PARALLEL at a time, $INNER_JOBS worker(s) each"
+echo "Each reports as it finishes. Per-subject progress:  tail -f $LOG_DIR/*.log"
 echo
-xargs -P "$PARALLEL" -I{} bash -c '{}' < "$CMD_FILE"
+xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$CMD_FILE"
 
 echo
 echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
