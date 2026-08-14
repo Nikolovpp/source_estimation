@@ -30,6 +30,22 @@ is not a usable remainder — on the synthetic below the correct edge drops
 from 0.68 to 0.003 and the strongest edge is no longer the true one. Every
 ``_demean`` directory written after 2026-07-29 has to be recomputed.
 
+WHAT MVGC DOES (matlab_source_code_ref/MVGC1-1.3). ``stats/demean.m`` reshapes
+``X`` (n_vars, n_obs, n_trials) to ``(n, m*N)`` and subtracts ``mean(Y,2)`` —
+one scalar PER VARIABLE, over time and trials pooled. It is called
+unconditionally by ``tsdata_to_var.m:116`` and ``tsdata_to_autocov.m:72``. The
+mean is never taken across variables, which is the operation ff2cdd6
+introduced. (MVGC has no ERP-removal option at all, and its header warns that
+per-trial demeaning "can introduce large bias in VAR model estimation" unless
+followed by the pooled demean — which ERP removal implies. Both of this
+pipeline's demeans are therefore additions to MVGC, not ports of it.)
+
+SECTION 5 CHECKS A SEPARATE CLAIM THAT WAS ALSO WRONG. The 2-ROI wipeout was
+once blamed on running --gc-mode conditional with an empty conditioning set.
+``ss_conditional_gc`` branches on that case exactly as MVGC's
+``gc/autocov_to_smvgc.m`` does ("if isempty(z) % unconditional"), and with the
+normalize bug fixed the two modes agree to ~1e-16. One cause, not two.
+
     conda activate mne
     python validate_granger_normalize.py
 """
@@ -182,6 +198,26 @@ def main():
         if name.startswith('per-epoch') and top == (0, 1):
             print('    FAIL: expected the true edge to be lost')
             ok = False
+    print()
+
+    # ── 5. An empty conditioning set is NOT a second bug ─────────────────
+    # MVGC gc/autocov_to_smvgc.m: "if isempty(z) % unconditional". Our
+    # ss_conditional_gc has the same branch, so a 2-ROI subset in conditional
+    # mode is the bivariate quantity, not a degenerate one.
+    print('5. 2-ROI subset, pairwise vs conditional (MVGC M0 identity)')
+    got = {}
+    for mode in ('pairwise', 'conditional'):
+        r = compute_subject_gc(roi_data, times, FS, order=ORDER, win_ms=WIN_MS,
+                               target_fs=FS, freqs=FREQS, normalize='demean',
+                               gc_mode=mode, n_jobs=1)
+        got[mode] = r['fxy']['high_beta']
+        print(f'    --gc-mode {mode:<12} median GC '
+              f'{np.nanmedian(got[mode]):.6f}')
+    d = np.nanmax(np.abs(got['pairwise'] - got['conditional']))
+    print(f'    max |pairwise - conditional| = {d:.3e}')
+    if not (d < 1e-10):
+        print('    FAIL: the two modes should coincide when z is empty')
+        ok = False
     print()
 
     print('PASS — bug reproduced and localized' if ok else
