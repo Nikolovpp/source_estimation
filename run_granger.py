@@ -139,7 +139,7 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                        target_fs=500.0, step=1, freqs=None, bands=None,
                        normalize='none', demean_trials=True, trgc=False,
                        tmin=None, tmax=None, gc_mode='pairwise', n_jobs=1,
-                       diagnostics=True):
+                       diagnostics=True, y=None, normalize_per_class=False):
     """Moving-window Geweke GC for one subject, all ROI pairs.
 
     ``gc_mode='pairwise'`` runs bivariate BSMART GC per pair.
@@ -233,9 +233,37 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
     # channels whose directed coupling is being measured. For a 2-ROI subset
     # it makes them exactly antisymmetric (rank 1) and every MVAR fit fails.
     # See validate_granger_normalize.py; this was the ff2cdd6 regression.
+    #
+    # PER CLASS OR POOLED. GC pools every trial in the contrast, so a grand-mean
+    # ERP removal leaves the BETWEEN-CLASS evoked difference in the residual:
+    # class A keeps +delta/2 and class B keeps -delta/2, a deterministic
+    # class-locked waveform, which is exactly what turns an ROI latency
+    # difference into spurious directed influence. Removing within each level
+    # of y takes it out. The cost is that a genuine condition difference
+    # carried by the evoked response goes with it, and (under zscore) each
+    # level's SD is estimated from half as many trials, so its jitter is
+    # sqrt(2) larger. Off by default; measured by run_gc_normalize_ab.sh.
     if normalize != 'none':
-        V = np.stack([normalize_ensemble(V[r], normalize)
-                      for r in range(V.shape[0])], axis=0)
+        if normalize_per_class:
+            if y is None:
+                raise ValueError(
+                    '--normalize-per-class needs the stimulus-class labels, '
+                    'but the ROI cache for this subject returned none. Either '
+                    're-run run_source_localize.py so the cache stores y, or '
+                    'drop the flag to fall back to pooled ERP removal.')
+            y = np.asarray(y).ravel()
+            if y.shape[0] != V.shape[1]:
+                raise ValueError(
+                    f'y has {y.shape[0]} labels for {V.shape[1]} trials')
+            Vn = np.empty_like(V)
+            for lev in np.unique(y):
+                m = y == lev
+                for r in range(V.shape[0]):
+                    Vn[r, m, :] = normalize_ensemble(V[r][m], normalize)
+            V = Vn
+        else:
+            V = np.stack([normalize_ensemble(V[r], normalize)
+                          for r in range(V.shape[0])], axis=0)
 
     win_samples = max(2, round(win_ms / 1000.0 * fs))
     starts = np.arange(0, V.shape[2] - win_samples + 1, step)
@@ -300,6 +328,12 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
             delayed(_pair_gc)(i, j) for i, j in pairs
         )
         pos = {(i, j): k for k, (i, j) in enumerate(pairs)}
+        # Index the diagnostics by pair like the GC arrays, rather than
+        # appending in arrival order. joblib does preserve order, so the two
+        # agree today — but if that ever stopped holding, fxy would still be
+        # right and rho would be silently attributed to the wrong pair.
+        rho_by_pair = [None] * n_pairs
+        cons_by_pair = [None] * n_pairs
         for i, j, b_xy, b_yx, b_d, r_, c_ in out:
             k = pos[(i, j)]
             for b in band_names:
@@ -308,8 +342,11 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                 if use_trgc:
                     dtr[b][k] = b_d[b]
             if diagnostics and r_ is not None:
-                diag_rho.append(r_)
-                diag_cons.append(c_)
+                rho_by_pair[k] = r_
+                cons_by_pair[k] = c_
+        if diagnostics and all(r is not None for r in rho_by_pair):
+            diag_rho.extend(rho_by_pair)
+            diag_cons.extend(cons_by_pair)
 
     result = {
         'roi_names': roi_names,
@@ -337,7 +374,7 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
 # IO
 # ─────────────────────────────────────────────────────────────────────
 def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
-           demean_trials=True):
+           demean_trials=True, normalize_per_class=False):
     """Directory segment identifying the GC configuration.
 
     Every parameter that changes the numbers must appear here, or two runs
@@ -348,6 +385,8 @@ def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
     t = f'order{order}_win{win_ms:g}ms_fs{target_fs:g}'
     if normalize != 'none':
         t += f'_{normalize}'
+        if normalize_per_class:
+            t += '_perclass'
     if gc_mode != 'pairwise':
         t += f'_{gc_mode}'
     if not demean_trials:
@@ -375,13 +414,15 @@ def roiset_tag(roi_subset):
 def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
                      leakage_correction, order, win_ms, target_fs, normalize,
                      output_root=GC_OUTPUT_ROOT, gc_mode='pairwise',
-                     roi_subset=None, demean_trials=True):
+                     roi_subset=None, demean_trials=True,
+                     normalize_per_class=False):
     """Where this subject's result lands. Single source of truth, so the
     skip-if-exists check in main() cannot drift from where save writes."""
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
-        / gc_tag(order, win_ms, target_fs, normalize, gc_mode, demean_trials)
+        / gc_tag(order, win_ms, target_fs, normalize, gc_mode, demean_trials,
+                 normalize_per_class)
         / roiset_tag(roi_subset) / stim_class
     )
     return out_dir / f'{subj}_{task}_{stim_class}.npz'
@@ -390,11 +431,13 @@ def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
 def save_subject_gc(result, subj, task, stim_class, method, atlas,
                     feature_mode, leakage_correction, order, win_ms,
                     target_fs, normalize, output_root=GC_OUTPUT_ROOT,
-                    gc_mode='pairwise', roi_subset=None, demean_trials=True):
+                    gc_mode='pairwise', roi_subset=None, demean_trials=True,
+                    normalize_per_class=False):
     out_file = subject_out_path(
         subj, task, stim_class, method, atlas, feature_mode,
         leakage_correction, order, win_ms, target_fs, normalize,
-        output_root, gc_mode, roi_subset, demean_trials)
+        output_root, gc_mode, roi_subset, demean_trials,
+        normalize_per_class)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     save = {
@@ -405,6 +448,14 @@ def save_subject_gc(result, subj, task, stim_class, method, atlas,
         'freqs': result['freqs'],
         'fs': np.array(result['fs']),
     }
+    # The band EDGES that produced fxy_<band>/fyx_<band>. They were computed
+    # and then dropped, which left every result file unable to say what
+    # "theta" meant in it. That matters here specifically: the edges have
+    # already changed once (the half-open fix in ff2cdd6 altered every band
+    # value ever reported), and nothing on disk distinguishes the two eras.
+    if 'bands' in result:
+        save['band_names'] = np.array(list(result['bands'].keys()))
+        save['band_edges'] = np.array(list(result['bands'].values()), float)
     for b, arr in result['fxy'].items():
         save[f'fxy_{b}'] = arr
     for b, arr in result['fyx'].items():
@@ -463,6 +514,16 @@ def parse_args():
     p.add_argument('--fstep', type=float, default=1.0)
     p.add_argument('--tmin', type=float, default=None, help='GC window start (s); default full epoch')
     p.add_argument('--tmax', type=float, default=None, help='GC window end (s); default full epoch')
+    p.add_argument('--normalize-per-class', action='store_true', default=False,
+                   help='Remove the ERP within each level of the stimulus '
+                        'class instead of pooled over all trials. GC pools '
+                        'both classes, so a grand-mean removal leaves the '
+                        'BETWEEN-CLASS evoked difference in the residual — a '
+                        'deterministic class-locked waveform, which is exactly '
+                        'what turns an ROI latency difference into spurious '
+                        'directed influence. Costs any condition difference '
+                        'carried by the evoked response. Requires --normalize '
+                        'other than none.')
     p.add_argument('--no-diagnostics', dest='diagnostics',
                    action='store_false', default=True,
                    help='Skip per-window model validation (companion spectral '
@@ -507,8 +568,12 @@ def main():
     print(f'  Order:        {args.order}')
     print(f'  Window:       {args.win_ms} ms @ {args.target_fs} Hz, step {args.step} sample(s)')
     print(f'  Freqs:        {freqs[0]:g}-{freqs[-1]:g} Hz ({freqs.size} bins)')
-    print(f'  Normalize:    {args.normalize}   TRGC: {args.trgc}')
-    print(f'  GC mode:      {args.gc_mode}')
+    # Every preprocessing switch, because arms of the A/B differ ONLY in these
+    # and their logs would otherwise be indistinguishable.
+    print(f'  Normalize:    {args.normalize}'
+          f'{" per-class" if args.normalize_per_class else " pooled"}'
+          f'   per-trial demean: {args.demean_trials}   TRGC: {args.trgc}')
+    print(f'  GC mode:      {args.gc_mode}   diagnostics: {args.diagnostics}')
     print(f'  Subjects:     {len(subjects)}   n_jobs: {args.n_jobs}')
     print(f'  Overwrite:    {args.overwrite}')
     print()
@@ -565,7 +630,8 @@ def main():
             args.feature_mode, args.leakage_correction, args.order,
             args.win_ms, args.target_fs, args.normalize,
             gc_mode=args.gc_mode, roi_subset=subset,
-            demean_trials=args.demean_trials)
+            demean_trials=args.demean_trials,
+            normalize_per_class=args.normalize_per_class)
         if done.exists() and not args.overwrite:
             n_skip += 1
             continue
@@ -600,6 +666,7 @@ def main():
             tmin=args.tmin, tmax=args.tmax,
             gc_mode=args.gc_mode, n_jobs=args.n_jobs,
             diagnostics=args.diagnostics,
+            y=y, normalize_per_class=args.normalize_per_class,
         )
         out_file = save_subject_gc(
             result, subj, args.task, args.stim_class, args.method,
@@ -607,6 +674,7 @@ def main():
             args.order, args.win_ms, args.target_fs, args.normalize,
             gc_mode=args.gc_mode, roi_subset=args.roi_subset,
             demean_trials=args.demean_trials,
+            normalize_per_class=args.normalize_per_class,
         )
         n_pairs = result['pair_i'].size
         n_ep = result.get('n_epochs')
