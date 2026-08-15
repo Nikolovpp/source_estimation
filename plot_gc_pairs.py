@@ -129,6 +129,72 @@ def plot_pair(agg, res, baseline_ms, task_start, task_end, pair_idx,
     plt.close(fig)
 
 
+def plot_pair_ttest(agg, res, baseline_ms, task_start, task_end, pair_idx,
+                    src, tgt, title, out_png):
+    """Same curves, but marked with the POINTWISE one-sample Student's t.
+
+    Right-tailed, each task window against the group baseline scalar. This is
+    the ``production_pwgc_data_to_python.m`` design and is UNCORRECTED across
+    windows — at alpha=0.05 over M tested windows roughly 0.05*M cross by
+    chance, so the count and that expectation are printed on every panel.
+    Isolated single-window hits are drawn lighter than runs of three or more,
+    because a sustained run is the part that is hard to get by chance.
+    """
+    w = np.asarray(agg['window_ms'], float)
+    lo = baseline_ms[0]
+    hi = task_end if task_end is not None else float(w[-1])
+    keep = (w >= lo) & (w <= hi)
+
+    fig, axes = plt.subplots(len(BANDS), 1, figsize=(9.2, 2.6 * len(BANDS)),
+                             sharex=True, squeeze=False)
+    for r, band in enumerate(BANDS):
+        ax = axes[r][0]
+        ax.axvspan(baseline_ms[0], baseline_ms[1], color='0.6', alpha=0.16,
+                   lw=0, zorder=0)
+        ax.axvline(task_start, color='0.4', ls=':', lw=1, zorder=0)
+        ymax = 0.0
+        note = []
+        for key, col, lab in (('fxy', FWD, f'{sh(src)} → {sh(tgt)}'),
+                              ('fyx', REV, f'{sh(tgt)} → {sh(src)}')):
+            st, _ = res[(key, band)]
+            m, e = st['mean'][pair_idx], st['sem'][pair_idx]
+            ax.plot(w[keep], m[keep], color=col, lw=1.7, label=lab)
+            ax.fill_between(w[keep], (m - e)[keep], (m + e)[keep],
+                            color=col, alpha=0.18, lw=0)
+            ax.axhline(st['baseline_mean'][pair_idx], color=col, ls='--',
+                       lw=0.9, alpha=0.65)
+            if np.isfinite(m[keep]).any():
+                ymax = max(ymax, np.nanmax((m + e)[keep]))
+            n_sig = int(st['sig'][pair_idx].sum())
+            n_tested = int(np.isfinite(st['pval'][pair_idx]).sum())
+            note.append(f'{lab}: {n_sig}/{n_tested}')
+        for k, (key, col) in enumerate((('fxy', FWD), ('fyx', REV))):
+            st, _ = res[(key, band)]
+            sig = st['sig'][pair_idx] & keep
+            y = -0.06 * ymax * (k + 1)
+            # runs of >=3 windows solid, isolated hits faint
+            for a, b_ in _contiguous_spans(sig):
+                run = b_ - a + 1
+                ax.plot([w[a], w[b_]], [y, y], color=col,
+                        lw=3.5 if run >= 3 else 2.0,
+                        alpha=1.0 if run >= 3 else 0.35,
+                        solid_capstyle='butt')
+        ax.set_ylim(-0.06 * ymax * 2.9, ymax * 1.14)
+        ax.set_ylabel(f'{LABEL[band]}\nGC', fontsize=9)
+        ax.tick_params(labelsize=8)
+        n_tested = int(np.isfinite(res[('fxy', band)][0]['pval'][pair_idx]).sum())
+        ax.text(0.005, 0.97, '  |  '.join(note)
+                + f'  (chance ≈ {0.05 * n_tested:.0f})',
+                transform=ax.transAxes, fontsize=7.5, va='top', color='0.25')
+        if r == 0:
+            ax.legend(fontsize=9, frameon=False, ncol=2, loc='upper right')
+    axes[-1][0].set_xlabel('window start (ms)', fontsize=9)
+    fig.suptitle(title, fontsize=10.5)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+
+
 def configs(scope, win_ms, order):
     """Yield (task, stim, subset_dir, gc_dir) for the requested scope."""
     n_roi = 2 if scope == 'biv' else 3
@@ -141,7 +207,7 @@ def configs(scope, win_ms, order):
         yield p[0], p[7], p[6], d
 
 
-def run_scope(scope, args, outdir):
+def run_scope(scope, args, outdir, tt_dir=None):
     """Two passes: test everything, correct across the family, THEN plot.
 
     A per-figure significance bar is uncorrected across the other edges, bands
@@ -152,6 +218,8 @@ def run_scope(scope, args, outdir):
     p for its own test and the family size it came from.
     """
     os.makedirs(outdir, exist_ok=True)
+    if tt_dir is not None:
+        os.makedirs(tt_dir, exist_ok=True)
     analysed, fam_keys, fam_p = {}, [], []
     for task, stim, subset, gc_dir in configs(scope, args.win_ms, args.order):
         out = analyse(gc_dir, task, args.edge_guard, args.n_permutations,
@@ -209,6 +277,17 @@ def run_scope(scope, args, outdir):
                    + f'_win{args.win_ms:g}_order{args.order}.png')
             plot_pair(agg, res, base, tstart, tend, pi, src, tgt, ttl, png,
                       scope)
+            if tt_dir is not None:
+                tt_ttl = (f'{sh(src)} ↔ {sh(tgt)}   {task} / {stim}   [{cond}'
+                          + (f' = {", ".join(others)}]' if others else ']')
+                          + f'\norder {args.order}, {args.win_ms:g} ms window, '
+                            f'zscore, n={len(agg["subjects"])};  shaded = '
+                            f'baseline [{base[0]:.0f}, {base[1]:.0f}] ms'
+                            f'\nbars = pointwise one-sample t vs baseline, '
+                            f'right-tailed, uncorrected'
+                            f'\n(solid = run of ≥3 windows, faint = isolated)')
+                plot_pair_ttest(agg, res, base, tstart, tend, pi, src, tgt,
+                                tt_ttl, f'{tt_dir}/{os.path.basename(png)}')
             n += 1
     print(f'{n} figures -> {outdir}')
 
@@ -313,13 +392,18 @@ def main():
     ap.add_argument('--win-ms', type=float, default=60.0)
     ap.add_argument('--order', type=int, default=6,
                     help='default 6; order 2 is degenerate (3-4x lower GC)')
-    ap.add_argument('--edge-guard', type=float, default=30.0)
+    ap.add_argument('--edge-guard', type=float, default=0.0,
+                    help='ms of epoch onset excluded before the '
+                         'baseline. Default 0: under zscore only '
+                         'the first window is materially low.')
     ap.add_argument('--n-permutations', type=int, default=1024)
     ap.add_argument('--no-tfce', dest='tfce', action='store_false', default=True)
     ap.add_argument('--edge-guard-ab', action='store_true',
                     help='also write the guard 0 vs --edge-guard comparison')
     ap.add_argument('--ab-pairs', nargs='+', default=None,
                     help='limit the A/B to these rois_* directory names')
+    ap.add_argument('--skip-ttest', action='store_true',
+                    help='do not write the pointwise t-test set')
     ap.add_argument('--skip-pairwise', action='store_true')
     ap.add_argument('--skip-triplewise', action='store_true')
     args = ap.parse_args()
@@ -329,10 +413,12 @@ def main():
           f'edge guard {args.edge_guard:g} ms\n')
     if not args.skip_pairwise:
         print('bivariate:')
-        run_scope('biv', args, f'{D}/_figures_pairwise')
+        run_scope('biv', args, f'{D}/_figures_pairwise',
+                  None if args.skip_ttest else f'{D}/_figures_pairwise_ttest')
     if not args.skip_triplewise:
         print('\ntriple-wise (A->B | C):')
-        run_scope('cond', args, f'{D}/_figures_triplewise')
+        run_scope('cond', args, f'{D}/_figures_triplewise',
+                  None if args.skip_ttest else f'{D}/_figures_triplewise_ttest')
     if args.edge_guard_ab:
         print('\nedge-guard A/B:')
         run_edge_guard_ab(args, f'{D}/_figures_edgeguard')

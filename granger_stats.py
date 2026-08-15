@@ -507,7 +507,7 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
               alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
-              baseline_dur_ms=100.0, edge_guard_ms=10.0, permutation=True,
+              baseline_dur_ms=100.0, edge_guard_ms=0.0, permutation=True,
               n_permutations=N_PERMUTATIONS, tfce=True, seed=42, n_jobs=1):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
@@ -544,7 +544,11 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     30 ms (6 windows) is right for the un-normalised data and over-corrective
     for zscore, where it discards good baseline: on ifc<->tpc in perception it
     moved the baseline -2.3% and changed the significant-window count by +50.
-    Use 30 for none/demean, 10 here, 0 to keep the full baseline.
+    DEFAULT 0 — keep the whole genuine baseline. Under zscore only the first
+    window is materially low and the guard costs more baseline than it saves;
+    it also changed nothing about the conclusions, which are null either way.
+    Raise it to ~30 if you analyse un-normalised (none/demean) output, where
+    the leading 4-6 windows really are at 46-68%.
 
     The trailing end is worse than previously documented: at 60 ms the last
     6-16 windows are DEPRESSED to 46-79% of plateau, not the "sharp spike in
@@ -779,14 +783,14 @@ def parse_args():
                    help='GC task windows end here (s), dropping the trailing '
                         'edge; default from config.GC_TASK_END[task]. Pass a '
                         'value beyond the last window to disable the crop.')
-    p.add_argument('--edge-guard', type=float, default=10.0,
+    p.add_argument('--edge-guard', type=float, default=0.0,
                    help='ms of epoch onset trimmed before the baseline '
                         'starts. Default 10 (2 windows), measured on the '
                         'zscore production data: only the first window is '
-                        'materially low (66-80%% of plateau). Raise to 30 for '
-                        '--normalize none / demean data, where the leading '
-                        '4-6 windows sit at 46-68%%. 0 keeps the full '
-                        'baseline.')
+                        'materially low (66-80%% of plateau), so the default '
+                        'is 0 and the whole genuine baseline is kept. Raise to '
+                        '~30 for --normalize none / demean output, where the '
+                        'leading 4-6 windows sit at 46-68%%.')
     p.add_argument('--test', default='ttest', choices=['ttest', 'signrank'],
                    help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
                         "Student's t; matches production_pwgc_data_to_python.m and "
