@@ -167,6 +167,15 @@ def load_gc_group(gc_dir, bands=None):
 # ─────────────────────────────────────────────────────────────────────
 MIN_SUBJECTS = 3          # below this a one-sample test is not worth reporting
 
+# When does "task" begin, if it is not simply where the baseline ends?
+#
+# perception: t=0 is STIMULUS ONSET, so nothing before it is task. Deriving the
+#   task start from the baseline end would test pre-stimulus windows as task.
+# overtProd: t=0 is ARTICULATION onset, and the period of interest is the
+#   planning epoch BEFORE it, so the task span must start at the baseline end.
+#   Absent from this dict for that reason, not by oversight.
+TASK_ONSET_MS = {'perception': 0.0}
+
 
 def _baseline_mask(window_ms, baseline_ms):
     """Boolean mask of the baseline windows — raising if it selects nothing.
@@ -525,6 +534,11 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     leading ``baseline_dur_ms`` (100 ms) of the moving-window axis — derived
     from the data itself, so it is correct whatever the epoch length: the -1.6 s
     sensor run -> [-1600, -1500] ms, the -1.5 s source run -> [-1500, -1400] ms.
+    The source epoch necessarily starts 100 ms later than the sensor one: LCMV
+    needs a 100 ms pre-stimulus segment to estimate its data covariance, so that
+    segment is consumed by the inverse and is not available to GC. Taking "the
+    leading 100 ms of whatever axis exists" is what keeps the two comparable in
+    RULE even though they cannot be identical in absolute time.
     A LOW baseline is expected and is the signal (a rest / silent period has low
     directed connectivity), so the baseline is shown in full and NOT trimmed by
     default (earlier this was a hardcoded interior window shifted 50 ms off the
@@ -570,6 +584,9 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                        float(window_ms[0]) + baseline_dur_ms)
     if task_start_ms is None:
         task_start_ms = baseline_ms[1]           # task begins where baseline ends
+        onset = TASK_ONSET_MS.get(task)
+        if onset is not None:
+            task_start_ms = max(task_start_ms, onset)
     if task_end_ms is None and task in GC_TASK_END:
         task_end_ms = GC_TASK_END[task] * 1000.0
     end_str = f'{task_end_ms:g}' if task_end_ms is not None else 'end'

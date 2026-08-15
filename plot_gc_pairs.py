@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import GC_TASK_END
 from granger import DEFAULT_BANDS
 from run_granger import GC_OUTPUT_ROOT
-from granger_stats import (load_gc_group, task_vs_baseline,
+from granger_stats import (load_gc_group, task_vs_baseline, TASK_ONSET_MS,
                            permutation_task_vs_baseline, _contiguous_spans,
                            bh_fdr)
 
@@ -62,12 +62,26 @@ def sh(r):
     return str(r).replace('-lh', '')
 
 
-def analyse(gc_dir, task, edge_guard, n_perm, tfce, seed=42):
-    """-> (agg, baseline_ms, task_start, task_end, {band: (stats, perm)})"""
+def analyse(gc_dir, task, edge_guard, n_perm, tfce, seed=42,
+            baseline_dur=BASELINE_DUR):
+    """-> (agg, baseline_ms, task_start, task_end, {band: (stats, perm)})
+
+    Baseline = the leading ``baseline_dur`` ms of the moving-window axis. The
+    source epoch starts 100 ms later than the sensor one because LCMV consumes
+    a 100 ms pre-stimulus segment for its covariance estimate, so the two can
+    match in RULE but never in absolute time.
+
+    Task start is the baseline end EXCEPT where t=0 is a stimulus onset
+    (perception), where nothing before 0 is task — see
+    granger_stats.TASK_ONSET_MS.
+    """
     agg = load_gc_group(gc_dir)
     w = np.asarray(agg['window_ms'], float)
-    baseline_ms = (float(w[0]) + edge_guard, float(w[0]) + BASELINE_DUR)
+    baseline_ms = (float(w[0]) + edge_guard, float(w[0]) + baseline_dur)
     task_start = baseline_ms[1]
+    onset = TASK_ONSET_MS.get(task)
+    if onset is not None:
+        task_start = max(task_start, onset)
     task_end = GC_TASK_END[task] * 1000.0 if task in GC_TASK_END else None
     out = {}
     for key in ('fxy', 'fyx'):
@@ -223,7 +237,7 @@ def run_scope(scope, args, outdir, tt_dir=None):
     analysed, fam_keys, fam_p = {}, [], []
     for task, stim, subset, gc_dir in configs(scope, args.win_ms, args.order):
         out = analyse(gc_dir, task, args.edge_guard, args.n_permutations,
-                      args.tfce)
+                      args.tfce, baseline_dur=args.baseline_dur)
         analysed[(task, stim, subset)] = (gc_dir, out)
         agg, _, _, _, res = out
         for pi in range(len(agg['pair_i'])):
@@ -302,7 +316,8 @@ def run_edge_guard_ab(args, outdir):
             continue
         per = {}
         for g in guards:
-            per[g] = analyse(gc_dir, task, g, args.n_permutations, args.tfce)
+            per[g] = analyse(gc_dir, task, g, args.n_permutations, args.tfce,
+                             baseline_dur=args.baseline_dur)
         agg = per[guards[0]][0]
         roi = agg['roi_names']
         w = np.asarray(agg['window_ms'], float)
@@ -396,6 +411,15 @@ def main():
                     help='ms of epoch onset excluded before the '
                          'baseline. Default 0: under zscore only '
                          'the first window is materially low.')
+    ap.add_argument('--baseline-dur', type=float, default=100.0,
+                    help='ms of the leading window axis used as baseline. '
+                         'Default 100. A shorter baseline is a real question '
+                         'here: the number of INDEPENDENT window-lengths it '
+                         'holds depends on --win-ms, so a flat 100 ms is not '
+                         'the same amount of evidence across the sweep.')
+    ap.add_argument('--suffix', default='',
+                    help='appended to every output directory name, so a '
+                         'variant lands beside the default instead of over it')
     ap.add_argument('--n-permutations', type=int, default=1024)
     ap.add_argument('--no-tfce', dest='tfce', action='store_false', default=True)
     ap.add_argument('--edge-guard-ab', action='store_true',
@@ -413,15 +437,15 @@ def main():
           f'edge guard {args.edge_guard:g} ms\n')
     if not args.skip_pairwise:
         print('bivariate:')
-        run_scope('biv', args, f'{D}/_figures_pairwise',
-                  None if args.skip_ttest else f'{D}/_figures_pairwise_ttest')
+        run_scope('biv', args, f'{D}/_figures_pairwise{args.suffix}',
+                  None if args.skip_ttest else f'{D}/_figures_pairwise_ttest{args.suffix}')
     if not args.skip_triplewise:
         print('\ntriple-wise (A->B | C):')
-        run_scope('cond', args, f'{D}/_figures_triplewise',
-                  None if args.skip_ttest else f'{D}/_figures_triplewise_ttest')
+        run_scope('cond', args, f'{D}/_figures_triplewise{args.suffix}',
+                  None if args.skip_ttest else f'{D}/_figures_triplewise_ttest{args.suffix}')
     if args.edge_guard_ab:
         print('\nedge-guard A/B:')
-        run_edge_guard_ab(args, f'{D}/_figures_edgeguard')
+        run_edge_guard_ab(args, f'{D}/_figures_edgeguard{args.suffix}')
 
 
 if __name__ == '__main__':
