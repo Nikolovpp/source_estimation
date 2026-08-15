@@ -507,7 +507,7 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 # ─────────────────────────────────────────────────────────────────────
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
               alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
-              baseline_dur_ms=100.0, edge_guard_ms=30.0, permutation=True,
+              baseline_dur_ms=100.0, edge_guard_ms=10.0, permutation=True,
               n_permutations=N_PERMUTATIONS, tfce=True, seed=42, n_jobs=1):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
@@ -530,22 +530,21 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     default (earlier this was a hardcoded interior window shifted 50 ms off the
     epoch start; that was wrong — it cut into the genuine baseline).
 
-    ``edge_guard_ms`` (default 30) drops the leading moving windows before the
-    baseline starts.  It used to default to 0, on the reading that the epoch
-    edge costs a single window — TRUE AT A 120 ms WINDOW, and wrong at the
-    windows this project actually sweeps.  Measured on the pre-bug ``_none``
-    files (120 subject files, both tasks, n=20 each), against the median of the
-    interior half:
+    ``edge_guard_ms`` (default 10) drops the leading moving windows before the
+    baseline starts.  HOW BIG IT SHOULD BE DEPENDS ON ``--normalize``, which is
+    why it is a parameter and not a constant.  Measured against the median of
+    the interior half, 60 ms window, both tasks, n=20:
 
-        win120 : leading 1 window below 90% of plateau
-        win60  : leading 4-6 windows, sitting at 46-68% of plateau
+        --normalize none/demean : leading 4-6 windows at 46-68% of plateau
+        --normalize zscore      : first window 66-80%, second 86-96%,
+                                  everything after that within 10%
 
-    The contaminated span of SIGNAL is roughly fixed (~20-30 ms), so a longer
-    window dilutes it and a shorter one does not.  With a 100 ms baseline at a
-    5 ms step that is 6 of 20 windows at ~60%, biasing the baseline about 12%
-    LOW — and since the test is right-tailed "task > baseline", a low baseline
-    inflates every p-value in the one direction that manufactures significance.
-    Set ``--edge-guard 0`` to reproduce the old behaviour.
+    Dividing by the ensemble SD at each time point compensates for most of the
+    edge transient, because that transient is largely an amplitude effect.  So
+    30 ms (6 windows) is right for the un-normalised data and over-corrective
+    for zscore, where it discards good baseline: on ifc<->tpc in perception it
+    moved the baseline -2.3% and changed the significant-window count by +50.
+    Use 30 for none/demean, 10 here, 0 to keep the full baseline.
 
     The trailing end is worse than previously documented: at 60 ms the last
     6-16 windows are DEPRESSED to 46-79% of plateau, not the "sharp spike in
@@ -780,14 +779,14 @@ def parse_args():
                    help='GC task windows end here (s), dropping the trailing '
                         'edge; default from config.GC_TASK_END[task]. Pass a '
                         'value beyond the last window to disable the crop.')
-    p.add_argument('--edge-guard', type=float, default=30.0,
-                   help='ms of epoch onset trimmed before the baseline starts. '
-                        'Default 30, measured: at a 60 ms window the leading '
-                        '4-6 windows sit at 46-68%% of the interior plateau, '
-                        'which biases a 100 ms baseline ~12%% LOW and inflates '
-                        'the right-tailed task>baseline test. At 120 ms only '
-                        'the first window is affected. Use 0 to reproduce the '
-                        'old behaviour.')
+    p.add_argument('--edge-guard', type=float, default=10.0,
+                   help='ms of epoch onset trimmed before the baseline '
+                        'starts. Default 10 (2 windows), measured on the '
+                        'zscore production data: only the first window is '
+                        'materially low (66-80%% of plateau). Raise to 30 for '
+                        '--normalize none / demean data, where the leading '
+                        '4-6 windows sit at 46-68%%. 0 keeps the full '
+                        'baseline.')
     p.add_argument('--test', default='ttest', choices=['ttest', 'signrank'],
                    help="task-vs-baseline test: 'ttest' (right-tailed one-sample "
                         "Student's t; matches production_pwgc_data_to_python.m and "
