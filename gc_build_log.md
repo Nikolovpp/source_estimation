@@ -1,17 +1,27 @@
 # Source-space Granger causality — build log
 
-**6 July – 15 August 2026.** How a BSMART port grew into a validated
+**23 March – 15 August 2026.** How a BSMART port grew into a validated
 source-space GC pipeline: the configurations tried, the bugs that invalidated
-whole runs, and the evidence behind each surviving decision.
+whole runs, and the evidence behind each surviving decision. §0 covers the
+source-estimation work the GC pipeline is built on; §1 onward is GC proper.
 
-Reconstructed from the git history of `gc-routes-parametric-vs-statespace`
-(80 commits) and the working session log. Commit hashes given per phase are
-representative, not exhaustive. Every quantity below was measured on the
-pipeline's own output; inferences are marked as such.
+Reconstructed from the repository's full git history (167 commits) and the
+working session log. Commit hashes given per phase are representative, not
+exhaustive. Every quantity below was measured on the pipeline's own output;
+inferences are marked as such.
+
+**Branch coverage.** `main` is an ancestor of
+`gc-routes-parametric-vs-statespace` — verified with
+`git merge-base --is-ancestor main HEAD` — so every commit on `main` is already
+in this history. `main`'s tip (`f4fa242`, 29 July) is the merge base; it has no
+commits the branch lacks, and neither does `granger-band-erp-fixes`. The GC work
+lives entirely on the branch and has not yet been merged back.
 
 | | |
 |---|---|
-| Commits | 80 |
+| Repository commits | 167 |
+| — foundation (Mar–May, §0) | 86 |
+| — GC pipeline (Jul–Aug, §1–9) | 81 |
 | Final sweep | 352 configs |
 | MVAR fits in the final sweep | 1,803,560 |
 | Subjects | 20 |
@@ -22,6 +32,47 @@ basis for ERP removal), `matlab_vs_python_gc.md` (differences from the sensor
 pipeline), `optimizing_exploratory_analyses.md`.
 
 ---
+
+## 0 · The foundation the GC pipeline reads from
+*23 March – 10 May 2026 — 86 commits, all on `main`*
+
+No GC code exists before 6 July. These 86 commits build the source-estimation
+and decoding pipeline that GC later consumes — its vertex ROI caches *are* the
+GC input, so decisions taken here constrain everything after.
+
+**Source estimation (March).** fsaverage ico-5 source space with a 3-layer BEM,
+dSPM and LCMV inverses in standard and low-RAM variants, spatial leakage
+correction by Löwdin orthogonalisation and regression, and four atlas options
+— aparc, Schaefer200, HCPMMP1, and a custom functional-localizer atlas
+projected from volumetric NIfTI onto the fsaverage surface (Chang et al.). The
+custom atlas is the one every GC analysis uses; its four ROIs are `awfa`,
+`ifc`, `pmc`, `tpc`.
+
+Two fixes here matter downstream: `reduce_rank=True` on `make_lcmv` to avoid a
+singular leadfield, and a singular-matrix fix in vertex leakage correction. Both
+concern the same failure mode — rank deficiency in the inverse — that resurfaced
+in July as the LCMV spatial collapse (§2), so the March fixes were necessary but
+not sufficient.
+
+**Output-path discipline (March–May).** A long run of commits threaded atlas,
+leakage correction, pseudo-trial size, classifier and C through every output
+path. That looks like housekeeping and is not: it is the same invariant the GC
+pipeline later violated twice — `demean_trials` missing from `gc_tag`, and the
+sweep-summary grouping that merged A/B arms (§7). Every parameter that changes
+the numbers must appear in the path.
+
+**Decoding and infrastructure (April–May).** Classifier options and ROI-subset
+filtering, `explore_decoding.py` with (ROI × config × window) parallelism,
+cluster-permutation statistics ported verbatim between the two stats
+viewers, a shared ROI cache across `vertex_*` feature modes, external-drive
+cache fallback, BLAS pinned to one thread per worker, and the split of the
+combined runner into `run_source_localize.py` and `run_decode.py` — the
+subject-parallel / cell-parallel split that the GC sweep later mirrors at the
+config level.
+
+The cluster-permutation test the GC statistics use is the same one written here
+for the decoding curves, which is why GC and decoding results are testable on
+equal terms.
 
 ## 1 · Porting BSMART, and building a statistics layer around it
 *6–8 July — `2340333`, `7854208`, `9c25d01`, `78943f3`, `5ebbaf7`*
