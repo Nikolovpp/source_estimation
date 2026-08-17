@@ -54,7 +54,13 @@ from granger_stats import (load_gc_group, task_vs_baseline, bh_fdr,
 D = str(GC_OUTPUT_ROOT)
 OUT = f'{D}/_figures_baseline_sensitivity'
 BAND = 'theta'
-STARTS = [0, 25, 50, 75, 100, 125, 150, 175, 200]
+STARTS = [0, 20, 40, 60, 80, 100, 125, 150, 175, 200]
+# A window STARTING at t covers [t, t+win_ms]. A baseline placement is only
+# pre-stimulus if its LAST window ends by the event, i.e.
+#     epoch_start + offset + BASE_W + win_ms <= onset
+# Sliding past that pulls post-stimulus samples into the baseline, which is
+# what made the original slide look like a collapse: the late placements were
+# comparing the task against itself, not against a cleaner baseline.
 BASE_W = 100.0
 ALPHA = 0.05
 
@@ -104,6 +110,11 @@ def gather(task, stim, scope, win_ms, order):
                 if e not in out:
                     out[e] = agg[key][BAND][:, k, :]
     return w_ref, out
+
+
+def baseline_is_clean(base, win_ms, onset):
+    """Does every window in this baseline end before the event?"""
+    return onset is None or (base[1] + win_ms) <= onset
 
 
 def pct_sig(stack, w, base, task_end, onset):
@@ -188,6 +199,14 @@ def build(scope, win_ms, order, out_png):
                 if np.isfinite(v):
                     xs.append(s0); ys.append(v)
             curves[e] = (xs, ys)
+        # where the baseline stops being pre-stimulus
+        dirty = None
+        if onset is not None:
+            for s0 in STARTS:
+                base = (float(w[0]) + s0, float(w[0]) + s0 + BASE_W)
+                if not baseline_is_clean(base, win_ms, onset):
+                    dirty = s0
+                    break
         # the mover: largest drop from the edge-anchored baseline
         mover = max(curves, key=lambda e: (curves[e][1][0] - min(curves[e][1]))
                     if curves[e][1] else -1)
@@ -205,22 +224,28 @@ def build(scope, win_ms, order, out_png):
             ax.plot(xs, ys, 'o--', color='#c2185b', lw=2.2, ms=6, zorder=4,
                     label=f'{sh(mover[0])}→{sh(mover[1])}  (largest drop)')
         ax.axhline(100 * ALPHA, color='0.4', ls=':', lw=1.1, zorder=2)
-        ax.axvspan(-10, BASE_W, color='#e05a5a', alpha=0.13, lw=0, zorder=0)
-        ax.text(-6, ax.get_ylim()[1] * 0.97, 'baseline overlaps\nthe edge',
-                fontsize=9, color='#b32b2b', va='top')
+        if dirty is not None:
+            ax.axvspan(dirty, STARTS[-1] + 8, color='#e05a5a', alpha=0.13,
+                       lw=0, zorder=0)
+            ax.text(dirty + 4, ax.get_ylim()[1] * 0.97,
+                    'baseline windows now\nreach past the event\n'
+                    '— no longer a baseline', fontsize=9, color='#b32b2b',
+                    va='top')
         ax.set_xlim(-12, STARTS[-1] + 8)
         ax.set_ylim(bottom=0)
         ax.set_xlabel('baseline start, ms after the epoch begins   '
                       '(width fixed at 100 ms)', fontsize=10)
         ax.set_ylabel('% of timepoints significant\nabove baseline '
                       '(uncorrected)', fontsize=10)
-        drop = curves[mover][1][0] - min(curves[mover][1])
+        clean_x = [x for x in curves[mover][0]
+                   if dirty is None or x < dirty]
+        clean_y = curves[mover][1][:len(clean_x)]
         ax.set_title(
             f'{TITLE} — the effect\n'
-            + (f'{sh(mover[0])}→{sh(mover[1])} falls '
-               f'{curves[mover][1][0]:.0f}% → {min(curves[mover][1]):.0f}% '
-               f'as the baseline clears the edge' if drop > 5 else
-               'no edge-anchored significance to lose'),
+            + (f'{sh(mover[0])}→{sh(mover[1])}: '
+               f'{min(clean_y):.0f}–{max(clean_y):.0f}% across every '
+               f'PRE-STIMULUS placement' if clean_y else
+               'no placement leaves a usable baseline'),
             fontsize=11.5)
         ax.legend(fontsize=9, frameon=False, ncol=2, loc='upper right')
 
@@ -235,14 +260,14 @@ def build(scope, win_ms, order, out_png):
     scope_lab = ('Pairwise spectral GC' if scope == 'biv'
                  else 'Triple-wise conditional GC (A→B | C)')
     fig.suptitle(
-        'Baseline placement decides the result — a 100 ms baseline slid away '
-        'from the epoch edge\n'
-        f'{scope_lab}, 20 subjects, zscore. NOT the partial-data artifact the '
-        'GC_routes version showed: that is largely gone here.\n'
-        'The pre-stimulus period simply is not flat — ifc→tpc theta runs '
-        '0.0109 → 0.0073 → 0.0137 → 0.0168 across the four 50 ms bins before '
-        't=0,\nreaching its post-stimulus level by −50 ms. There is no single '
-        'number that is "the baseline" for that edge.',
+        'Baseline placement — a 100 ms baseline slid away from the epoch '
+        'edge\n'
+        f'{scope_lab}, 20 subjects, zscore. The partial-data artifact the '
+        'GC_routes version showed is largely gone here.\n'
+        'A window starting at t covers [t, t+win], so a baseline slid toward '
+        'the event eventually contains POST-EVENT samples (shaded);\n'
+        'the apparent collapse there is the task being compared with itself. '
+        'Across placements that stay pre-stimulus, the result is stable.',
         fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.90])
     fig.savefig(out_png, dpi=180, bbox_inches='tight', facecolor='white')
