@@ -164,11 +164,23 @@ against `order10_win120ms` changes both at once, so neither can be blamed for a
 difference. The sweep crosses them independently: windows 40/60/80 ms against
 orders 2/4/6/10 at 200 Hz, over two tasks and two contrasts.
 
-500 Hz was rejected deliberately. Model order buys memory in *p/fs* seconds, so
-orders 2–10 at 500 Hz span only 4–20 ms, less than one beta cycle — and the data
-is low-passed near 38 Hz, so 500 Hz samples are close to redundant. A 20 ms
-window was excluded for the same class of reason: four samples cannot support
-order 4.
+500 Hz was rejected deliberately. Model order is a *duration*, not a unitless
+richness: an order-*p* fit spans *p*/*f_s* seconds, so orders 2–10 at 500 Hz
+reach only 4–20 ms — less than one cycle of *any* reported band, high beta
+included (33 ms at its fastest edge). The same orders at 200 Hz reach 10–50 ms,
+which covers 1.5 high-beta cycles. The extra samples at 500 Hz do not
+compensate: the data is bandpass filtered 0.1–30 Hz, so adjacent 500 Hz samples
+correlate at 0.976 — 95% shared variance — while each lag still costs n²
+coefficients. On a simulated 22 Hz interaction with a 15 ms lag, a 500 Hz
+order-6 fit (12 ms reach, 40 samples) recovers a directional ratio of 3.4 while
+a 200 Hz order-10 fit (50 ms reach, 16 samples) recovers 333; doubling the
+window at 500 Hz does not help, because samples cannot substitute for reach.
+
+A 20 ms window was excluded for a different, arithmetic reason: at 200 Hz it is
+four samples, and the Morf recursion needs *samples > order + 1*, capping it at
+order 2. Running it at 500 Hz instead would have made it the only column at a
+different sampling rate — a confound inside a grid built to separate window from
+order. Full derivation in `GC_fundamentals/sampling_rate_order_window.md`.
 
 One estimator runs throughout, with the *analysis* chosen by subset size — two
 ROIs give bivariate GC, three give A→B|C conditioned on the remaining region.
