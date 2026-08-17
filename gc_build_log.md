@@ -164,23 +164,94 @@ against `order10_win120ms` changes both at once, so neither can be blamed for a
 difference. The sweep crosses them independently: windows 40/60/80 ms against
 orders 2/4/6/10 at 200 Hz, over two tasks and two contrasts.
 
-500 Hz was rejected deliberately. Model order is a *duration*, not a unitless
-richness: an order-*p* fit spans *p*/*f_s* seconds, so orders 2–10 at 500 Hz
-reach only 4–20 ms — less than one cycle of *any* reported band, high beta
-included (33 ms at its fastest edge). The same orders at 200 Hz reach 10–50 ms,
-which covers 1.5 high-beta cycles. The extra samples at 500 Hz do not
-compensate: the data is bandpass filtered 0.1–30 Hz, so adjacent 500 Hz samples
-correlate at 0.976 — 95% shared variance — while each lag still costs n²
-coefficients. On a simulated 22 Hz interaction with a 15 ms lag, a 500 Hz
-order-6 fit (12 ms reach, 40 samples) recovers a directional ratio of 3.4 while
-a 200 Hz order-10 fit (50 ms reach, 16 samples) recovers 333; doubling the
-window at 500 Hz does not help, because samples cannot substitute for reach.
+### Why 200 Hz, and why no 20 ms window
 
-A 20 ms window was excluded for a different, arithmetic reason: at 200 Hz it is
-four samples, and the Morf recursion needs *samples > order + 1*, capping it at
-order 2. Running it at 500 Hz instead would have made it the only column at a
-different sampling rate — a confound inside a grid built to separate window from
-order. Full derivation in `GC_fundamentals/sampling_rate_order_window.md`.
+These two exclusions did most of the work in defining the grid, so the
+reasoning is worth setting out. Figure:
+`GC_source_space/_figures_methods/sampling_rate_tradeoff.png`, from
+`plot_sampling_rate_tradeoff.py`.
+
+**Model order is a duration, not a unitless measure of model richness.** An
+order-*p* fit sees *p* lags spaced 1/*f_s* apart, so it spans *p*/*f_s* seconds
+of history. The same order means different things at different rates:
+
+| order | @500 Hz | @200 Hz |
+|---|---|---|
+| 2 | 4 ms | 10 ms |
+| 6 | 12 ms | 30 ms |
+| 10 | 20 ms | 50 ms |
+
+To represent an oscillation the model must span a real fraction of its cycle,
+and high beta at 30 Hz is a 33 ms cycle — the shortest anything in this study
+reports. Fraction of one cycle spanned at order 10, the deepest in the grid:
+
+| band | cycle (fastest edge) | @500 Hz (20 ms) | @200 Hz (50 ms) |
+|---|---|---|---|
+| theta | 125 ms | 0.16× | 0.40× |
+| alpha | 83 ms | 0.24× | 0.60× |
+| low beta | 56 ms | 0.36× | 0.90× |
+| high beta | 33 ms | 0.60× | **1.50×** |
+
+At 500 Hz the deepest model in the sweep does not span one full cycle of *any*
+reported band.
+
+**The extra samples at 500 Hz do not compensate.** The obvious objection is
+that 500 Hz gives 2.5× more samples per window, so the fit should be better
+conditioned — true only if those samples were independent. The data is bandpass
+filtered 0.1–30 Hz (per the EEGLAB epoch filenames), and a signal band-limited
+to *B* has autocorrelation sinc(2*Bτ*):
+
+| *f_s* | lag | r(adjacent) | oversampling vs Nyquist(30 Hz) |
+|---|---|---|---|
+| 500 Hz | 2.0 ms | **0.976** | 8.3× |
+| 200 Hz | 5.0 ms | 0.858 | 3.3× |
+
+Adjacent 500 Hz samples share ~95% of their variance, while every extra lag
+still costs *n*² coefficients — 40 at order 10 bivariate. Full parameter price
+for near-duplicate observations, which shows up as ill-conditioning rather than
+as an error.
+
+**Measured on a known process.** A VAR resonating at 22 Hz in *x* drives *y*
+15 ms later, low-passed at 30 Hz, then decimated to each rate so both see the
+same signal; 300 trials, averaged over nine window placements:
+
+| *f_s* | win | samples | order | reach | ratio x→y : y→x | rho |
+|---|---|---|---|---|---|---|
+| 500 | 40 | 20 | 6 | **12 ms** | 3.4 | 0.992 |
+| 500 | 80 | 40 | 6 | **12 ms** | 3.2 | 0.992 |
+| 500 | 40 | 20 | 10 | 20 ms | 26.7 | 0.977 |
+| 500 | 80 | 40 | 10 | 20 ms | 28.2 | 0.976 |
+| 200 | 40 | 8 | 6 | 30 ms | 10.0 | 0.957 |
+| 200 | 80 | 16 | 6 | 30 ms | 9.7 | 0.956 |
+| 200 | 80 | 16 | 10 | **50 ms** | **333** | 0.933 |
+
+The two 500 Hz order-6 rows span 12 ms while trying to detect a 15 ms
+interaction, and doubling the window from 40 to 80 ms — 20 samples to 40 —
+moves the ratio 3.4 → 3.2. **Samples cannot substitute for reach.** The best row
+has 16 samples and beats the row with 40. Spectral radius falls monotonically as
+reach grows, so the oversampled fits are also the ones straining against the
+stability boundary — the same near-unit-root regime the real diagnostics show.
+
+*Caveat: one synthetic process with one lag, built to make the mechanism
+visible. It shows why reach matters; it does not establish the optimal
+configuration for real data, which is what the sweep itself was for.*
+
+**The 20 ms exclusion is a separate, arithmetic constraint.** At 200 Hz that is
+four samples, and `armorf`'s Morf recursion has prediction-error arrays of width
+`Nl − m − 1`, so it runs out of data once *p* + 1 ≥ *Nl*; the sweep enforces
+`samples > order + 1`, capping four samples at order 2. The trial ensemble does
+not rescue it — 234 trials give plenty of observation equations, but each
+contributes the same few lag configurations. Running 20 ms at 500 Hz instead
+(10 samples, order 6 feasible) was rejected on design grounds: it would make
+20 ms the only column at a different sampling rate, putting a sampling-rate
+confound inside a grid built to separate window from order.
+
+**What this costs.** Theta is under-covered at every configuration in the grid —
+0.40× of a cycle at best. Reaching one theta cycle would need order 25 at
+200 Hz, i.e. the canonical 250 ms / order-25 configuration, which this grid does
+not include. Theta results here should be read with that in mind.
+
+### The rest of the grid
 
 One estimator runs throughout, with the *analysis* chosen by subset size — two
 ROIs give bivariate GC, three give A→B|C conditioned on the remaining region.
