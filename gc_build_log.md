@@ -206,6 +206,10 @@ to *B* has autocorrelation sinc(2*Bτ*):
 | 500 Hz | 2.0 ms | **0.976** | 8.3× |
 | 200 Hz | 5.0 ms | 0.858 | 3.3× |
 
+(Those are the ideal brick-wall values. Measured through the actual 4th-order
+Butterworth they are 0.979 and 0.876 — the idealisation slightly *understates*
+the redundancy, so the argument is if anything conservative.)
+
 Adjacent 500 Hz samples share ~95% of their variance, while every extra lag
 still costs *n*² coefficients — 40 at order 10 bivariate. Full parameter price
 for near-duplicate observations, which shows up as ill-conditioning rather than

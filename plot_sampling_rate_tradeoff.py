@@ -113,6 +113,19 @@ def run(X):
     return rows
 
 
+def empirical_redundancy(seed=0):
+    """Adjacent-sample correlation under the REAL filter, not the ideal sinc."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(200000)
+    b, a = butter(4, LOWPASS / (FS_GEN / 2), 'low')
+    xf = filtfilt(b, a, x)
+    out = {}
+    for fs in (100, 150, 200, 300, 400, 500):
+        xr = resample_poly(xf, fs, FS_GEN)
+        out[fs] = float(np.corrcoef(xr[:-1], xr[1:])[0, 1])
+    return out
+
+
 def figure(rows, out_png):
     fig = plt.figure(figsize=(13.6, 9.4))
     gs = fig.add_gridspec(2, 2, hspace=0.42, wspace=0.26,
@@ -125,18 +138,20 @@ def figure(rows, out_png):
     for name, (lo, hi) in DEFAULT_BANDS.items():
         ax.axhspan(1000.0 / hi, 1000.0 / lo, color=band_col[name], alpha=0.20,
                    lw=0)
-        ax.text(10.6, np.sqrt((1000.0 / hi) * (1000.0 / lo)),
-                name.replace('_', ' '), fontsize=8, va='center',
+        ax.text(11.35, np.sqrt((1000.0 / hi) * (1000.0 / lo)),
+                name.replace('_', ' '), fontsize=8, va='center', ha='right',
                 color=band_col[name], weight='bold')
     orders = np.array([2, 4, 6, 10])
     for fs in RATES:
         ax.plot(orders, 1000.0 * orders / fs, 'o-', color=RCOL[fs], lw=2,
                 ms=6, label=f'{fs} Hz', zorder=3)
-    ax.set_xscale('log'); ax.set_yscale('log')
-    ax.set_xticks(orders); ax.set_xticklabels(orders)
+    # Linear x. Order is four small integers, so a log axis buys nothing and
+    # leaks a stray minor tick label ("3x10^0") between the majors.
+    ax.set_yscale('log')
+    ax.set_xticks(orders)
     ax.set_yticks([5, 10, 25, 50, 100, 250])
     ax.set_yticklabels(['5', '10', '25', '50', '100', '250'])
-    ax.set_xlim(1.7, 15)
+    ax.set_xlim(0.7, 11.6)
     ax.set_xlabel('MVAR model order')
     ax.set_ylabel('model memory  $p/f_s$  (ms)')
     ax.set_title('(a) Order is a duration, and the duration\n'
@@ -147,14 +162,22 @@ def figure(rows, out_png):
     # ---- (b) how redundant the extra samples are ------------------------
     ax = fig.add_subplot(gs[0, 1])
     fs_grid = np.linspace(70, 600, 400)
-    ax.plot(fs_grid, np.sinc(2 * LOWPASS / fs_grid), color='0.35', lw=2)
+    ax.plot(fs_grid, np.sinc(2 * LOWPASS / fs_grid), color='0.35', lw=2,
+            label='ideal brick-wall low-pass')
+    # The analytic sinc assumes an ideal filter on white input; the study uses
+    # a 4th-order Butterworth. Measure it rather than let the idealisation
+    # stand in for the real thing — it turns out to UNDERSTATE the redundancy.
+    emp = empirical_redundancy()
+    ax.plot(list(emp), list(emp.values()), 's', color='0.15', ms=7, zorder=4,
+            label=f'measured, {LOWPASS:g} Hz Butterworth')
     for fs in RATES:
         r = float(np.sinc(2 * LOWPASS / fs))
-        ax.plot([fs], [r], 'o', color=RCOL[fs], ms=9, zorder=3)
+        ax.plot([fs], [r], 'o', color=RCOL[fs], ms=10, zorder=5)
         ax.annotate(f'{fs} Hz\nr = {r:.3f}', (fs, r),
-                    textcoords='offset points', xytext=(-6, -34),
+                    textcoords='offset points', xytext=(0, -40),
                     fontsize=9, color=RCOL[fs], ha='center', weight='bold')
-    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=8, frameon=False, loc='lower right')
+    ax.set_ylim(0, 1.12)
     ax.set_xlabel('sampling rate (Hz)')
     ax.set_ylabel('correlation between adjacent samples')
     ax.set_title(f'(b) A {LOWPASS:g} Hz-limited signal oversampled:\n'
@@ -186,9 +209,15 @@ def figure(rows, out_png):
             txt = (f'order {grp[0][2]}\n'
                    + ('/'.join(str(w) for w in wins) + ' ms window'
                       if len(wins) > 1 else f'{wins[0]} ms window'))
+            # Per-point placement. Keying the offset on the rate alone put
+            # the 500 Hz order-10 label straight through the 200 Hz order-6
+            # one; these two markers are close in both x and y.
+            off, ha = {12: ((-9, -22), 'right'), 20: ((0, 14), 'center'),
+                       30: ((9, -22), 'left'), 50: ((-8, 6), 'right')}.get(
+                           int(round(m_)), ((9, 6), 'left'))
             ax.annotate(txt, (m_, yv), textcoords='offset points',
-                        xytext=(9, -16 if fs == 500 else 6), fontsize=8,
-                        color=RCOL[fs], zorder=4)
+                        xytext=off, ha=ha, fontsize=8, color=RCOL[fs],
+                        zorder=4)
     ax.set_yscale('log')
     ax.set_xlim(0, 62)
     ax.set_ylim(1.6, 1600)
@@ -206,13 +235,18 @@ def figure(rows, out_png):
 
     # ---- (d) samples cannot substitute for reach ------------------------
     ax = fig.add_subplot(gs[1, 1])
-    lab = [f'{r[0]}Hz  {r[1]:g}ms\norder {r[2]}  ({r[4]} samp)' for r in ok]
-    val = [r[7] for r in ok]
-    col = [RCOL[r[0]] for r in ok]
-    y = np.arange(len(ok))
-    ax.barh(y, val, color=col, height=0.68)
-    for i, (v, r) in enumerate(zip(val, ok)):
-        ax.text(v * 1.08, i, f'{v:.0f}×   reach {r[3]:.0f} ms',
+    # Include the infeasible cell. Dropping it hides why the sweep's 40 ms
+    # column stops at order 6.
+    lab = [f'{r[0]}Hz  {r[1]:g}ms\norder {r[2]}  ({r[4]} samp)' for r in rows]
+    y = np.arange(len(rows))
+    for i, r in enumerate(rows):
+        if not np.isfinite(r[7]):
+            ax.barh(i, 1200, color='0.88', height=0.68, zorder=0)
+            ax.text(1.35, i, 'INFEASIBLE — 8 samples cannot support order 10',
+                    va='center', fontsize=8, color='#777', style='italic')
+            continue
+        ax.barh(i, r[7], color=RCOL[r[0]], height=0.68)
+        ax.text(r[7] * 1.10, i, f'{r[7]:.0f}×   reach {r[3]:.0f} ms',
                 va='center', fontsize=8.5,
                 color='#333' if r[3] >= LAG_MS else '#b5483c',
                 weight='normal' if r[3] >= LAG_MS else 'bold')
