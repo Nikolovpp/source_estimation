@@ -29,15 +29,6 @@
 # identically — the overwrite only ADDS the dtrgc_* arrays. Set
 # MAIN_OVERWRITE=0 only if you know every existing npz already has dtrgc.
 #
-# *** PERCEPTION HAS NO BASELINE AT THE THETA WINDOW. ***
-# A 200 ms window is fully pre-stimulus only if it starts at or before
-# -200 ms; the source axis starts at -100 ms (LCMV covariance segment), so
-# perception has ZERO fully pre-stimulus windows in the theta arm. Its time
-# courses and directional asymmetries (TRGC sign, forward vs reverse) are
-# valid; task-vs-baseline statistics on perception@theta are NOT. overtProd
-# (t=0 = articulation onset) is unaffected. The main arm (80 ms) is fine for
-# both tasks.
-#
 #   conda activate mne          # the script activates it itself
 #   bash run_gc_final.sh
 #   DRY_RUN=1 bash run_gc_final.sh          # print commands, run nothing
@@ -111,12 +102,6 @@ done
 echo "  $n_total configs, 20 subjects each, $PARALLEL at a time"
 case " $ARMS " in *" main "*) [ "$MAIN_OVERWRITE" = "1" ] && \
     echo "  main arm runs with --overwrite (adds dtrgc to the sweep's win80/order10 cell)" ;; esac
-case " $ARMS " in *" theta "*) case " $TASKS " in *" perception "*)
-    echo
-    echo "  *** perception has NO fully pre-stimulus window at 200 ms."
-    echo "      Time courses and TRGC asymmetries are valid; do not run"
-    echo "      task-vs-baseline statistics on perception in the theta arm." ;;
-esac; esac
 echo
 
 CMD_FILE=$(mktemp); DONE_FILE=$(mktemp)
