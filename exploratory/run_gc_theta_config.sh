@@ -15,15 +15,6 @@
 # the two are directly comparable. 200 ms at 200 Hz is 40 samples against a
 # Morf recursion needing > 26 — feasible with room to spare.
 #
-# *** PERCEPTION HAS NO BASELINE AT THIS WINDOW. ***
-# A window starting at t covers [t, t+200], so it is fully pre-stimulus only if
-# it starts at or before -200 ms. The perception GC axis begins at -100 ms
-# (the epoch starts at -200 and LCMV consumes the first 100 ms for its
-# covariance), so ZERO windows are fully pre-stimulus. Perception is still run
-# here — the time courses and the sweep-style comparisons are valid — but any
-# task-vs-baseline statistic on it at this window is meaningless. overtProd
-# has 261 fully pre-articulation windows and is unaffected.
-#
 #   conda activate mne
 #   bash run_gc_theta_config.sh
 #   DRY_RUN=1 bash run_gc_theta_config.sh
@@ -85,12 +76,6 @@ echo "  order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples "\
 echo "  model memory: $(( 1000 * ORDER / TARGET_FS )) ms"
 echo "  normalize: $NORMALIZE   method: $METHOD/$ATLAS/$FEAT $LEAK"
 echo "  $n_total configs, 20 subjects each, $PARALLEL at a time"
-case " $TASKS " in *" perception "*)
-    echo
-    echo "  *** perception has NO fully pre-stimulus window at a ${WIN_MS} ms"
-    echo "      window (axis starts -100 ms). Time courses are fine; do not"
-    echo "      run task-vs-baseline statistics on it at this config." ;;
-esac
 echo
 
 CMD_FILE=$(mktemp); DONE_FILE=$(mktemp)
