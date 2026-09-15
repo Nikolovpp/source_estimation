@@ -62,8 +62,22 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import DECODE_OUTPUT_ROOT, GC_TASK_END
-from granger import DEFAULT_BANDS
+from granger import DEFAULT_BANDS, band_masks
 from run_granger import gc_tag, roiset_tag, GC_OUTPUT_ROOT
+
+# The bands the stats REPORT.  Alpha is dropped (not a band of interest for
+# this study); 'beta' is the combined 12-30 Hz band.  It is not stored in the
+# npz caches — each stored band value is the plain mean over that band's
+# frequency bins, so the union band is reconstructed EXACTLY in load_gc_group
+# as the bin-count-weighted average of the two stored beta means (6 bins for
+# [12,18), 13 for [18,30] on the 1 Hz grid), with the weights taken from each
+# run's own frequency grid.
+REPORT_BANDS = {
+    'theta': (4.0, 8.0),
+    'low_beta': (12.0, 18.0),
+    'high_beta': (18.0, 30.0),
+    'beta': (12.0, 30.0),
+}
 
 GC_SENSOR_OUTPUT_ROOT = DECODE_OUTPUT_ROOT.parent / 'GC_sensor_space'
 
@@ -95,10 +109,24 @@ def load_gc_group(gc_dir, bands=None):
     Returns a dict with ``roi_names``, ``pair_i``, ``pair_j``,
     ``window_ms``, ``subjects``, and ``fxy``/``fyx`` (and ``dtrgc`` if
     present) each a dict {band: (n_subj, n_pairs, n_win)}.
+
+    A requested band that is not stored in the npz is synthesized when it is
+    the union of stored bands: 'beta' = the bin-count-weighted average of
+    low_beta and high_beta (exact — see REPORT_BANDS).
     """
     if bands is None:
         bands = DEFAULT_BANDS
     band_names = list(bands)
+
+    def band_arr(d, key, b, w):
+        name = f'{key}_{b}'
+        if name in d:
+            return d[name]
+        if b == 'beta':
+            n_lo, n_hi = w
+            return (n_lo * d[f'{key}_low_beta']
+                    + n_hi * d[f'{key}_high_beta']) / (n_lo + n_hi)
+        raise KeyError(f'{name} not in npz and no synthesis rule for {b!r}')
     files = sorted(glob.glob(os.path.join(str(gc_dir), '*.npz')))
     if not files:
         raise FileNotFoundError(f'No GC .npz files in {gc_dir}')
@@ -144,11 +172,15 @@ def load_gc_group(gc_dir, bands=None):
                     f'{subjects[0]} has {ref["window_ms"].size} in {gc_dir}.')
         if has_trgc is None:
             has_trgc = f'dtrgc_{band_names[0]}' in d
+        w = None
+        if any(f'fxy_{b}' not in d for b in band_names):
+            m = band_masks(d['freqs'], DEFAULT_BANDS)
+            w = (int(m['low_beta'].sum()), int(m['high_beta'].sum()))
         for b in band_names:
-            fxy[b].append(d[f'fxy_{b}'])
-            fyx[b].append(d[f'fyx_{b}'])
+            fxy[b].append(band_arr(d, 'fxy', b, w))
+            fyx[b].append(band_arr(d, 'fyx', b, w))
             if has_trgc:
-                dtr[b].append(d[f'dtrgc_{b}'])
+                dtr[b].append(band_arr(d, 'dtrgc', b, w))
         d.close()
 
     out = dict(ref)
@@ -198,25 +230,30 @@ def _baseline_mask(window_ms, baseline_ms):
     return m
 
 
-def _right_tailed_pval(x, m, test):
-    """Right-tailed one-sample p-value of samples ``x`` against scalar ``m``.
+def _one_sample_pval(x, m, test, tail='right'):
+    """One-sample p-value of samples ``x`` against scalar ``m``.
+
+    ``tail='right'`` is the task > baseline direction used for the
+    non-negative directed GC (fxy/fyx).  ``tail='two'`` is for the signed
+    Diff-TRGC, where a task-locked change in net direction can go either
+    way and a one-sided test would be wrong.
 
     ``ttest`` uses the parametric one-sample Student's t (scipy
-    ``ttest_1samp(..., alternative='greater')``).  ``signrank`` uses the
-    non-parametric Wilcoxon signed-rank on ``x - m`` (scipy
-    ``wilcoxon(..., alternative='greater')`` == MATLAB
+    ``ttest_1samp``).  ``signrank`` uses the non-parametric Wilcoxon
+    signed-rank on ``x - m`` (right-tailed == MATLAB
     ``signrank(x, m, 'tail','right')``).  Returns NaN when the statistic
     is undefined (e.g. all differences are zero).
     """
+    alternative = 'greater' if tail == 'right' else 'two-sided'
     if test == 'ttest':
-        _t, p = stats.ttest_1samp(x, m, alternative='greater')
+        _t, p = stats.ttest_1samp(x, m, alternative=alternative)
         return p
     if test == 'signrank':
         d = np.asarray(x, dtype=float) - m
         if not np.any(d != 0.0):
             return np.nan
         try:
-            _w, p = stats.wilcoxon(d, alternative='greater')
+            _w, p = stats.wilcoxon(d, alternative=alternative)
         except ValueError:
             return np.nan
         return p
@@ -224,8 +261,8 @@ def _right_tailed_pval(x, m, test):
 
 
 def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
-                     alpha=0.05, test='ttest', task_end_ms=None):
-    """Per-pair subject mean/SEM and right-tailed task-vs-baseline test.
+                     alpha=0.05, test='ttest', task_end_ms=None, tail='right'):
+    """Per-pair subject mean/SEM and one-sample task-vs-baseline test.
 
     subj_stack : (n_subj, n_pairs, n_win)
     baseline_ms : (lo, hi) window-start range treated as baseline.
@@ -233,8 +270,10 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
     task_end_ms : if given, task points are also capped at start <= this
         (drops the trailing edge windows); None = no upper cap.
     test : 'ttest' (parametric Student's t) or 'signrank' (non-parametric
-        Wilcoxon signed-rank).  Both are right-tailed, one-sample, tested
-        against the scalar subject-averaged baseline mean.
+        Wilcoxon signed-rank).  One-sample, tested against the scalar
+        subject-averaged baseline mean.
+    tail : 'right' for the non-negative directed GC (task > baseline);
+        'two' for the signed Diff-TRGC.
 
     Returns dict of (n_pairs, n_win) arrays: ``mean``, ``sem``,
     ``pval`` (NaN outside task), ``sig`` (bool), and scalar-per-pair
@@ -273,7 +312,7 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
             n_used[pi, w] = x.size
             if x.size < MIN_SUBJECTS:
                 continue
-            p = _right_tailed_pval(x, baseline_mean[pi], test)
+            p = _one_sample_pval(x, baseline_mean[pi], test, tail)
             pval[pi, w] = p
             sig[pi, w] = p < alpha
     return {'mean': subj_mean, 'sem': sem, 'pval': pval, 'sig': sig,
@@ -288,7 +327,7 @@ def task_vs_baseline(subj_stack, window_ms, baseline_ms, task_start_ms,
 def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
                                  task_start_ms, alpha=0.05, task_end_ms=None,
                                  n_permutations=N_PERMUTATIONS, tfce=True,
-                                 seed=42, n_jobs=1):
+                                 seed=42, n_jobs=1, tail=1):
     """Sign-flip cluster permutation of task-vs-baseline, per pair.
 
     subj_stack : (n_subj, n_pairs, n_win)
@@ -301,7 +340,10 @@ def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
 
     That makes the contrast a within-subject difference, which is exactly
     the exchangeability the sign-flip null assumes.  ``tail=1`` keeps the
-    right-tailed "task > baseline" direction of the pointwise test.
+    right-tailed "task > baseline" direction of the pointwise test for the
+    non-negative fxy/fyx; pass ``tail=0`` (two-tailed) for the signed
+    Diff-TRGC.  (TFCE with ``tail=0`` needs ``threshold['start'] == 0``,
+    which ``TFCE_THRESHOLD`` satisfies.)
 
     Runs twice: cluster-mass (``threshold=None``, i.e. MNE's default
     parametric cluster-forming threshold) and TFCE.  Cluster p-values are
@@ -360,7 +402,7 @@ def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
             continue                      # degenerate constant
 
         _T, clusters, cl_p, _ = permutation_cluster_1samp_test(
-            X, threshold=None, n_permutations=n_permutations, tail=1,
+            X, threshold=None, n_permutations=n_permutations, tail=tail,
             out_type='mask', seed=seed, verbose=False)
         for ci, (cl, p) in enumerate(zip(clusters, cl_p), start=1):
             pts = task_idx[cluster_to_mask(cl, task_idx.size)]
@@ -374,7 +416,7 @@ def permutation_task_vs_baseline(subj_stack, window_ms, baseline_ms,
         if tfce:
             T_tfce, _cl, p_tfce, _ = permutation_cluster_1samp_test(
                 X, threshold=TFCE_THRESHOLD, n_permutations=n_permutations,
-                tail=1, out_type='mask', seed=seed, n_jobs=n_jobs, verbose=False)
+                tail=tail, out_type='mask', seed=seed, n_jobs=n_jobs, verbose=False)
             out['tfce_score'][pi, task_idx] = T_tfce
             out['p_tfce'][pi, task_idx] = p_tfce
             out['sig_tfce'][pi, task_idx] = p_tfce < alpha
@@ -436,7 +478,9 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
                        perm_by_band=None):
     """Plot one directed edge (src->tgt) across bands with significance.
 
-    direction : 'fxy' (pair i->j) or 'fyx' (pair j->i).
+    direction : 'fxy' (pair i->j), 'fyx' (pair j->i), or 'dtrgc' (the signed
+        net Diff-TRGC for the pair, oriented i->j: positive = net src->tgt,
+        negative = net tgt->src; tested two-tailed).
     test : which task-vs-baseline test produced ``sig`` (named in the title).
     baseline_ms, task_start_ms, task_end_ms : shade the GC baseline window and
         mark the task-window start.  The plot is also RESTRICTED to the analysed
@@ -459,14 +503,19 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
     hi = task_end_ms if task_end_ms is not None else float(window_ms[-1])
     keep = (window_ms >= lo) & (window_ms <= hi)
     wm = window_ms[keep]
+    is_trgc = direction == 'dtrgc'
+    curve_label = (f'net {src_name}⇄{tgt_name}' if is_trgc
+                   else f'{src_name}→{tgt_name}')
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
     axes = axes.ravel()
     for ax, b in zip(axes, band_names):
         st = stats_by_band[b]
         m = st['mean'][pair_idx][keep]
         se = st['sem'][pair_idx][keep]
-        ax.plot(wm, m, color='#2166ac', lw=2, label=f'{src_name}→{tgt_name}')
+        ax.plot(wm, m, color='#2166ac', lw=2, label=curve_label)
         ax.fill_between(wm, m - se, m + se, color='#2166ac', alpha=0.25)
+        if is_trgc:
+            ax.axhline(0.0, color='k', lw=0.6, alpha=0.6)
         ax.axhline(st['baseline_mean'][pair_idx], color='0.5', ls='--', lw=1,
                    label='baseline')
         if baseline_ms is not None:
@@ -486,25 +535,34 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
             if np.isfinite(pmin):
                 title_extra = f'  [cluster p={pmin:.3g}]'
         # significance ticks (task windows only; already within the kept span)
+        # Placed a fixed fraction of the y-range above the curve, not at
+        # ytop*1.05 — dtrgc curves can be negative, where a multiplicative
+        # offset would drop the ticks BELOW the peak.
         sig = st['sig'][pair_idx][keep]
         if sig.any():
             ytop = np.nanmax(m + se)
-            ax.plot(wm[sig], np.full(int(sig.sum()), ytop * 1.05), 's',
+            yrng = ytop - np.nanmin(m - se)
+            ax.plot(wm[sig], np.full(int(sig.sum()), ytop + 0.05 * yrng), 's',
                     color='#b2182b', ms=3)
         ax.set_title(f'{b} ({bands[b][0]:g}–{bands[b][1]:g} Hz){title_extra}',
                      fontsize=11)
         ax.axvline(0, color='k', lw=0.8, alpha=0.5)
         ax.set_xlim(lo, hi)
-        ax.set_ylabel('GC')
+        ax.set_ylabel('ΔTRGC (net fwd − rev)' if is_trgc else 'GC')
     for ax in axes[2:]:
         ax.set_xlabel('window start (ms)')
     test_label = {'ttest': "Student's t",
                   'signrank': 'Wilcoxon signed-rank'}.get(test, test)
-    sig_note = f'ticks: right-tailed {test_label} (uncorrected)'
+    tail_label = 'two-tailed' if is_trgc else 'right-tailed'
+    sig_note = f'ticks: {tail_label} {test_label} (uncorrected)'
     if perm_by_band is not None:
         sig_note += '   |   shading: permutation cluster p<0.05 (FWER)'
-    fig.suptitle(f'Granger causality: {src_name} → {tgt_name}\n{sig_note}',
-                 fontsize=13)
+    if is_trgc:
+        head = (f'Diff-TRGC (net): {src_name} ⇄ {tgt_name}   '
+                f'(positive = net {src_name}→{tgt_name})')
+    else:
+        head = f'Granger causality: {src_name} → {tgt_name}'
+    fig.suptitle(f'{head}\n{sig_note}', fontsize=13)
     axes[0].legend(fontsize=9, loc='upper left')
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, format=fmt, bbox_inches='tight')
@@ -573,7 +631,7 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     --baseline-end / --task-start / --task-end / --edge-guard.
     """
     if bands is None:
-        bands = DEFAULT_BANDS
+        bands = REPORT_BANDS       # theta / low_beta / high_beta / combined beta
     band_names = list(bands)
     agg = load_gc_group(gc_dir, bands)
     window_ms = agg['window_ms']
@@ -619,8 +677,9 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     # ill-conditioned windows, and every test below silently runs on fewer
     # subjects when it hits one — the CSV records the effective n per cell,
     # but a run that is largely NaN should say so before any p-value is read.
+    has_trgc = 'dtrgc' in agg
     n_tot = n_nan = 0
-    for key in ('fxy', 'fyx'):
+    for key in (('fxy', 'fyx', 'dtrgc') if has_trgc else ('fxy', 'fyx')):
         for b in band_names:
             a = agg[key][b]
             n_tot += a.size
@@ -635,15 +694,26 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                   '[unstable] counts before interpreting anything here.')
 
     if permutation:
+        n_tests = (2 + int(has_trgc)) * n_pairs * len(band_names)
         print(f'  permutation: {n_permutations} sign-flips, cluster-mass'
               f'{" + TFCE" if tfce else ""}, per edge x band '
-              f'({2 * n_pairs * len(band_names)} tests)')
+              f'({n_tests} tests)')
 
+    # The directed GC is non-negative, so task-vs-baseline is right-tailed
+    # (tail 'right' / permutation tail=1).  Diff-TRGC is a SIGNED net-flow
+    # contrast (d_xy = -d_yx), where a task-locked change can go either way,
+    # so it is tested two-tailed (tail 'two' / permutation tail=0) and gets
+    # one test per pair (oriented i->j), not one per direction.
+    measures = [('fxy', 'right', 1), ('fyx', 'right', 1)]
+    if has_trgc:
+        measures.append(('dtrgc', 'two', 0))
     rows = []
-    for direction, key in [('fxy', 'fxy'), ('fyx', 'fyx')]:
+    for direction, tail, perm_tail in measures:
+        key = direction
         stats_by_band = {
             b: task_vs_baseline(agg[key][b], agg['window_ms'], baseline_ms,
-                                task_start_ms, alpha, test, task_end_ms)
+                                task_start_ms, alpha, test, task_end_ms,
+                                tail=tail)
             for b in band_names
         }
         perm_by_band = None
@@ -651,16 +721,20 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
             perm_by_band = {
                 b: permutation_task_vs_baseline(
                     agg[key][b], agg['window_ms'], baseline_ms, task_start_ms,
-                    alpha, task_end_ms, n_permutations, tfce, seed, n_jobs)
+                    alpha, task_end_ms, n_permutations, tfce, seed, n_jobs,
+                    tail=perm_tail)
                 for b in band_names
             }
         for pi in range(n_pairs):
             i, j = int(agg['pair_i'][pi]), int(agg['pair_j'][pi])
-            if direction == 'fxy':
-                src, tgt = roi[i], roi[j]
-            else:
+            if direction == 'fyx':
                 src, tgt = roi[j], roi[i]
-            fname = os.path.join(out_dir, f'GC_{src}_to_{tgt}_{test}.{fmt}')
+            else:                       # fxy and dtrgc are both oriented i->j
+                src, tgt = roi[i], roi[j]
+            if direction == 'dtrgc':
+                fname = os.path.join(out_dir, f'TRGC_{src}_vs_{tgt}_{test}.{fmt}')
+            else:
+                fname = os.path.join(out_dir, f'GC_{src}_to_{tgt}_{test}.{fmt}')
             plot_directed_edge(agg, stats_by_band, src, tgt, pi, direction,
                                fname, bands, fmt, test, baseline_ms,
                                task_start_ms, task_end_ms, perm_by_band)
@@ -669,8 +743,9 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
                 pm = perm_by_band[b] if perm_by_band is not None else None
                 for w, wm in enumerate(agg['window_ms']):
                     row = {
+                        'measure': 'dtrgc' if direction == 'dtrgc' else 'gc',
                         'src': src, 'tgt': tgt, 'band': b, 'window_ms': wm,
-                        'test': test,
+                        'test': test, 'tail': tail,
                         'gc_mean': st['mean'][pi, w], 'gc_sem': st['sem'][pi, w],
                         'baseline_mean': st['baseline_mean'][pi],
                         'pval': st['pval'][pi, w], 'sig': st['sig'][pi, w],
@@ -706,13 +781,18 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     # denominators — Bonferroni the more conservative of them. That is the safe
     # direction and is left as is, but the difference is real: read the
     # n_subj_perm column before comparing the two columns.
+    # GC (2*n_pairs directed edges, right-tailed) and Diff-TRGC (n_pairs net
+    # edges, two-tailed) are different hypotheses tested different ways, so
+    # each is corrected over its OWN (edge x band) family rather than pooled —
+    # pooling would let the family size of one measure dilute the other.
     if permutation:
-        n_fam = 2 * n_pairs * len(band_names)
-        keys = ['src', 'tgt', 'band']
+        keys = ['measure', 'src', 'tgt', 'band']
         for col in ['p_cluster_min', 'p_tfce_min']:
             fam = df.drop_duplicates(keys)[keys + [col]].copy()
+            n_fam = fam.groupby('measure')[col].transform('size')
             fam[col + '_fam_bonf'] = np.minimum(fam[col] * n_fam, 1.0)
-            fam[col + '_fam_fdr'] = bh_fdr(fam[col].to_numpy())
+            fam[col + '_fam_fdr'] = fam.groupby('measure')[col].transform(
+                lambda v: bh_fdr(v.to_numpy()))
             df = df.merge(fam.drop(columns=[col]), on=keys, how='left')
         for base in ['p_cluster_min', 'p_tfce_min']:
             for kind in ['bonf', 'fdr']:
@@ -723,23 +803,32 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     df.to_csv(csv_path, index=False)
 
     n_edges = 2 * n_pairs
-    print(f'  {len(agg["subjects"])} subjects, {n_edges} directed edges, '
+    n_figs = n_edges + (n_pairs if has_trgc else 0)
+    print(f'  {len(agg["subjects"])} subjects, {n_edges} directed edges'
+          f'{f" + {n_pairs} TRGC net edges" if has_trgc else ""}, '
           f'{len(band_names)} bands, test={test} -> {out_dir}')
-    print(f'  figures: {n_edges} + stats CSV: {csv_path}')
+    print(f'  figures: {n_figs} + stats CSV: {csv_path}')
     if permutation:
         _print_perm_summary(df, alpha, out_dir, test)
     return csv_path
 
 
 def _print_perm_summary(df, alpha, out_dir, test):
-    """One line per surviving edge x band, and the same to a .log file."""
-    keys = ['src', 'tgt', 'band']
+    """One line per surviving edge x band, and the same to a .log file.
+
+    GC edges print as ``src->tgt`` (right-tailed task > baseline); Diff-TRGC
+    rows print as ``src<>tgt`` (two-tailed, positive = net src->tgt).  Each
+    measure is FDR/Bonferroni-corrected over its own family.
+    """
+    keys = ['measure', 'src', 'tgt', 'band']
     edge = df.drop_duplicates(keys)[keys + [
         'p_cluster_min', 'p_cluster_min_fam_bonf', 'p_cluster_min_fam_fdr',
         'p_tfce_min', 'p_tfce_min_fam_fdr']].copy()
     edge = edge.sort_values('p_cluster_min')
-    lines = ['Permutation task-vs-baseline (right-tailed, sign-flip)',
-             f'  {len(edge)} edge x band tests; alpha={alpha}',
+    lines = ['Permutation task-vs-baseline (sign-flip; GC right-tailed, '
+             'TRGC two-tailed)',
+             f'  {len(edge)} edge x band tests; alpha={alpha}; families '
+             'corrected per measure',
              '',
              f'{"edge":>22s} {"band":>10s} {"p_clust":>9s} {"bonf":>9s} '
              f'{"fdr":>9s} {"p_tfce":>9s} {"tfce_fdr":>9s}']
@@ -751,13 +840,14 @@ def _print_perm_summary(df, alpha, out_dir, test):
         n_fdr += int(r.p_cluster_min_fam_fdr < alpha)
         flag = '  **' if r.p_cluster_min_fam_fdr < alpha else \
                ('  *' if r.p_cluster_min < alpha else '')
-        lines.append(f'{r.src + "->" + r.tgt:>22s} {r.band:>10s} '
+        arrow = '<>' if r.measure == 'dtrgc' else '->'
+        lines.append(f'{r.src + arrow + r.tgt:>22s} {r.band:>10s} '
                      f'{r.p_cluster_min:9.4f} {r.p_cluster_min_fam_bonf:9.4f} '
                      f'{r.p_cluster_min_fam_fdr:9.4f} {r.p_tfce_min:9.4f} '
                      f'{r.p_tfce_min_fam_fdr:9.4f}{flag}')
     lines += ['', f'  {n_raw} edge x band significant uncorrected, '
                   f'{n_fdr} after FDR across the family',
-              '  (* uncorrected, ** survives FDR)']
+              '  (* uncorrected, ** survives FDR; <> rows are net TRGC)']
     text = '\n'.join(lines)
     print('\n' + text)
     with open(os.path.join(out_dir, f'gc_permutation_summary_{test}.log'), 'w') as fh:
