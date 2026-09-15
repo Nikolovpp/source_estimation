@@ -176,5 +176,5 @@ echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
 echo
 echo "Then:"
 echo "  python granger_stats.py ...                 # baseline-referenced TRGC stats (main arm; overtProd only for theta)"
-echo "  python plot_gc_pathway_timecourses.py       # theta-arm pathway figure"
+echo "  python exploratory/plot_gc_pathway_timecourses.py       # theta-arm pathway figure"
 grep -h 'NON-MINIMUM-PHASE\|consistency:' logs/gc_final_*/*.log 2>/dev/null | head -20

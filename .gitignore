@@ -11,6 +11,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Runtime logs from batch runs
+logs/
+
 # Third-party reference toolboxes (BSMART / MVGC MATLAB source; read-only
 # reference for the Python GC port, not a runtime dependency)
 bsmart_toolbox_matlab_source_code/

@@ -43,7 +43,9 @@ import warnings
 import numpy as np
 
 warnings.filterwarnings('ignore')
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _repo_root)
+sys.path.insert(1, os.path.join(_repo_root, 'exploratory'))  # granger_mne et al.
 
 from joblib import Parallel, delayed
 
