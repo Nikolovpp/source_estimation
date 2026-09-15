@@ -127,7 +127,7 @@ for ARM in $ARMS; do
 read -r ORDER WIN_MS TARGET_FS <<< "$(arm_params "$ARM")"
 OVR=""
 [ "$ARM" = "main" ] && [ "$MAIN_OVERWRITE" = "1" ] && OVR="--overwrite"
-LOG_DIR="logs/gc_final_${ARM}"
+LOG_DIR="logs/gc_final_${ARM}_${NORMALIZE}"
 mkdir -p "$LOG_DIR"
 for PP in "${PAIR_ARR[@]}"; do
 PP=$(trim "$PP")
