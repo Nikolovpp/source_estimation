@@ -475,6 +475,92 @@ def time_reversed_pairwise_gc(X, order, freqs, fs):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Block (multivariate two-group) spectral Granger causality — FIXPC-k
+# ─────────────────────────────────────────────────────────────────────
+def _block_gc_direction(H, S, Sigma, src, tgt):
+    """``F_{src -> tgt}(f)`` for two channel groups of a fitted VAR.
+
+    Geweke (1982) multivariate spectral GC, unconditional (the model holds
+    only the two groups):
+
+        F(f) = ln  det S_tt(f)
+                   ---------------------------------------------
+                   det( S_tt(f) - H_ts(f) Sigma_{ss|t} H_ts(f)^H )
+
+    with ``Sigma_{ss|t} = Sigma_ss - Sigma_st Sigma_tt^{-1} Sigma_ts`` the
+    source innovations partialled on the target innovations.  For 1x1
+    groups this is exactly the bivariate formula in
+    ``pairwise_spectral_gc`` (``s_yy - s_xy^2/s_xx`` times ``|H_xy|^2``),
+    so the scalar path and the block path agree to machine precision
+    (``exploratory/validate_granger_block.py``).
+    """
+    src = list(src)
+    tgt = list(tgt)
+    S_tt = S[:, tgt][:, :, tgt]                          # (nf, kt, kt)
+    H_ts = H[:, tgt][:, :, src]                          # (nf, kt, ks)
+    Sig_ss = Sigma[np.ix_(src, src)]
+    Sig_st = Sigma[np.ix_(src, tgt)]
+    Sig_tt = Sigma[np.ix_(tgt, tgt)]
+    Sig_cond = Sig_ss - Sig_st @ inv(Sig_tt) @ Sig_st.T
+    inner = S_tt - H_ts @ Sig_cond.astype(complex) \
+        @ np.conj(np.transpose(H_ts, (0, 2, 1)))
+    # Both matrices are Hermitian (PD when the fit is sane), so their
+    # determinants are real; round-off leaves a tiny imaginary part.
+    num = np.real(np.linalg.det(S_tt))
+    den = np.real(np.linalg.det(inner))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        f = np.log(num / den)
+    return np.where(np.isfinite(f), np.maximum(f, 0.0), 0.0)
+
+
+def block_spectral_gc(X, order, freqs, fs, blocks, return_model=False):
+    """Spectral Granger causality between two multichannel blocks.
+
+    The FIXPC-k analogue of ``pairwise_spectral_gc``: each ROI is a block
+    of ``k`` fixed-filter components rather than one virtual channel, and
+    the two blocks are modelled jointly (Pellegrini et al. 2023 use this
+    with TRGC as their recommended source-space pipeline).
+
+    Parameters
+    ----------
+    X : np.ndarray, shape (n_trials, n_channels, n_times)
+    order : int
+    freqs, fs : as in ``pairwise_spectral_gc``
+    blocks : (bx, by)
+        Channel index lists of the x (seed) block and the y (target) block.
+        Together they must cover every channel of ``X`` exactly once.
+
+    Returns
+    -------
+    f_xy, f_yx : np.ndarray, shape (n_freqs,)
+        Block GC x -> y and y -> x.  Invariant to any nonsingular linear
+        transform WITHIN a block, so the sign/rotation convention of the
+        PCs does not matter.
+    A, Sigma : only if ``return_model``.
+    """
+    bx, by = (list(b) for b in blocks)
+    X = np.asarray(X, dtype=float)
+    if sorted(bx + by) != list(range(X.shape[1])):
+        raise ValueError('blocks must partition the channels of X')
+    A, Sigma = fit_mvar(X, order)
+    H, S = spectral_transfer(A, Sigma, freqs, fs)
+    f_xy = _block_gc_direction(H, S, Sigma, src=bx, tgt=by)
+    f_yx = _block_gc_direction(H, S, Sigma, src=by, tgt=bx)
+    if return_model:
+        return f_xy, f_yx, A, Sigma
+    return f_xy, f_yx
+
+
+def time_reversed_block_gc(X, order, freqs, fs, blocks):
+    """Diff-TRGC for a block pair; see ``time_reversed_pairwise_gc``."""
+    f_xy, f_yx = block_spectral_gc(X, order, freqs, fs, blocks)
+    Xr = np.flip(np.asarray(X, dtype=float), axis=-1)
+    r_xy, r_yx = block_spectral_gc(Xr, order, freqs, fs, blocks)
+    d_xy = (f_xy - f_yx) - (r_xy - r_yx)
+    return d_xy, -d_xy
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Conditional (multivariate) Granger causality
 # ─────────────────────────────────────────────────────────────────────
 def time_domain_conditional_gc(X, order, pairs=None):
@@ -657,8 +743,8 @@ def moving_window_conditional_gc(X, order, freqs, fs, win_samples, step=1,
 # Moving-window driver (matches BSMART mov_bi_ga)
 # ─────────────────────────────────────────────────────────────────────
 def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
-                              trgc=False, diagnostics=False):
-    """Sliding-window bivariate spectral GC across time.
+                              trgc=False, diagnostics=False, blocks=None):
+    """Sliding-window bivariate (or two-block) spectral GC across time.
 
     For each window position the AR model is fit on the trial ensemble
     restricted to that window, and spectral GC is evaluated at ``freqs``.
@@ -668,12 +754,17 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
     Parameters
     ----------
     X : np.ndarray, shape (n_trials, 2, n_times)
-        Row 0 = x (seed), row 1 = y (target).
+        Row 0 = x (seed), row 1 = y (target).  With ``blocks`` the channel
+        axis holds both blocks instead.
     order : int
     freqs : array_like  (Hz)
     fs : float  (Hz)
     win_samples : int
         Window length in samples (e.g. 20 for 40 ms at 500 Hz).
+    blocks : (bx, by), optional
+        FIXPC-k: channel index lists of the x and y blocks.  Each window
+        then uses ``block_spectral_gc`` instead of the bivariate formula.
+        ``None`` (default) is the unchanged BSMART-faithful scalar path.
     step : int
         Window step in samples (BSMART uses 1).
     trgc : bool
@@ -692,8 +783,14 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
         If ``diagnostics``: ``rho``, ``cons`` : (n_windows,).
     """
     X = np.asarray(X, dtype=float)
-    if X.ndim != 3 or X.shape[1] != 2:
-        raise ValueError('X must be (n_trials, 2, n_times) for pairwise GC')
+    if blocks is None:
+        if X.ndim != 3 or X.shape[1] != 2:
+            raise ValueError('X must be (n_trials, 2, n_times) for pairwise GC')
+    else:
+        bx, by = (list(b) for b in blocks)
+        if X.ndim != 3 or sorted(bx + by) != list(range(X.shape[1])):
+            raise ValueError('blocks must partition the channel axis of X')
+        blocks = (bx, by)
     n_times = X.shape[2]
     freqs = np.asarray(freqs, dtype=float)
     starts = np.arange(0, n_times - win_samples + 1, step)
@@ -710,14 +807,25 @@ def moving_window_pairwise_gc(X, order, freqs, fs, win_samples, step=1,
     for w, s in enumerate(starts):
         seg = X[:, :, s:s + win_samples]
         try:
-            if diagnostics:
-                fxy, fyx, A_w, _ = pairwise_spectral_gc(
-                    seg, order, freqs, fs, return_model=True)
-                rho[w], cons[w] = window_diagnostics(seg, order, A_w)
+            if blocks is None:
+                if diagnostics:
+                    fxy, fyx, A_w, _ = pairwise_spectral_gc(
+                        seg, order, freqs, fs, return_model=True)
+                    rho[w], cons[w] = window_diagnostics(seg, order, A_w)
+                else:
+                    fxy, fyx = pairwise_spectral_gc(seg, order, freqs, fs)
+                if trgc:
+                    dxy, _ = time_reversed_pairwise_gc(seg, order, freqs, fs)
             else:
-                fxy, fyx = pairwise_spectral_gc(seg, order, freqs, fs)
-            if trgc:
-                dxy, _ = time_reversed_pairwise_gc(seg, order, freqs, fs)
+                if diagnostics:
+                    fxy, fyx, A_w, _ = block_spectral_gc(
+                        seg, order, freqs, fs, blocks, return_model=True)
+                    rho[w], cons[w] = window_diagnostics(seg, order, A_w)
+                else:
+                    fxy, fyx = block_spectral_gc(seg, order, freqs, fs, blocks)
+                if trgc:
+                    dxy, _ = time_reversed_block_gc(seg, order, freqs, fs,
+                                                    blocks)
         except _ILL_CONDITIONED:
             f_xy[:, w] = f_yx[:, w] = np.nan
             if trgc:
@@ -805,6 +913,63 @@ def reduce_roi_first_pc(vertex_data, return_filter=False):
         w = -w
     vc = np.einsum('v,evt->et', w, X)
     return (vc, w) if return_filter else vc
+
+
+def reduce_roi_top_pcs(vertex_data, n_pcs, return_filter=False,
+                       rank_tol=1e-10):
+    """Collapse an ROI's vertices to its top-``n_pcs`` components (FIXPC-k).
+
+    Same fixed-filter construction as ``reduce_roi_first_pc`` (one SVD of
+    the ensemble-centered vertices x concatenated trials/time matrix,
+    applied identically to every trial), keeping ``k`` left singular
+    vectors instead of one.  ``k`` is capped at the numerical rank of the
+    ROI so a component the data does not contain is never manufactured
+    from round-off: a spatially collapsed beamformer ROI (one global time
+    course on every vertex) comes back as a single component, not as one
+    signal plus three copies of noise that would only make the block MVAR
+    ill-conditioned.  The cap is visible in the returned shape.
+
+    Parameters
+    ----------
+    vertex_data : np.ndarray, shape (n_epochs, n_vertices, n_times)
+    n_pcs : int
+        Components requested.  ``n_pcs=1`` reproduces
+        ``reduce_roi_first_pc`` exactly.
+    return_filter : bool
+        Also return the spatial filter ``W`` (n_vertices, k).
+    rank_tol : float
+        Singular values below ``rank_tol * s_max`` do not count toward the
+        rank.
+
+    Returns
+    -------
+    comp : np.ndarray, shape (n_epochs, k, n_times), k = min(n_pcs, rank)
+    W : np.ndarray, shape (n_vertices, k)   (only if return_filter)
+    """
+    X = np.asarray(vertex_data, dtype=float)
+    if X.ndim != 3:
+        raise ValueError('vertex_data must be (n_epochs, n_vertices, n_times)')
+    n_pcs = int(n_pcs)
+    if n_pcs < 1:
+        raise ValueError('n_pcs must be >= 1')
+    n_ep, n_v, n_t = X.shape
+    if n_v == 1:
+        comp = X[:, :1, :]
+        return (comp, np.ones((1, 1))) if return_filter else comp
+
+    M = np.transpose(X, (1, 0, 2)).reshape(n_v, n_ep * n_t)
+    M = M - M.mean(axis=1, keepdims=True)
+    U, sv, _ = np.linalg.svd(M, full_matrices=False)
+    rank = int(np.sum(sv > sv[0] * rank_tol)) if sv.size and sv[0] > 0 else 0
+    k = min(n_pcs, max(rank, 1))
+    W = U[:, :k].copy()
+    # Deterministic sign per component: largest-magnitude loading positive
+    # (the same convention as reduce_roi_first_pc).
+    for c in range(k):
+        if W[np.argmax(np.abs(W[:, c])), c] < 0:
+            W[:, c] = -W[:, c]
+    comp = np.einsum('vk,evt->ekt', W, X)
+    return (comp, W) if return_filter else comp
 
 
 def band_masks(freqs, bands=None):

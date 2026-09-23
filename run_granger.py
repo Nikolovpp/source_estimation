@@ -10,12 +10,16 @@ the decoding used) — no pca_flip cache and no re-running the inverse.
 Per subject:
   1. load the requested ROIs' vertex timeseries from the .npz cache
   2. reduce each ROI to one virtual channel via a fixed first-PC spatial
-     filter (``granger.reduce_roi_first_pc``)
+     filter (``granger.reduce_roi_first_pc``) — or, with ``--n-pcs k``, to
+     a block of its top-k fixed-filter components (FIXPC-k,
+     ``granger.reduce_roi_top_pcs``; Pellegrini et al. 2023)
   3. downsample the virtual channels to ``--target-fs`` (default 500 Hz,
      matching the MATLAB GC; avoids ill-conditioned AR on ~2 kHz data)
   4. for every ROI pair, moving-window bivariate Geweke spectral GC
      (``granger.moving_window_pairwise_gc``), 1-sample step, raw signals
-     — byte-faithful to BSMART ``mov_bi_ga`` (verified to 2.8e-16)
+     — byte-faithful to BSMART ``mov_bi_ga`` (verified to 2.8e-16); with
+     ``--n-pcs k > 1`` the pair is modelled as two k-channel blocks and
+     the multivariate (block) Geweke GC is used instead
   5. average the frequency-resolved GC into theta/alpha/low-beta/high-beta
   6. optionally also compute Diff-TRGC (time-reversed GC) per band
 
@@ -56,7 +60,8 @@ from config import (
 )
 from decoding_io import _load_cached_roi_data, filter_roi_dict
 from granger import (
-    reduce_roi_first_pc, moving_window_pairwise_gc, band_average,
+    reduce_roi_first_pc, reduce_roi_top_pcs, moving_window_pairwise_gc,
+    band_average,
     DEFAULT_BANDS,
 )
 
@@ -139,7 +144,8 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                        target_fs=500.0, step=1, freqs=None, bands=None,
                        normalize='none', demean_trials=True, trgc=False,
                        tmin=None, tmax=None, gc_mode='pairwise', n_jobs=1,
-                       diagnostics=True, y=None, normalize_per_class=False):
+                       diagnostics=True, y=None, normalize_per_class=False,
+                       n_pcs=1):
     """Moving-window Geweke GC for one subject, all ROI pairs.
 
     ``gc_mode='pairwise'`` runs bivariate BSMART GC per pair.
@@ -176,6 +182,13 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         Band definitions (default theta/alpha/low-beta/high-beta).
     tmin, tmax : float, optional
         Restrict GC to this time window (seconds); default full epoch.
+    n_pcs : int
+        Components kept per ROI (FIXPC-k).  1 (default) = one virtual
+        channel per ROI and bivariate GC, unchanged.  k > 1 = each ROI is a
+        block of its top-k fixed-filter PCs and every pair is modelled as a
+        2k-channel VAR with block (multivariate) Geweke GC / TRGC.  The
+        block size is capped at the ROI's numerical rank (see
+        ``granger.reduce_roi_top_pcs``).  Pairwise mode only.
 
     Returns
     -------
@@ -184,7 +197,8 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         ``window_ms`` (n_windows,), ``freqs``, ``bands`` (dict),
         ``fxy[band]``/``fyx[band]`` : (n_pairs, n_windows) directed GC
         (i->j / j->i), and if ``trgc`` ``dtrgc[band]`` : (n_pairs,
-        n_windows) Diff-TRGC (i->j).
+        n_windows) Diff-TRGC (i->j).  ``n_pcs`` and ``n_comp`` (per-ROI
+        components actually used) record the FIXPC-k setting.
     """
     if freqs is None:
         freqs = np.arange(1, 31)
@@ -194,13 +208,32 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
     band_names = list(bands)
 
     roi_names = list(roi_data.keys())
-    # Reduce each ROI to a single virtual channel.
-    vcs = []
+    n_pcs = int(n_pcs)
+    if n_pcs < 1:
+        raise ValueError('n_pcs must be >= 1')
+    if n_pcs > 1 and gc_mode != 'pairwise':
+        raise ValueError('FIXPC-k blocks (n_pcs > 1) are implemented for '
+                         'gc_mode="pairwise" only')
+    # Reduce each ROI to a single virtual channel (n_pcs=1, the unchanged
+    # path) or to a block of its top-n_pcs fixed-filter components.  Rows of
+    # V are CHANNELS; blocks[r] lists the rows belonging to ROI r, so with
+    # n_pcs=1 blocks[r] == [r] and V is exactly the old (n_rois, ...) stack.
+    chans, blocks, n_comp = [], [], []
     for r in roi_names:
         arr = np.asarray(roi_data[r], dtype=float)
-        vc = reduce_roi_first_pc(arr) if arr.ndim == 3 else arr
-        vcs.append(vc)                                 # (n_epochs, n_times)
-    V = np.stack(vcs, axis=0)                           # (n_rois, n_ep, n_t)
+        if arr.ndim == 3:
+            comp = (reduce_roi_first_pc(arr)[:, None, :] if n_pcs == 1
+                    else reduce_roi_top_pcs(arr, n_pcs))
+        else:                                          # already reduced
+            comp = arr[:, None, :]
+        k = comp.shape[1]
+        if k < n_pcs:
+            print(f'    [fixpc] {r}: {k} component(s) kept of {n_pcs} '
+                  f'requested (ROI numerical rank)', flush=True)
+        blocks.append(list(range(len(chans), len(chans) + k)))
+        n_comp.append(k)
+        chans.extend(comp[:, c, :] for c in range(k))
+    V = np.stack(chans, axis=0)                         # (n_chan, n_ep, n_t)
 
     # Downsample to target_fs.
     V, fs = resample_channels(V, sfreq, target_fs)
@@ -223,8 +256,9 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         V = V - V.mean(axis=2, keepdims=True)
 
     # Optional ensemble normalization (default none = BSMART).
-    # V is (n_roi, n_trials, n_times) — see the stack above, V[i] in the
-    # pairwise branch, and the transpose in the conditional branch.
+    # V is (n_chan, n_trials, n_times) — see the stack above, V[i] in the
+    # pairwise branch, and the transpose in the conditional branch.  With
+    # n_pcs > 1 each PC component is a channel and is normalized on its own.
     # normalize_ensemble takes (n_trials, n_times) and averages over axis 0,
     # so it must be handed one ROI at a time: V[r]. That axis-0 mean is then
     # the mean over TRIALS, i.e. the ERP.
@@ -310,11 +344,16 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                 fyx[b][k] = band_ed[(j, i)][b]         # j->i | rest
     else:  # pairwise (BSMART)
         def _pair_gc(i, j):
-            X = np.stack([V[i], V[j]], axis=1)         # (n_ep, 2, n_t)
+            bi, bj = blocks[i], blocks[j]
+            X = np.stack([V[c] for c in bi + bj], axis=1)   # (n_ep, ki+kj, n_t)
+            # Scalar blocks take the untouched BSMART path (blocks=None).
+            blk = (None if len(bi) == 1 and len(bj) == 1 else
+                   (list(range(len(bi))),
+                    list(range(len(bi), len(bi) + len(bj)))))
             res = moving_window_pairwise_gc(
                 X, order=order, freqs=freqs, fs=fs,
                 win_samples=win_samples, step=step, trgc=use_trgc,
-                diagnostics=diagnostics,
+                diagnostics=diagnostics, blocks=blk,
             )
             if res.get('n_unstable'):
                 print(f"    [unstable] {res['n_unstable']}/{len(res['win_start'])} "
@@ -359,6 +398,8 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         'fyx': fyx,
         'fs': fs,
         'n_epochs': int(V.shape[1]),
+        'n_pcs': n_pcs,
+        'n_comp': np.array(n_comp, dtype=int),
     }
     if use_trgc:
         result['dtrgc'] = dtr
@@ -374,13 +415,14 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
 # IO
 # ─────────────────────────────────────────────────────────────────────
 def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
-           demean_trials=True, normalize_per_class=False):
+           demean_trials=True, normalize_per_class=False, n_pcs=1):
     """Directory segment identifying the GC configuration.
 
     Every parameter that changes the numbers must appear here, or two runs
     silently overwrite each other. ``demean_trials`` was missing: it is on by
     default, so the suffix appears only when it is turned OFF and no existing
-    path changes.
+    path changes.  Likewise ``n_pcs``: ``_pc{k}`` is appended only for k > 1,
+    so every FIXPC1 path on disk is untouched.
     """
     t = f'order{order}_win{win_ms:g}ms_fs{target_fs:g}'
     if normalize != 'none':
@@ -389,6 +431,8 @@ def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
             t += '_perclass'
     if gc_mode != 'pairwise':
         t += f'_{gc_mode}'
+    if int(n_pcs) > 1:
+        t += f'_pc{int(n_pcs)}'
     if not demean_trials:
         t += '_notrialdemean'
     return t
@@ -415,14 +459,14 @@ def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
                      leakage_correction, order, win_ms, target_fs, normalize,
                      output_root=GC_OUTPUT_ROOT, gc_mode='pairwise',
                      roi_subset=None, demean_trials=True,
-                     normalize_per_class=False):
+                     normalize_per_class=False, n_pcs=1):
     """Where this subject's result lands. Single source of truth, so the
     skip-if-exists check in main() cannot drift from where save writes."""
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
         / gc_tag(order, win_ms, target_fs, normalize, gc_mode, demean_trials,
-                 normalize_per_class)
+                 normalize_per_class, n_pcs)
         / roiset_tag(roi_subset) / stim_class
     )
     return out_dir / f'{subj}_{task}_{stim_class}.npz'
@@ -432,12 +476,12 @@ def save_subject_gc(result, subj, task, stim_class, method, atlas,
                     feature_mode, leakage_correction, order, win_ms,
                     target_fs, normalize, output_root=GC_OUTPUT_ROOT,
                     gc_mode='pairwise', roi_subset=None, demean_trials=True,
-                    normalize_per_class=False):
+                    normalize_per_class=False, n_pcs=1):
     out_file = subject_out_path(
         subj, task, stim_class, method, atlas, feature_mode,
         leakage_correction, order, win_ms, target_fs, normalize,
         output_root, gc_mode, roi_subset, demean_trials,
-        normalize_per_class)
+        normalize_per_class, n_pcs)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     save = {
@@ -468,6 +512,10 @@ def save_subject_gc(result, subj, task, stim_class, method, atlas,
     # per-time-point ensemble SD, so it belongs with the numbers it scales.
     if 'n_epochs' in result:
         save['n_epochs'] = np.array(result['n_epochs'])
+    # FIXPC-k bookkeeping: what was requested and what each ROI's rank allowed.
+    if 'n_pcs' in result:
+        save['n_pcs'] = np.array(int(result['n_pcs']))
+        save['n_comp'] = np.asarray(result['n_comp'], dtype=int)
     for k in ('rho', 'consistency'):
         if k in result:
             save[k] = result[k]
@@ -549,6 +597,14 @@ def parse_args():
                         'correct armorf front-end demean, distinct from --normalize demean)')
     p.add_argument('--trgc', action='store_true', default=False,
                    help='Also compute Diff-TRGC (time-reversed GC robustness control)')
+    p.add_argument('--n-pcs', type=int, default=1,
+                   help='Components kept per ROI (FIXPC-k; Pellegrini et al. '
+                        '2023). 1 = one first-PC virtual channel per ROI and '
+                        'bivariate GC (default, unchanged paths). k > 1 = each '
+                        'ROI is a block of its top-k fixed-filter PCs and every '
+                        'pair is a 2k-channel VAR scored with block Geweke '
+                        'GC/TRGC; capped at the ROI rank; adds _pc{k} to the '
+                        'output path. Pairwise mode only.')
     p.add_argument('--subjects', nargs='+', default=None)
     p.add_argument('--n-jobs', type=int, default=64)
     p.add_argument('--overwrite', action='store_true', default=False)
@@ -563,7 +619,9 @@ def main():
     print('Source-space pairwise Granger causality (BSMART port)')
     print(f'  Task/class:   {args.task} / {args.stim_class}')
     print(f'  Method/atlas: {args.method} / {args.atlas}')
-    print(f'  Feature mode: {args.feature_mode} (vertex cache -> first-PC reduction)')
+    red = ('first-PC reduction' if args.n_pcs == 1
+           else f'top-{args.n_pcs} PC blocks (FIXPC{args.n_pcs})')
+    print(f'  Feature mode: {args.feature_mode} (vertex cache -> {red})')
     print(f'  Leakage corr: {args.leakage_correction}')
     print(f'  Order:        {args.order}')
     print(f'  Window:       {args.win_ms} ms @ {args.target_fs} Hz, step {args.step} sample(s)')
@@ -573,7 +631,8 @@ def main():
     print(f'  Normalize:    {args.normalize}'
           f'{" per-class" if args.normalize_per_class else " pooled"}'
           f'   per-trial demean: {args.demean_trials}   TRGC: {args.trgc}')
-    print(f'  GC mode:      {args.gc_mode}   diagnostics: {args.diagnostics}')
+    print(f'  GC mode:      {args.gc_mode}   n_pcs: {args.n_pcs}   '
+          f'diagnostics: {args.diagnostics}')
     print(f'  Subjects:     {len(subjects)}   n_jobs: {args.n_jobs}')
     print(f'  Overwrite:    {args.overwrite}')
     print()
@@ -631,7 +690,8 @@ def main():
             args.win_ms, args.target_fs, args.normalize,
             gc_mode=args.gc_mode, roi_subset=subset,
             demean_trials=args.demean_trials,
-            normalize_per_class=args.normalize_per_class)
+            normalize_per_class=args.normalize_per_class,
+            n_pcs=args.n_pcs)
         if done.exists() and not args.overwrite:
             n_skip += 1
             continue
@@ -667,6 +727,7 @@ def main():
             gc_mode=args.gc_mode, n_jobs=args.n_jobs,
             diagnostics=args.diagnostics,
             y=y, normalize_per_class=args.normalize_per_class,
+            n_pcs=args.n_pcs,
         )
         out_file = save_subject_gc(
             result, subj, args.task, args.stim_class, args.method,
@@ -675,6 +736,7 @@ def main():
             gc_mode=args.gc_mode, roi_subset=args.roi_subset,
             demean_trials=args.demean_trials,
             normalize_per_class=args.normalize_per_class,
+            n_pcs=args.n_pcs,
         )
         n_pairs = result['pair_i'].size
         n_ep = result.get('n_epochs')

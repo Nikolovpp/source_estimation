@@ -859,7 +859,8 @@ def _derive_gc_dir(args):
     leakage_tag = 'leakage_corrected' if args.leakage_correction else 'raw'
     return (root / args.task / args.method / args.atlas / args.feature_mode
             / leakage_tag / gc_tag(args.order, args.win_ms, args.target_fs,
-                                   args.normalize, args.gc_mode)
+                                   args.normalize, args.gc_mode,
+                                   n_pcs=args.n_pcs)
             / roiset_tag(args.roi_subset) / args.stim_class)
 
 
@@ -930,6 +931,9 @@ def parse_args():
     p.add_argument('--target-fs', type=float, default=500.0)
     p.add_argument('--normalize', default='demean',
                    help='matches run_granger.py --normalize (part of the path)')
+    p.add_argument('--n-pcs', type=int, default=1,
+                   help='FIXPC-k setting of the run (run_granger.py --n-pcs); '
+                        'only affects the derived path, k > 1 adds _pc{k}')
     p.add_argument('--gc-mode', default='pairwise',
                    choices=['pairwise', 'conditional'])
     p.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',
