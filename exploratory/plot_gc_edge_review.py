@@ -108,12 +108,21 @@ def main():
     p.add_argument('--target-fs', type=float, default=200.0)
     p.add_argument('--normalize', default='zscore')
     p.add_argument('--edge-guard', type=float, default=5.0)
+    p.add_argument('--n-pcs', type=int, default=1,
+                   help='FIXPC-k of the run (run_granger.py --n-pcs); '
+                        'k > 1 selects the _pc{k} results directory')
+    p.add_argument('--n-pcs-roi', nargs='+', default=None, metavar='ROI=K',
+                   help='per-ROI override of --n-pcs used by the run '
+                        '(run_granger.py --n-pcs-roi), e.g. pmc-lh=3; only '
+                        'affects the derived path')
     p.add_argument('--format', default='png', choices=['png', 'svg'])
     args = p.parse_args()
 
     gc_dir = (GC_OUTPUT_ROOT / args.task / args.method / args.atlas
               / args.feature_mode / 'leakage_corrected'
-              / gc_tag(args.order, args.win_ms, args.target_fs, args.normalize)
+              / gc_tag(args.order, args.win_ms, args.target_fs, args.normalize,
+                       n_pcs=args.n_pcs,
+                       n_pcs_roi=args.n_pcs_roi)
               / roiset_tag(args.roi_subset) / args.stim_class)
     agg = load_gc_group(str(gc_dir), DEFAULT_BANDS)
     if 'dtrgc' not in agg:
@@ -178,7 +187,7 @@ def main():
 
     pair_lbl = f"{roi[i].replace('-lh', '')}–{roi[j].replace('-lh', '')}"
     cfg_lbl = (f'order {args.order} / {args.win_ms:g} ms @ {args.target_fs:g} Hz'
-               f' / {args.normalize}')
+               f' / {args.normalize} / FIXPC{args.n_pcs}')
     fig.suptitle(
         f'{pair_lbl}   {args.task}/{args.stim_class}   {cfg_lbl}   n={n_subj}\n'
         'mean ± SEM over subjects, full axis (uncropped) · gray span: stats '
@@ -188,7 +197,9 @@ def main():
 
     out_dir = GC_OUTPUT_ROOT / '_figures_final_review'
     os.makedirs(out_dir, exist_ok=True)
-    tag = gc_tag(args.order, args.win_ms, args.target_fs, args.normalize)
+    tag = gc_tag(args.order, args.win_ms, args.target_fs, args.normalize,
+                 n_pcs=args.n_pcs,
+                 n_pcs_roi=args.n_pcs_roi)
     out = os.path.join(
         out_dir, f'{args.task}_{args.stim_class}_'
                  f"{pair_lbl.replace('–', '+')}_{tag}.{args.format}")

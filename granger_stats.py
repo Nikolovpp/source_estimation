@@ -860,7 +860,8 @@ def _derive_gc_dir(args):
     return (root / args.task / args.method / args.atlas / args.feature_mode
             / leakage_tag / gc_tag(args.order, args.win_ms, args.target_fs,
                                    args.normalize, args.gc_mode,
-                                   n_pcs=args.n_pcs)
+                                   n_pcs=args.n_pcs,
+                                   n_pcs_roi=args.n_pcs_roi)
             / roiset_tag(args.roi_subset) / args.stim_class)
 
 
@@ -934,6 +935,10 @@ def parse_args():
     p.add_argument('--n-pcs', type=int, default=1,
                    help='FIXPC-k setting of the run (run_granger.py --n-pcs); '
                         'only affects the derived path, k > 1 adds _pc{k}')
+    p.add_argument('--n-pcs-roi', nargs='+', default=None, metavar='ROI=K',
+                   help='per-ROI override of --n-pcs used by the run '
+                        '(run_granger.py --n-pcs-roi), e.g. pmc-lh=3; only '
+                        'affects the derived path')
     p.add_argument('--gc-mode', default='pairwise',
                    choices=['pairwise', 'conditional'])
     p.add_argument('--roi-subset', nargs='+', default=None, metavar='ROI',

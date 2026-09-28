@@ -211,6 +211,32 @@ def test_compute_subject_gc():
           and gc_tag(10, 80, 200, 'none', n_pcs=4) == 'order10_win80ms_fs200_pc4'
           and gc_tag(10, 80, 200, 'zscore', n_pcs=4) == 'order10_win80ms_fs200_zscore_pc4')
 
+    # per-ROI overrides (n_pcs_roi): unequal block sizes
+    r_mix = compute_subject_gc(roi, times, fs, n_pcs=1,
+                               n_pcs_roi={'b': 2, 'not-in-run': 3}, **kw)
+    check('override gives unequal blocks, absent ROI ignored',
+          list(r_mix['n_comp']) == [1, 2]
+          and list(r_mix['n_pcs_requested']) == [1, 2])
+    hbm = np.nanmean(r_mix['dtrgc']['high_beta'])
+    check('mixed blocks: finite, A->B TRGC positive',
+          all(np.all(np.isfinite(r_mix['fxy'][b])) for b in r_mix['fxy'])
+          and hbm > 0, f'{hbm:.3f}')
+    r_same = compute_subject_gc(roi, times, fs, n_pcs=2,
+                                n_pcs_roi=['A=2', 'B=2'], **kw)
+    check('override equal to the default changes nothing',
+          all(np.array_equal(r_same['dtrgc'][b], r_pc2['dtrgc'][b])
+              for b in r_pc2['dtrgc']))
+    r_all = compute_subject_gc(roi, times, fs, n_pcs=1,
+                               n_pcs_roi={'A': 2, 'B': 2}, **kw)
+    check('overriding every ROI equals the uniform run',
+          all(np.array_equal(r_all['dtrgc'][b], r_pc2['dtrgc'][b])
+              for b in r_pc2['dtrgc']))
+    check('gc_tag names the override policy',
+          gc_tag(10, 80, 200, 'none', n_pcs=2, n_pcs_roi=['PMC-lh=3'])
+          == 'order10_win80ms_fs200_pc2_pmc-lh3'
+          and gc_tag(10, 80, 200, 'none', n_pcs=2, n_pcs_roi={'pmc-lh': 2})
+          == 'order10_win80ms_fs200_pc2')
+
 
 def test_io_roundtrip():
     print('\n[7] save_subject_gc at n_pcs=4 -> granger_stats.load_gc_group')

@@ -22,25 +22,41 @@
 #
 # ROI AGGREGATION AND NORMALIZATION (the two knobs this script exposes):
 #
-#   NPCS       components kept per ROI (run_granger.py --n-pcs). Default 4 =
-#              FIXPC4: each ROI is a block of its top-4 fixed-filter PCs and
-#              every pair is an 8-channel VAR scored with block (multivariate)
-#              Geweke GC / TRGC — Pellegrini et al. 2023's recommended
-#              source-space pipeline. 1 = the earlier single virtual-channel
-#              bivariate analysis. The block size is capped at each ROI's
-#              numerical rank (a collapsed LCMV ROI stays one component; the
-#              log reports it as [fixpc]).
+#   NPCS       components kept per ROI (run_granger.py --n-pcs). Default 2:
+#              each ROI is a block of its top-2 fixed-filter PCs and every
+#              pair is scored with block (multivariate) Geweke GC / TRGC
+#              (Pellegrini et al. 2023). 1 = the earlier single
+#              virtual-channel bivariate analysis. The block size is capped
+#              at each ROI's numerical rank (a collapsed LCMV ROI stays one
+#              component; the log reports it as [fixpc]).
+#   NPCS_ROI   per-ROI overrides of NPCS, space-separated ROI=K
+#              (run_granger.py --n-pcs-roi). Default "pmc-lh=3". Set
+#              NPCS_ROI="" for a uniform run.
+#
+#              WHY 2, AND 3 FOR PMC. Chosen from the variance each component
+#              captures (fixpc_variance_explained_*.csv): two components
+#              reach 95% of ROI variance in most subjects for awfa, ifc and
+#              tpc; pmc needs three. FIXPC4 (the 2026-09-24 run) was the
+#              Pellegrini default but cost more than it bought here: the
+#              finite-sample GC floor scales with order x k_src x k_tgt, so
+#              16x the FIXPC1 floor at k=4 against 4x at k=2 (6x for a pair
+#              with pmc), and it produced fewer significant clusters.
 #   NORMALIZE  across-trial ensemble normalization. Default none = raw
 #              BSMART-faithful signals (per-trial DC removal only; no ERP
 #              removal, no ensemble-SD equalization). 'demean' removes the
 #              ERP; 'zscore' also divides by the ensemble SD per time point.
 #
-#   Output path: .../order{MO}_win{SW}ms_fs200[_{NORMALIZE}][_pc{NPCS}]/...
-#   The normalize name and the PC suffix are both part of the path (the
-#   suffix only for NPCS > 1), so runs with different settings never collide.
+#   Output path:
+#     .../order{MO}_win{SW}ms_fs200[_{NORMALIZE}][_pc{NPCS}][_{roi}{K}]/...
+#   e.g. order10_win80ms_fs200_pc2_pmc-lh3. The normalize name, the PC
+#   suffix and the overrides are all part of the path, so runs with
+#   different settings never collide. The path names the POLICY: all six
+#   pairs of a run share it, including pairs without an overridden ROI.
 #
 #   The earlier final arm (zscore, FIXPC1) is reproduced with
-#       NORMALIZE=zscore NPCS=1 MAIN_OVERWRITE=1 bash run_gc_final.sh
+#       NORMALIZE=zscore NPCS=1 NPCS_ROI="" MAIN_OVERWRITE=1 bash run_gc_final.sh
+#   and the FIXPC4 arm with
+#       NPCS=4 NPCS_ROI="" bash run_gc_final.sh
 #   MAIN_OVERWRITE matters ONLY for that cell: gc_tag() does not encode TRGC,
 #   and the completed zscore sweep wrote plain-GC npz at
 #   order10_win80ms_fs200_zscore for all six pairs, so without --overwrite
@@ -53,13 +69,14 @@
 #   DRY_RUN=1 bash run_gc_final.sh          # print commands, run nothing
 #   ARMS=theta bash run_gc_final.sh         # one arm only
 #   TASKS=overtProd bash run_gc_final.sh    # skip perception
-#   NORMALIZE=demean bash run_gc_final.sh   # ERP removed, still FIXPC4
+#   NORMALIZE=demean bash run_gc_final.sh   # ERP removed, same PC policy
 #
 # 2 arms x 6 pairs x 2 tasks x 2 contrasts = 48 configs, 20 subjects each,
 # PARALLEL at a time (8 by default — the shared-drive I/O ceiling; 56
-# crashed the workstation during the sweep). An 8-channel block VAR costs
-# more per window than the 2-channel one (order x 64 coefficients instead of
-# order x 4), so expect each config to take longer than the FIXPC1 runs.
+# crashed the workstation during the sweep). A block VAR costs more per
+# window than the 2-channel one (order x (k_i+k_j)^2 coefficients instead of
+# order x 4), so expect each config to take longer than the FIXPC1 runs and
+# less than the FIXPC4 ones.
 set -u
 
 cd "$(dirname "$0")"
@@ -72,7 +89,8 @@ ATLAS="${ATLAS:-custom}"
 FEAT="${FEAT:-vertex_selectkbest}"
 LEAK="${LEAK:---leakage-correction}"
 NORMALIZE="${NORMALIZE:-none}"
-NPCS="${NPCS:-4}"
+NPCS="${NPCS:-2}"
+NPCS_ROI="${NPCS_ROI-pmc-lh=3}"
 PARALLEL="${PARALLEL:-8}"
 INNER_JOBS="${INNER_JOBS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -117,16 +135,23 @@ done; done; done; done
 
 # Run label: normalize name plus the PC suffix (only for NPCS > 1, mirroring
 # gc_tag), used for the log directory and the per-config tags.
+# Overrides are appended as {roi}{K} in name order, again as gc_tag does.
+PC_LABEL=""
+{ [ "$NPCS" -gt 1 ] || [ -n "$NPCS_ROI" ]; } && PC_LABEL="pc${NPCS}"
+for ov in $(echo $NPCS_ROI | tr ' ' '\n' | tr 'A-Z' 'a-z' | sort); do
+    PC_LABEL="${PC_LABEL}_${ov/=/}"
+done
 RUN_LABEL="$NORMALIZE"
-[ "$NPCS" -gt 1 ] && RUN_LABEL="${NORMALIZE}_pc${NPCS}"
+[ -n "$PC_LABEL" ] && RUN_LABEL="${NORMALIZE}_${PC_LABEL}"
+PC_FLAGS="--n-pcs $NPCS"
+[ -n "$NPCS_ROI" ] && PC_FLAGS="$PC_FLAGS --n-pcs-roi $NPCS_ROI"
 
-echo "final GC analysis — pairwise TRGC, FIXPC${NPCS}, normalize=$NORMALIZE, $METHOD/$ATLAS/$FEAT $LEAK"
+echo "final GC analysis — pairwise TRGC, ${NPCS} PC(s) per ROI${NPCS_ROI:+ (except $NPCS_ROI)}, normalize=$NORMALIZE, $METHOD/$ATLAS/$FEAT $LEAK"
 for ARM in $ARMS; do
     read -r ORDER WIN_MS TARGET_FS <<< "$(arm_params "$ARM")"
     samp=$(( WIN_MS * TARGET_FS / 1000 ))
     echo "  $ARM: order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples" \
-         "(needs > $(( ORDER + 1 ))), memory $(( 1000 * ORDER / TARGET_FS )) ms," \
-         "$(( 2 * NPCS ))-channel block VAR per pair"
+         "(needs > $(( ORDER + 1 ))), memory $(( 1000 * ORDER / TARGET_FS )) ms"
 done
 echo "  $n_total configs, 20 subjects each, $PARALLEL at a time"
 case " $ARMS " in *" main "*) [ "$MAIN_OVERWRITE" = "1" ] && \
@@ -146,14 +171,14 @@ mkdir -p "$LOG_DIR"
 for PP in "${PAIR_ARR[@]}"; do
 PP=$(trim "$PP")
 for T in $TASKS; do for S in $STIMS; do
-    tag="${T}_${S}_$(label "$PP")_trgc_win${WIN_MS}ms_order${ORDER}_pc${NPCS}"
+    tag="${T}_${S}_$(label "$PP")_trgc_win${WIN_MS}ms_order${ORDER}_${PC_LABEL:-pc1}"
     log="$LOG_DIR/${tag}.log"
     n=$(( n + 1 ))
     echo "[$n/$n_total] $ARM  $tag"
     CMD="python run_granger.py --task $T --stim-class $S --method $METHOD \
 --atlas $ATLAS --feature-mode $FEAT $LEAK --gc-mode pairwise \
 --win-ms $WIN_MS --order $ORDER --target-fs $TARGET_FS \
---normalize $NORMALIZE --n-pcs $NPCS --trgc --roi-subset $PP --n-jobs $INNER_JOBS $OVR"
+--normalize $NORMALIZE $PC_FLAGS --trgc --roi-subset $PP --n-jobs $INNER_JOBS $OVR"
     if [ "$DRY_RUN" = "1" ]; then echo "    $CMD"; continue; fi
     printf '%s\0' "
 s=\$(date +%s)
@@ -188,8 +213,8 @@ xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$CMD_FILE"
 echo
 echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
 echo
-echo "Then (pass the same --normalize and --n-pcs so the derived path matches,"
+echo "Then (pass the same --normalize and PC flags so the derived path matches,"
 echo "or point --gc-dir at the results directory):"
-echo "  python granger_stats.py --normalize $NORMALIZE --n-pcs $NPCS ...   # baseline-referenced TRGC stats (main arm; overtProd only for theta)"
+echo "  python granger_stats.py --normalize $NORMALIZE $PC_FLAGS ...   # baseline-referenced TRGC stats (main arm; overtProd only for theta)"
 echo "  python exploratory/plot_gc_pathway_timecourses.py       # theta-arm pathway figure"
 grep -h 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' logs/gc_final_*/*.log 2>/dev/null | sort | uniq -c | sort -rn | head -20

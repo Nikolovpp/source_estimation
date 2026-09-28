@@ -52,6 +52,10 @@ New one-off, sweep, or figure code belongs here, not at the repo root.
   pointwise bars and FWER cluster stars; the final-analysis review figure.
 - `plot_gc_subject_lines.py` — pointwise stats under group-scalar vs
   own-baseline referencing (supplement to the review figures).
+- `plot_gc_fixpc_compare.py` — FIXPC1 vs FIXPC-k (or a per-ROI policy) on the
+  same edge, bands x (Fxy / Fyx / dTRGC).
+- `plot_gc_edge_extent.py` — how far the leading-edge GC inflation reaches into
+  the epoch, per band and task; used to place the stats baseline.
 - `plot_gc_pathway_timecourses.py` — theta-arm pathway figure.
 - `plot_gc_sweep_summary.py`, `plot_gc_sweep_headline.py` — sweep grids.
 - `plot_gc_pairs.py` — pair time-course panels.
