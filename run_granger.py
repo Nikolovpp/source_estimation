@@ -145,7 +145,7 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
                        normalize='none', demean_trials=True, trgc=False,
                        tmin=None, tmax=None, gc_mode='pairwise', n_jobs=1,
                        diagnostics=True, y=None, normalize_per_class=False,
-                       n_pcs=1):
+                       n_pcs=1, n_pcs_roi=None):
     """Moving-window Geweke GC for one subject, all ROI pairs.
 
     ``gc_mode='pairwise'`` runs bivariate BSMART GC per pair.
@@ -189,6 +189,12 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         2k-channel VAR with block (multivariate) Geweke GC / TRGC.  The
         block size is capped at the ROI's numerical rank (see
         ``granger.reduce_roi_top_pcs``).  Pairwise mode only.
+    n_pcs_roi : dict {roi_name: int}, optional
+        Per-ROI override of ``n_pcs`` (case-insensitive names), e.g.
+        ``n_pcs=2, n_pcs_roi={'pmc-lh': 3}``.  The two blocks of a pair may
+        then differ in size; block GC does not need them equal.  ROIs named
+        here but absent from ``roi_data`` are ignored, so one policy can be
+        passed unchanged to every pair.
 
     Returns
     -------
@@ -211,7 +217,9 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
     n_pcs = int(n_pcs)
     if n_pcs < 1:
         raise ValueError('n_pcs must be >= 1')
-    if n_pcs > 1 and gc_mode != 'pairwise':
+    n_pcs_roi = normalize_n_pcs_roi(n_pcs_roi, n_pcs)
+    k_req = {r: n_pcs_roi.get(r.lower(), n_pcs) for r in roi_names}
+    if max(k_req.values()) > 1 and gc_mode != 'pairwise':
         raise ValueError('FIXPC-k blocks (n_pcs > 1) are implemented for '
                          'gc_mode="pairwise" only')
     # Reduce each ROI to a single virtual channel (n_pcs=1, the unchanged
@@ -222,13 +230,13 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
     for r in roi_names:
         arr = np.asarray(roi_data[r], dtype=float)
         if arr.ndim == 3:
-            comp = (reduce_roi_first_pc(arr)[:, None, :] if n_pcs == 1
-                    else reduce_roi_top_pcs(arr, n_pcs))
+            comp = (reduce_roi_first_pc(arr)[:, None, :] if k_req[r] == 1
+                    else reduce_roi_top_pcs(arr, k_req[r]))
         else:                                          # already reduced
             comp = arr[:, None, :]
         k = comp.shape[1]
-        if k < n_pcs:
-            print(f'    [fixpc] {r}: {k} component(s) kept of {n_pcs} '
+        if k < k_req[r] and arr.ndim == 3:
+            print(f'    [fixpc] {r}: {k} component(s) kept of {k_req[r]} '
                   f'requested (ROI numerical rank)', flush=True)
         blocks.append(list(range(len(chans), len(chans) + k)))
         n_comp.append(k)
@@ -399,6 +407,7 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
         'fs': fs,
         'n_epochs': int(V.shape[1]),
         'n_pcs': n_pcs,
+        'n_pcs_requested': np.array([k_req[r] for r in roi_names], dtype=int),
         'n_comp': np.array(n_comp, dtype=int),
     }
     if use_trgc:
@@ -414,15 +423,46 @@ def compute_subject_gc(roi_data, times, sfreq, *, order=10, win_ms=40.0,
 # ─────────────────────────────────────────────────────────────────────
 # IO
 # ─────────────────────────────────────────────────────────────────────
+def normalize_n_pcs_roi(n_pcs_roi, n_pcs=1):
+    """Canonical per-ROI component overrides: {lowercase roi: int}.
+
+    Accepts a dict or the CLI form (list of ``ROI=K`` strings).  Entries
+    equal to the default ``n_pcs`` are dropped, so a redundant override
+    neither changes the numbers nor the output path.
+    """
+    if not n_pcs_roi:
+        return {}
+    if not isinstance(n_pcs_roi, dict):
+        d = {}
+        for item in n_pcs_roi:
+            name, sep, k = str(item).rpartition('=')
+            if not sep or not name.strip():
+                raise ValueError(f'--n-pcs-roi expects ROI=K, got {item!r}')
+            d[name] = k
+        n_pcs_roi = d
+    out = {}
+    for name, k in n_pcs_roi.items():
+        k = int(k)
+        if k < 1:
+            raise ValueError(f'n_pcs_roi[{name!r}] must be >= 1')
+        if k != int(n_pcs):
+            out[str(name).strip().lower()] = k
+    return out
+
+
 def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
-           demean_trials=True, normalize_per_class=False, n_pcs=1):
+           demean_trials=True, normalize_per_class=False, n_pcs=1,
+           n_pcs_roi=None):
     """Directory segment identifying the GC configuration.
 
     Every parameter that changes the numbers must appear here, or two runs
     silently overwrite each other. ``demean_trials`` was missing: it is on by
     default, so the suffix appears only when it is turned OFF and no existing
     path changes.  Likewise ``n_pcs``: ``_pc{k}`` is appended only for k > 1,
-    so every FIXPC1 path on disk is untouched.
+    so every FIXPC1 path on disk is untouched.  Per-ROI overrides
+    (``n_pcs_roi``) follow as ``_{roi}{k}`` in name order, e.g.
+    ``_pc2_pmc-lh3``.  The tag names the POLICY, not the pair, so all pairs
+    of one run share a directory whether or not they contain the ROI.
     """
     t = f'order{order}_win{win_ms:g}ms_fs{target_fs:g}'
     if normalize != 'none':
@@ -431,8 +471,11 @@ def gc_tag(order, win_ms, target_fs, normalize, gc_mode='pairwise',
             t += '_perclass'
     if gc_mode != 'pairwise':
         t += f'_{gc_mode}'
-    if int(n_pcs) > 1:
+    over = normalize_n_pcs_roi(n_pcs_roi, n_pcs)
+    if int(n_pcs) > 1 or over:
         t += f'_pc{int(n_pcs)}'
+    for name in sorted(over):
+        t += f'_{name.replace(" ", "_")}{over[name]}'
     if not demean_trials:
         t += '_notrialdemean'
     return t
@@ -459,14 +502,14 @@ def subject_out_path(subj, task, stim_class, method, atlas, feature_mode,
                      leakage_correction, order, win_ms, target_fs, normalize,
                      output_root=GC_OUTPUT_ROOT, gc_mode='pairwise',
                      roi_subset=None, demean_trials=True,
-                     normalize_per_class=False, n_pcs=1):
+                     normalize_per_class=False, n_pcs=1, n_pcs_roi=None):
     """Where this subject's result lands. Single source of truth, so the
     skip-if-exists check in main() cannot drift from where save writes."""
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
     out_dir = (
         output_root / task / method / atlas / feature_mode / leakage_tag
         / gc_tag(order, win_ms, target_fs, normalize, gc_mode, demean_trials,
-                 normalize_per_class, n_pcs)
+                 normalize_per_class, n_pcs, n_pcs_roi)
         / roiset_tag(roi_subset) / stim_class
     )
     return out_dir / f'{subj}_{task}_{stim_class}.npz'
@@ -476,12 +519,12 @@ def save_subject_gc(result, subj, task, stim_class, method, atlas,
                     feature_mode, leakage_correction, order, win_ms,
                     target_fs, normalize, output_root=GC_OUTPUT_ROOT,
                     gc_mode='pairwise', roi_subset=None, demean_trials=True,
-                    normalize_per_class=False, n_pcs=1):
+                    normalize_per_class=False, n_pcs=1, n_pcs_roi=None):
     out_file = subject_out_path(
         subj, task, stim_class, method, atlas, feature_mode,
         leakage_correction, order, win_ms, target_fs, normalize,
         output_root, gc_mode, roi_subset, demean_trials,
-        normalize_per_class, n_pcs)
+        normalize_per_class, n_pcs, n_pcs_roi)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     save = {
@@ -516,6 +559,9 @@ def save_subject_gc(result, subj, task, stim_class, method, atlas,
     if 'n_pcs' in result:
         save['n_pcs'] = np.array(int(result['n_pcs']))
         save['n_comp'] = np.asarray(result['n_comp'], dtype=int)
+    if 'n_pcs_requested' in result:
+        save['n_pcs_requested'] = np.asarray(result['n_pcs_requested'],
+                                             dtype=int)
     for k in ('rho', 'consistency'):
         if k in result:
             save[k] = result[k]
@@ -605,6 +651,12 @@ def parse_args():
                         'pair is a 2k-channel VAR scored with block Geweke '
                         'GC/TRGC; capped at the ROI rank; adds _pc{k} to the '
                         'output path. Pairwise mode only.')
+    p.add_argument('--n-pcs-roi', nargs='+', default=None, metavar='ROI=K',
+                   help='Per-ROI override of --n-pcs, e.g. --n-pcs 2 '
+                        '--n-pcs-roi pmc-lh=3. Case-insensitive; ROIs not in '
+                        'this run are ignored, so the same policy can be '
+                        'passed to every pair. Adds _{roi}{k} to the output '
+                        'path.')
     p.add_argument('--subjects', nargs='+', default=None)
     p.add_argument('--n-jobs', type=int, default=64)
     p.add_argument('--overwrite', action='store_true', default=False)
@@ -619,8 +671,12 @@ def main():
     print('Source-space pairwise Granger causality (BSMART port)')
     print(f'  Task/class:   {args.task} / {args.stim_class}')
     print(f'  Method/atlas: {args.method} / {args.atlas}')
+    args.n_pcs_roi = normalize_n_pcs_roi(args.n_pcs_roi, args.n_pcs)
     red = ('first-PC reduction' if args.n_pcs == 1
            else f'top-{args.n_pcs} PC blocks (FIXPC{args.n_pcs})')
+    if args.n_pcs_roi:
+        red += ', except ' + ', '.join(
+            f'{r}: {k}' for r, k in sorted(args.n_pcs_roi.items()))
     print(f'  Feature mode: {args.feature_mode} (vertex cache -> {red})')
     print(f'  Leakage corr: {args.leakage_correction}')
     print(f'  Order:        {args.order}')
@@ -691,7 +747,7 @@ def main():
             gc_mode=args.gc_mode, roi_subset=subset,
             demean_trials=args.demean_trials,
             normalize_per_class=args.normalize_per_class,
-            n_pcs=args.n_pcs)
+            n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi)
         if done.exists() and not args.overwrite:
             n_skip += 1
             continue
@@ -727,7 +783,7 @@ def main():
             gc_mode=args.gc_mode, n_jobs=args.n_jobs,
             diagnostics=args.diagnostics,
             y=y, normalize_per_class=args.normalize_per_class,
-            n_pcs=args.n_pcs,
+            n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi,
         )
         out_file = save_subject_gc(
             result, subj, args.task, args.stim_class, args.method,
@@ -736,7 +792,7 @@ def main():
             gc_mode=args.gc_mode, roi_subset=args.roi_subset,
             demean_trials=args.demean_trials,
             normalize_per_class=args.normalize_per_class,
-            n_pcs=args.n_pcs,
+            n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi,
         )
         n_pairs = result['pair_i'].size
         n_ep = result.get('n_epochs')
