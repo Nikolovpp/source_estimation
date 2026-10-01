@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # run_gc_final.sh
 # The FINAL (non-sweep) GC analysis: pairwise TRGC over the six speech-route
-# ROI pairs of {awfa, ifc, pmc, tpc}, in two configurations:
+# ROI pairs of {awfa, ifc, pmc, tpc}, in one configuration:
 #
-#   main   MO10 / 80 ms / fs200   beta-band analysis. Model memory = 50 ms:
-#          covers cortico-cortical conduction+synaptic delays (5-20 ms) with
-#          margin and spans 1.5 cycles of high beta. 80 ms is the shortest
-#          window that fits order 10 with room (16 samples against the Morf
-#          recursion's > order+1 = 11). Sits inside the completed zscore
-#          sweep grid, so the 352-config sweep is its robustness supplement.
+#   main   MO10 / 40 ms / fs500   the sensor-space BSMART config
+#          (SW20_MO10_fs500: BSMART counts the window in SAMPLES, 20 samples
+#          at 500 Hz = 40 ms), carried over to source space so the two
+#          analyses are directly comparable. Model memory = 20 ms: covers
+#          cortico-cortical conduction+synaptic delays (5-20 ms). 40 ms =
+#          20 samples is the shortest window that fits order 10 (the Morf
+#          recursion needs > order+1 = 11 samples; a literal 20 ms window
+#          would be 10 samples and every fit fails).
 #
-#   theta  MO25 / 200 ms / fs200  theta-reach supplement. Model memory =
-#          125 ms: a full cycle at 8 Hz, half at 4 Hz. The 200 ms window is
-#          only there to satisfy samples > order+1 (40 > 26) — it is the
-#          ORDER-AS-DURATION, not the window, that buys theta reach.
+#   The former theta arm (MO25 / 200 ms / fs200) is no longer run here; see
+#   exploratory/run_gc_theta_config.sh if it is needed again.
 #
-# Both arms: LCMV / custom atlas / vertex_selectkbest / leakage correction,
+# Settings: LCMV / custom atlas / vertex_selectkbest / leakage correction,
 # per-trial demean on, --trgc. TRGC is pairwise-only in run_granger.py, and
 # the sweep showed conditioning on a third ROI changes nothing — so no
 # triple-wise runs here.
@@ -47,31 +47,26 @@
 #              ERP; 'zscore' also divides by the ensemble SD per time point.
 #
 #   Output path:
-#     .../order{MO}_win{SW}ms_fs200[_{NORMALIZE}][_pc{NPCS}][_{roi}{K}]/...
-#   e.g. order10_win80ms_fs200_pc2_pmc-lh3. The normalize name, the PC
+#     .../order{MO}_win{SW}ms_fs500[_{NORMALIZE}][_pc{NPCS}][_{roi}{K}]/...
+#   e.g. order10_win40ms_fs500_pc2_pmc-lh3. The normalize name, the PC
 #   suffix and the overrides are all part of the path, so runs with
 #   different settings never collide. The path names the POLICY: all six
 #   pairs of a run share it, including pairs without an overridden ROI.
 #
-#   The earlier final arm (zscore, FIXPC1) is reproduced with
-#       NORMALIZE=zscore NPCS=1 NPCS_ROI="" MAIN_OVERWRITE=1 bash run_gc_final.sh
-#   and the FIXPC4 arm with
-#       NPCS=4 NPCS_ROI="" bash run_gc_final.sh
-#   MAIN_OVERWRITE matters ONLY for that cell: gc_tag() does not encode TRGC,
-#   and the completed zscore sweep wrote plain-GC npz at
-#   order10_win80ms_fs200_zscore for all six pairs, so without --overwrite
-#   the runner would skip every subject there and never compute dtrgc.
-#   Every NPCS > 1 path is new, so the default here is 0 (skip-if-exists,
+#   MAIN_OVERWRITE=1 forces --overwrite. gc_tag() does not encode TRGC, so
+#   if a plain-GC run already wrote npz at the same path (e.g. the earlier
+#   order10_win40ms_fs500 PC1 run under NPCS=1 NPCS_ROI="") the runner would
+#   skip every subject there and never compute dtrgc; set it for such cells.
+#   The default pc2_pmc-lh3 path is new, so the default is 0 (skip-if-exists,
 #   which lets an interrupted run resume).
 #
 #   conda activate mne          # the script activates it itself
 #   bash run_gc_final.sh
 #   DRY_RUN=1 bash run_gc_final.sh          # print commands, run nothing
-#   ARMS=theta bash run_gc_final.sh         # one arm only
 #   TASKS=overtProd bash run_gc_final.sh    # skip perception
 #   NORMALIZE=demean bash run_gc_final.sh   # ERP removed, same PC policy
 #
-# 2 arms x 6 pairs x 2 tasks x 2 contrasts = 48 configs, 20 subjects each,
+# 6 pairs x 2 tasks x 2 contrasts = 24 configs, 20 subjects each,
 # PARALLEL at a time (8 by default — the shared-drive I/O ceiling; 56
 # crashed the workstation during the sweep). A block VAR costs more per
 # window than the 2-channel one (order x (k_i+k_j)^2 coefficients instead of
@@ -81,7 +76,7 @@ set -u
 
 cd "$(dirname "$0")"
 
-ARMS="${ARMS:-main theta}"
+ARMS="${ARMS:-main}"
 TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 METHOD="${METHOD:-LCMV}"
@@ -99,8 +94,7 @@ MAIN_OVERWRITE="${MAIN_OVERWRITE:-0}"
 # arm parameters: order, window (ms), target fs (Hz), extra flags
 arm_params () {
     case "$1" in
-        main)  echo "10 80 200" ;;
-        theta) echo "25 200 200" ;;
+        main)  echo "10 40 500" ;;
         *)     echo "unknown arm: $1" >&2; exit 1 ;;
     esac
 }
@@ -215,6 +209,5 @@ echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
 echo
 echo "Then (pass the same --normalize and PC flags so the derived path matches,"
 echo "or point --gc-dir at the results directory):"
-echo "  python granger_stats.py --normalize $NORMALIZE $PC_FLAGS ...   # baseline-referenced TRGC stats (main arm; overtProd only for theta)"
-echo "  python exploratory/plot_gc_pathway_timecourses.py       # theta-arm pathway figure"
+echo "  python granger_stats.py --order 10 --win-ms 40 --target-fs 500 --normalize $NORMALIZE $PC_FLAGS ...   # baseline-referenced TRGC stats"
 grep -h 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' logs/gc_final_*/*.log 2>/dev/null | sort | uniq -c | sort -rn | head -20
