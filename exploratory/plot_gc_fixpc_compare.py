@@ -63,7 +63,7 @@ def load_arm(args, n_pcs, n_pcs_roi=None):
     with np.load(first_npz, allow_pickle=True) as d:
         freqs = d['freqs']
         n_comp = d['n_comp'].tolist() if 'n_comp' in d.files else None
-    csv_path = os.path.join(gc_dir, 'group_stats',
+    csv_path = os.path.join(gc_dir, args.stats_subdir,
                             'gc_task_vs_baseline_stats_ttest.csv')
     return agg, freqs, csv_path, n_comp
 
@@ -85,6 +85,15 @@ def main():
     p.add_argument('--n-pcs-roi', nargs='+', default=None, metavar='ROI=K',
                    help='per-ROI override of --n-pcs in the FIXPC-k arm '
                         '(run_granger.py --n-pcs-roi), e.g. pmc-lh=3')
+    p.add_argument('--stats-subdir', default='group_stats',
+                   help='granger_stats.py --out-dir name under the pair dir '
+                        '(e.g. group_stats_bl); non-default names are '
+                        'appended to the figure file name')
+    p.add_argument('--baseline-start', type=float, default=None,
+                   help='baseline window start (s) passed to granger_stats; '
+                        'default: epoch start + edge guard')
+    p.add_argument('--baseline-end', type=float, default=None,
+                   help='baseline window end (s); default epoch start + 0.1')
     p.add_argument('--edge-guard', type=float, default=30.0,
                    help='ms; only draws the stats baseline span')
     p.add_argument('--format', default='png', choices=['png', 'svg'])
@@ -102,6 +111,10 @@ def main():
     i, j = int(agg1['pair_i'][0]), int(agg1['pair_j'][0])
     n1, nk = len(agg1['subjects']), len(aggk['subjects'])
     baseline = (float(wm[0]) + args.edge_guard, float(wm[0]) + 100.0)
+    if args.baseline_start is not None and args.baseline_end is not None:
+        baseline = (1000.0 * args.baseline_start, 1000.0 * args.baseline_end)
+    stats_sfx = ('' if args.stats_subdir == 'group_stats'
+                 else '_' + args.stats_subdir.replace('group_stats_', ''))
 
     cols = [('fxy', f'{roi[i]} → {roi[j]}', 'gc', roi[i], roi[j]),
             ('fyx', f'{roi[j]} → {roi[i]}', 'gc', roi[j], roi[i]),
@@ -191,7 +204,7 @@ def main():
     tag = gc_tag(args.order, args.win_ms, args.target_fs, args.normalize)
     out = os.path.join(
         out_dir, f'fixpc1_vs_fixpc{k}_{args.task}_{args.stim_class}_'
-                 f"{pair_lbl.replace('–', '+')}_{tag}.{args.format}")
+                 f"{pair_lbl.replace('–', '+')}_{tag}{stats_sfx}.{args.format}")
     fig.savefig(out, dpi=200, bbox_inches='tight')
     print(f'wrote {out}')
 

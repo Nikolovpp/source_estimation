@@ -107,6 +107,15 @@ def main():
     p.add_argument('--win-ms', type=float, default=80.0)
     p.add_argument('--target-fs', type=float, default=200.0)
     p.add_argument('--normalize', default='zscore')
+    p.add_argument('--stats-subdir', default='group_stats',
+                   help='granger_stats.py --out-dir name under the pair dir '
+                        '(e.g. group_stats_bl); non-default names are '
+                        'appended to the figure file name')
+    p.add_argument('--baseline-start', type=float, default=None,
+                   help='baseline window start (s) passed to granger_stats; '
+                        'default: epoch start + edge guard')
+    p.add_argument('--baseline-end', type=float, default=None,
+                   help='baseline window end (s); default epoch start + 0.1')
     p.add_argument('--edge-guard', type=float, default=5.0)
     p.add_argument('--n-pcs', type=int, default=1,
                    help='FIXPC-k of the run (run_granger.py --n-pcs); '
@@ -134,9 +143,13 @@ def main():
     import glob
     first_npz = sorted(glob.glob(os.path.join(gc_dir, '*.npz')))[0]
     freqs = np.load(first_npz, allow_pickle=True)['freqs']
-    csv_path = os.path.join(gc_dir, 'group_stats',
+    csv_path = os.path.join(gc_dir, args.stats_subdir,
                             'gc_task_vs_baseline_stats_ttest.csv')
     baseline = (float(wm[0]) + args.edge_guard, float(wm[0]) + 100.0)
+    if args.baseline_start is not None and args.baseline_end is not None:
+        baseline = (1000.0 * args.baseline_start, 1000.0 * args.baseline_end)
+    stats_sfx = ('' if args.stats_subdir == 'group_stats'
+                 else '_' + args.stats_subdir.replace('group_stats_', ''))
 
     panels = [('fxy', f'{roi[i]} → {roi[j]}', 'gc', roi[i], roi[j]),
               ('fyx', f'{roi[j]} → {roi[i]}', 'gc', roi[j], roi[i]),
@@ -187,7 +200,9 @@ def main():
 
     pair_lbl = f"{roi[i].replace('-lh', '')}–{roi[j].replace('-lh', '')}"
     cfg_lbl = (f'order {args.order} / {args.win_ms:g} ms @ {args.target_fs:g} Hz'
-               f' / {args.normalize} / FIXPC{args.n_pcs}')
+               f' / {args.normalize} / FIXPC{args.n_pcs}'
+               + ''.join(f', {r.split("=")[0]} {r.split("=")[1]}'
+                         for r in (args.n_pcs_roi or [])))
     fig.suptitle(
         f'{pair_lbl}   {args.task}/{args.stim_class}   {cfg_lbl}   n={n_subj}\n'
         'mean ± SEM over subjects, full axis (uncropped) · gray span: stats '
@@ -202,7 +217,7 @@ def main():
                  n_pcs_roi=args.n_pcs_roi)
     out = os.path.join(
         out_dir, f'{args.task}_{args.stim_class}_'
-                 f"{pair_lbl.replace('–', '+')}_{tag}.{args.format}")
+                 f"{pair_lbl.replace('–', '+')}_{tag}{stats_sfx}.{args.format}")
     fig.savefig(out, dpi=200, bbox_inches='tight')
     print(f'wrote {out}')
 
