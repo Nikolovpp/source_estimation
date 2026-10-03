@@ -33,6 +33,9 @@ New one-off, sweep, or figure code belongs here, not at the repo root.
 - `run_gc_theta_config.sh` — theta-sized config trial (superseded by the
   theta arm of the root-level `run_gc_final.sh`).
 - `run_gc_all.sh`, `rerun_GC.sh` — older batch drivers.
+- `run_gc_stats_figs.sh` — stats + review figures for `run_gc_final.sh`
+  results; takes the same knobs (`ORDER`, `WINS`, `TARGET_FS`, `NORMALIZE`,
+  `NPCS`, `NPCS_ROI`), one pass per window.
 - `compare_normalize_arms.py`, `compare_gc_conditions.py` — cross-run
   aggregation and comparison of sweep outputs.
 - `report_gc_diagnostics.py` — per-run diagnostics (stability, consistency).

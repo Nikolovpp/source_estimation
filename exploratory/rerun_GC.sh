@@ -3,12 +3,12 @@
 # (--normalize none), to compare raw-GC outputs against the zscore results.
 #
 # Thin wrapper over the root-level run_gc_final.sh: same six ROI pairs,
-# tasks, contrasts, and parallelism — only NORMALIZE differs (and the arm
-# set defaults to just "main"; the theta arm exists for the zscore analysis).
+# tasks, contrasts, order and window sweep, and parallelism — only NORMALIZE
+# differs.
 #
 #   bash exploratory/rerun_GC.sh
 #   DRY_RUN=1 bash exploratory/rerun_GC.sh       # print commands, run nothing
-#   ARMS="main theta" bash exploratory/rerun_GC.sh
+#   WINS=40 bash exploratory/rerun_GC.sh         # one window only
 #   TASKS=overtProd STIMS=prodDiff bash exploratory/rerun_GC.sh
 #
 # Notes for the comparison:
@@ -30,5 +30,4 @@ set -u
 cd "$(dirname "$0")/.."
 
 export NORMALIZE="${NORMALIZE:-none}"
-export ARMS="${ARMS:-main}"
 exec bash run_gc_final.sh

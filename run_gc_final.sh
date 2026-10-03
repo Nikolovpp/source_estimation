@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # run_gc_final.sh
 # The FINAL (non-sweep) GC analysis: pairwise TRGC over the six speech-route
-# ROI pairs of {awfa, ifc, pmc, tpc}, in one configuration:
+# ROI pairs of {awfa, ifc, pmc, tpc}, at one model order and sampling rate,
+# swept over the sliding-window length:
 #
-#   main   MO10 / 40 ms / fs500   the sensor-space BSMART config
-#          (SW20_MO10_fs500: BSMART counts the window in SAMPLES, 20 samples
-#          at 500 Hz = 40 ms), carried over to source space so the two
-#          analyses are directly comparable. Model memory = 20 ms: covers
-#          cortico-cortical conduction+synaptic delays (5-20 ms). 40 ms =
-#          20 samples is the shortest window that fits order 10 (the Morf
-#          recursion needs > order+1 = 11 samples; a literal 20 ms window
-#          would be 10 samples and every fit fails).
+#   ORDER      MVAR order. Default 15 = 30 ms of model memory at 500 Hz
+#              (order 10 = 20 ms was the sensor-space BSMART config
+#              SW20_MO10_fs500; order 15 is no longer that config).
+#   WINS       window lengths in ms, one full run per window. Default
+#              "40 60 80" = 20 / 30 / 40 samples at 500 Hz. The Morf
+#              recursion needs > order+1 = 16 samples, so 40 ms is close to
+#              the shortest window that fits order 15: it leaves 5 samples
+#              per trial beyond the lags, 60 ms leaves 15, 80 ms leaves 25.
+#              The script refuses a window that is too short for the order.
+#   TARGET_FS  rate the virtual channels are resampled to. Default 500.
 #
 #   The former theta arm (MO25 / 200 ms / fs200) is no longer run here; see
 #   exploratory/run_gc_theta_config.sh if it is needed again.
@@ -47,36 +50,42 @@
 #              ERP; 'zscore' also divides by the ensemble SD per time point.
 #
 #   Output path:
-#     .../order{MO}_win{SW}ms_fs500[_{NORMALIZE}][_pc{NPCS}][_{roi}{K}]/...
-#   e.g. order10_win40ms_fs500_pc2_pmc-lh3. The normalize name, the PC
-#   suffix and the overrides are all part of the path, so runs with
-#   different settings never collide. The path names the POLICY: all six
-#   pairs of a run share it, including pairs without an overridden ROI.
+#     .../order{MO}_win{SW}ms_fs{FS}[_{NORMALIZE}][_pc{NPCS}][_{roi}{K}]/...
+#   e.g. order15_win40ms_fs500_pc2_pmc-lh3. The order, window, rate,
+#   normalize name, PC suffix and overrides are all part of the path, so
+#   runs with different settings never collide (the three windows land in
+#   three sibling directories, and the earlier order10_win40ms_fs500 run is
+#   untouched). The path names the POLICY: all six pairs of a run share it,
+#   including pairs without an overridden ROI.
 #
-#   MAIN_OVERWRITE=1 forces --overwrite. gc_tag() does not encode TRGC, so
-#   if a plain-GC run already wrote npz at the same path (e.g. the earlier
-#   order10_win40ms_fs500 PC1 run under NPCS=1 NPCS_ROI="") the runner would
-#   skip every subject there and never compute dtrgc; set it for such cells.
-#   The default pc2_pmc-lh3 path is new, so the default is 0 (skip-if-exists,
-#   which lets an interrupted run resume).
+#   OVERWRITE=1 forces --overwrite (MAIN_OVERWRITE is still accepted).
+#   gc_tag() does not encode TRGC, so if a plain-GC run already wrote npz at
+#   the same path the runner would skip every subject there and never
+#   compute dtrgc; set it for such cells. The default order-15 paths are
+#   new, so the default is 0 (skip-if-exists, which lets an interrupted run
+#   resume).
 #
 #   conda activate mne          # the script activates it itself
 #   bash run_gc_final.sh
 #   DRY_RUN=1 bash run_gc_final.sh          # print commands, run nothing
 #   TASKS=overtProd bash run_gc_final.sh    # skip perception
 #   NORMALIZE=demean bash run_gc_final.sh   # ERP removed, same PC policy
+#   WINS=60 bash run_gc_final.sh            # one window only
+#   ORDER=10 WINS=40 bash run_gc_final.sh   # the earlier MO10 / 40 ms run
 #
-# 6 pairs x 2 tasks x 2 contrasts = 24 configs, 20 subjects each,
-# PARALLEL at a time (8 by default — the shared-drive I/O ceiling; 56
+# 3 windows x 6 pairs x 2 tasks x 2 contrasts = 72 configs, 20 subjects
+# each, PARALLEL at a time (8 by default — the shared-drive I/O ceiling; 56
 # crashed the workstation during the sweep). A block VAR costs more per
 # window than the 2-channel one (order x (k_i+k_j)^2 coefficients instead of
-# order x 4), so expect each config to take longer than the FIXPC1 runs and
-# less than the FIXPC4 ones.
+# order x 4), and order 15 has 1.5x the coefficients of order 10, so expect
+# each config to take longer than the MO10 run at the same window.
 set -u
 
 cd "$(dirname "$0")"
 
-ARMS="${ARMS:-main}"
+ORDER="${ORDER:-15}"
+WINS="${WINS:-40 60 80}"
+TARGET_FS="${TARGET_FS:-500}"
 TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 METHOD="${METHOD:-LCMV}"
@@ -89,15 +98,16 @@ NPCS_ROI="${NPCS_ROI-pmc-lh=3}"
 PARALLEL="${PARALLEL:-8}"
 INNER_JOBS="${INNER_JOBS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
-MAIN_OVERWRITE="${MAIN_OVERWRITE:-0}"
+OVERWRITE="${OVERWRITE:-${MAIN_OVERWRITE:-0}}"
 
-# arm parameters: order, window (ms), target fs (Hz), extra flags
-arm_params () {
-    case "$1" in
-        main)  echo "10 40 500" ;;
-        *)     echo "unknown arm: $1" >&2; exit 1 ;;
-    esac
-}
+# every window must fit the order: the Morf recursion needs > order+1 samples
+for WIN_MS in $WINS; do
+    samp=$(( WIN_MS * TARGET_FS / 1000 ))
+    if [ "$samp" -le $(( ORDER + 1 )) ]; then
+        echo "ERROR: ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples, order $ORDER needs > $(( ORDER + 1 ))" >&2
+        exit 1
+    fi
+done
 
 PAIRS="\
 awfa-lh ifc-lh; \
@@ -123,7 +133,7 @@ if [ "$DRY_RUN" != "1" ]; then
 fi
 
 n_total=0
-for ARM in $ARMS; do for _ in "${PAIR_ARR[@]}"; do for _ in $TASKS; do for _ in $STIMS; do
+for _ in $WINS; do for _ in "${PAIR_ARR[@]}"; do for _ in $TASKS; do for _ in $STIMS; do
     n_total=$(( n_total + 1 ))
 done; done; done; done
 
@@ -141,34 +151,33 @@ PC_FLAGS="--n-pcs $NPCS"
 [ -n "$NPCS_ROI" ] && PC_FLAGS="$PC_FLAGS --n-pcs-roi $NPCS_ROI"
 
 echo "final GC analysis — pairwise TRGC, ${NPCS} PC(s) per ROI${NPCS_ROI:+ (except $NPCS_ROI)}, normalize=$NORMALIZE, $METHOD/$ATLAS/$FEAT $LEAK"
-for ARM in $ARMS; do
-    read -r ORDER WIN_MS TARGET_FS <<< "$(arm_params "$ARM")"
+for WIN_MS in $WINS; do
     samp=$(( WIN_MS * TARGET_FS / 1000 ))
-    echo "  $ARM: order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples" \
+    echo "  order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples" \
          "(needs > $(( ORDER + 1 ))), memory $(( 1000 * ORDER / TARGET_FS )) ms"
 done
 echo "  $n_total configs, 20 subjects each, $PARALLEL at a time"
-case " $ARMS " in *" main "*) [ "$MAIN_OVERWRITE" = "1" ] && \
-    echo "  main arm runs with --overwrite" ;; esac
+[ "$OVERWRITE" = "1" ] && echo "  running with --overwrite"
 echo
 
 CMD_FILE=$(mktemp); DONE_FILE=$(mktemp)
 trap 'rm -f "$CMD_FILE" "$DONE_FILE"' EXIT
 t0=$(date +%s); n=0
 
-for ARM in $ARMS; do
-read -r ORDER WIN_MS TARGET_FS <<< "$(arm_params "$ARM")"
 OVR=""
-[ "$ARM" = "main" ] && [ "$MAIN_OVERWRITE" = "1" ] && OVR="--overwrite"
-LOG_DIR="logs/gc_final_${ARM}_${RUN_LABEL}"
-mkdir -p "$LOG_DIR"
+[ "$OVERWRITE" = "1" ] && OVR="--overwrite"
+LOG_GLOB="logs/gc_final_order${ORDER}_win*ms_fs${TARGET_FS}_${RUN_LABEL}"
+
+for WIN_MS in $WINS; do
+LOG_DIR="logs/gc_final_order${ORDER}_win${WIN_MS}ms_fs${TARGET_FS}_${RUN_LABEL}"
+[ "$DRY_RUN" = "1" ] || mkdir -p "$LOG_DIR"
 for PP in "${PAIR_ARR[@]}"; do
 PP=$(trim "$PP")
 for T in $TASKS; do for S in $STIMS; do
     tag="${T}_${S}_$(label "$PP")_trgc_win${WIN_MS}ms_order${ORDER}_${PC_LABEL:-pc1}"
     log="$LOG_DIR/${tag}.log"
     n=$(( n + 1 ))
-    echo "[$n/$n_total] $ARM  $tag"
+    echo "[$n/$n_total] $tag"
     CMD="python run_granger.py --task $T --stim-class $S --method $METHOD \
 --atlas $ATLAS --feature-mode $FEAT $LEAK --gc-mode pairwise \
 --win-ms $WIN_MS --order $ORDER --target-fs $TARGET_FS \
@@ -200,14 +209,14 @@ done
 
 echo
 echo "running $n_total configs, $PARALLEL at a time; each reports as it finishes."
-echo "Per-subject progress:  tail -f logs/gc_final_*/*.log"
+echo "Per-subject progress:  tail -f $LOG_GLOB/*.log"
 echo
 xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$CMD_FILE"
 
 echo
 echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
 echo
-echo "Then (pass the same --normalize and PC flags so the derived path matches,"
-echo "or point --gc-dir at the results directory):"
-echo "  python granger_stats.py --order 10 --win-ms 40 --target-fs 500 --normalize $NORMALIZE $PC_FLAGS ...   # baseline-referenced TRGC stats"
-grep -h 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' logs/gc_final_*/*.log 2>/dev/null | sort | uniq -c | sort -rn | head -20
+echo "Then stats + review figures for these runs (same knobs, so the paths match):"
+echo "  ORDER=$ORDER WINS=\"$WINS\" TARGET_FS=$TARGET_FS NORMALIZE=$NORMALIZE NPCS=$NPCS NPCS_ROI=\"$NPCS_ROI\" \\"
+echo "  TASKS=\"$TASKS\" STIMS=\"$STIMS\" bash exploratory/run_gc_stats_figs.sh"
+grep -h 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' $LOG_GLOB/*.log 2>/dev/null | sort | uniq -c | sort -rn | head -20
