@@ -19,14 +19,19 @@
 #            -> _figures_final_review/edge_extent_{tag}.{png,csv}
 #            LOOK AT THIS FIRST for a new window length: its settle_epoch_ms
 #            column says where the edge inflation ends, and baseline_ratio
-#            should be ~1 inside the corrected baselines below (BL_OVERTPROD
-#            / BL_PERCEPTION, carried over from the 80 ms / fs200 arm and
-#            checked on order 10 / 40 ms / fs500). If it is not, move the
-#            baseline and rerun with STEPS="stats review summary".
+#            is the GC level inside the _bl baselines below relative to the
+#            plateau (1 = clean). To move a baseline, set BL_OVERTPROD /
+#            BL_PERCEPTION and rerun with STEPS="stats review summary".
 #   stats    granger_stats.py on every result dir, twice:
-#              group_stats     default leading baseline, --edge-guard $EDGE_GUARD
-#              group_stats_bl  corrected baseline (window-start times, s):
-#                              overtProd  $BL_OVERTPROD   perception $BL_PERCEPTION
+#              group_stats     default leading baseline: epoch start +
+#                              [EDGE_GUARD, 100] ms (70 ms long at guard 30)
+#              group_stats_bl  explicit baseline (window-start times, s):
+#                overtProd   BL_OVERTPROD, default "auto" = BL_DUR_MS (100) ms
+#                            starting right after the edge guard, i.e. epoch
+#                            start + [EDGE_GUARD, EDGE_GUARD + BL_DUR_MS] =
+#                            -1.47..-1.37 s at guard 30. The epoch start is
+#                            read from the results (window_ms[0]).
+#                perception  BL_PERCEPTION, default -0.08..0 s
 #            Reruns overwrite. SKIP_EXISTING=1 keeps dirs whose stats CSV is
 #            already there (resume after an interruption).
 #   review   per-pair review figure (exploratory/plot_gc_edge_review.py),
@@ -46,6 +51,8 @@
 #   ORDER=10 WINS=40 bash exploratory/run_gc_stats_figs.sh    # the MO10 run
 #   STEPS="stats review summary" bash exploratory/run_gc_stats_figs.sh
 #   BL_PERCEPTION="-0.12 -0.04" bash exploratory/run_gc_stats_figs.sh
+#   BL_OVERTPROD="-1.3 -1.1" bash exploratory/run_gc_stats_figs.sh   # explicit
+#   EDGE_GUARD=50 BL_DUR_MS=100 bash exploratory/run_gc_stats_figs.sh
 #   TASKS=overtProd STIMS=prodDiff bash exploratory/run_gc_stats_figs.sh
 set -u
 cd "$(dirname "$0")/.."
@@ -65,8 +72,9 @@ STEPS="${STEPS:-extent stats review summary}"
 TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 PAIRS="${PAIRS:-awfa-lh,ifc-lh awfa-lh,pmc-lh awfa-lh,tpc-lh ifc-lh,pmc-lh ifc-lh,tpc-lh pmc-lh,tpc-lh}"
-EDGE_GUARD="${EDGE_GUARD:-30}"            # ms, default-baseline stats
-BL_OVERTPROD="${BL_OVERTPROD:--1.3 -1.1}" # s, window start
+EDGE_GUARD="${EDGE_GUARD:-30}"            # ms, leading windows kept out of both baselines
+BL_OVERTPROD="${BL_OVERTPROD:-auto}"      # "auto" or "start end" (s, window start)
+BL_DUR_MS="${BL_DUR_MS:-100}"             # ms, length of the auto overtProd baseline
 BL_PERCEPTION="${BL_PERCEPTION:--0.08 0}" # s, window start
 PARALLEL="${PARALLEL:-6}"                 # concurrent granger_stats / figure jobs
 STATS_JOBS="${STATS_JOBS:-4}"             # --n-jobs inside each granger_stats
@@ -85,19 +93,28 @@ conda activate mne 2>/dev/null || { echo "ERROR: cannot activate 'mne'" >&2; exi
 PC_FLAGS="--n-pcs $NPCS"
 [ -n "$NPCS_ROI" ] && PC_FLAGS="$PC_FLAGS --n-pcs-roi $NPCS_ROI"
 
-# results root, then one directory tag per window, straight from the runner
-INFO=$(python - "$ORDER" "$TARGET_FS" "$NORMALIZE" "$NPCS" "$NPCS_ROI" $WINS <<'EOF'
-import sys
+# results root, then per window: the directory tag (straight from the runner)
+# and the overtProd epoch start in s (first window start of any result there;
+# -1.5, the overtProd epoch start, while nothing has been written yet)
+INFO=$(python - "$ORDER" "$TARGET_FS" "$NORMALIZE" "$NPCS" "$NPCS_ROI" \
+              "$METHOD/$ATLAS/$FEAT/$LEAK" $WINS <<'EOF'
+import sys, glob
+import numpy as np
 from run_granger import GC_OUTPUT_ROOT, gc_tag
-order, fs, norm, npcs, over = sys.argv[1:6]
+order, fs, norm, npcs, over, mid = sys.argv[1:7]
 print(GC_OUTPUT_ROOT)
-for w in sys.argv[6:]:
-    print(gc_tag(int(order), float(w), float(fs), norm, n_pcs=int(npcs),
-                 n_pcs_roi=over.split() or None))
+for w in sys.argv[7:]:
+    tag = gc_tag(int(order), float(w), float(fs), norm, n_pcs=int(npcs),
+                 n_pcs_roi=over.split() or None)
+    f = sorted(glob.glob(f'{GC_OUTPUT_ROOT}/overtProd/{mid}/{tag}/rois_*/*/*.npz'))
+    t0 = float(np.load(f[0], allow_pickle=True)['window_ms'][0]) / 1000.0 if f else -1.5
+    print(tag, f'{t0:g}')
 EOF
 ) || { echo "ERROR: cannot derive the results paths (run_granger import failed)" >&2; exit 1; }
 GC_ROOT=$(echo "$INFO" | sed -n 1p)
-mapfile -t TAGS < <(echo "$INFO" | sed 1d)
+mapfile -t TAGS < <(echo "$INFO" | sed 1d | cut -d' ' -f1)
+mapfile -t T0S  < <(echo "$INFO" | sed 1d | cut -d' ' -f2)
+BL_OVERTPROD_ARG="$BL_OVERTPROD"
 FIG_DIR="$GC_ROOT/_figures_final_review"
 [ "$DRY_RUN" = "1" ] || mkdir -p "$FIG_DIR"
 
@@ -115,11 +132,15 @@ export -f run; export DRY_RUN
 echo "GC stats + figures: order $ORDER, windows [$WINS] ms, fs $TARGET_FS, normalize=$NORMALIZE, ${NPCS} PC(s) per ROI${NPCS_ROI:+ (except $NPCS_ROI)}"
 echo "  results: $GC_ROOT"
 echo "  steps: $STEPS"
-echo "  edge guard ${EDGE_GUARD} ms; corrected baselines overtProd [$BL_OVERTPROD] s, perception [$BL_PERCEPTION] s"
+echo "  edge guard ${EDGE_GUARD} ms; _bl baselines: overtProd [$BL_OVERTPROD_ARG]$([ "$BL_OVERTPROD_ARG" = auto ] && echo " = ${BL_DUR_MS} ms right after the edge guard"), perception [$BL_PERCEPTION] s"
 
 wi=0
 for WIN_MS in $WINS; do
-TAG="${TAGS[$wi]}"; wi=$(( wi + 1 ))
+TAG="${TAGS[$wi]}"; T0="${T0S[$wi]}"; wi=$(( wi + 1 ))
+if [ "$BL_OVERTPROD_ARG" = "auto" ]; then
+    BL_OVERTPROD=$(awk -v t="$T0" -v g="$EDGE_GUARD" -v d="$BL_DUR_MS" \
+        'BEGIN { printf "%g %g", t + g / 1000, t + (g + d) / 1000 }')
+fi
 LOG_DIR="logs/gc_stats_figs_${TAG}"
 [ "$DRY_RUN" = "1" ] || mkdir -p "$LOG_DIR"
 pair_dir () { echo "$GC_ROOT/$1/$METHOD/$ATLAS/$FEAT/$LEAK/$TAG/rois_${2/,/-}/$3"; }
@@ -131,6 +152,7 @@ for T in $TASKS; do for PR in $PAIRS; do for S in $STIMS; do
 done; done; done
 echo
 echo "== $TAG   ($n_have of $n_want result dirs present)"
+echo "   overtProd _bl baseline [$BL_OVERTPROD] s (epoch start $T0 s)"
 if [ "$n_have" -eq 0 ] && [ "$DRY_RUN" != "1" ]; then
     echo "   nothing to do — run_gc_final.sh has not written this window yet"
     continue
@@ -149,7 +171,7 @@ run "$LOG_DIR/edge_extent.log" python exploratory/plot_gc_edge_extent.py \
 
 # ── stats ───────────────────────────────────────────────────────────────
 case " $STEPS " in *" stats "*)
-echo "-- stats (default baseline -> group_stats, corrected -> group_stats_bl), $PARALLEL at a time"
+echo "-- stats (default baseline -> group_stats, explicit -> group_stats_bl), $PARALLEL at a time"
 JOBS="$TMP/stats_$TAG"; : > "$JOBS"
 for T in $TASKS; do for PR in $PAIRS; do for S in $STIMS; do
     D=$(pair_dir "$T" "$PR" "$S")
