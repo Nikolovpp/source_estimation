@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # run_gc_final.sh
 # The FINAL (non-sweep) GC analysis: pairwise TRGC over the six speech-route
-# ROI pairs of {awfa, ifc, pmc, tpc}, at one model order and sampling rate,
-# swept over the sliding-window length:
+# ROI pairs of {awfa, ifc, pmc, tpc}, at one sampling rate, swept over the
+# model order and the sliding-window length. Current defaults: orders 20 and
+# 25, perception only, 24 configs at a time.
 #
-#   ORDER      MVAR order. Default 15 = 30 ms of model memory at 500 Hz
-#              (order 10 = 20 ms was the sensor-space BSMART config
-#              SW20_MO10_fs500; order 15 is no longer that config).
+#   ORDER      MVAR order, or several separated by spaces (ORDER="20 25"
+#              runs every order x window combination that fits; a window
+#              too short for an order is skipped with a note, e.g. 40 ms =
+#              20 samples cannot fit order 20 or 25). Default "20 25" =
+#              40 / 50 ms of model memory at 500 Hz. Earlier runs: order 15
+#              (30 ms) and order 10 (20 ms, the sensor-space BSMART config
+#              SW20_MO10_fs500).
 #   WINS       window lengths in ms, one full run per window. Default
 #              "40 60 80" = 20 / 30 / 40 samples at 500 Hz. The Morf
-#              recursion needs > order+1 = 16 samples, so 40 ms is close to
-#              the shortest window that fits order 15: it leaves 5 samples
-#              per trial beyond the lags, 60 ms leaves 15, 80 ms leaves 25.
-#              The script refuses a window that is too short for the order.
+#              recursion needs > order+1 samples, so 40 ms fits order 15 and
+#              below only, and order 25 at 60 ms is as thin as order 15 at
+#              40 ms: 5 samples per trial beyond the lags.
 #   TARGET_FS  rate the virtual channels are resampled to. Default 500.
 #
 #   The former theta arm (MO25 / 200 ms / fs200) is no longer run here; see
@@ -68,25 +72,26 @@
 #   conda activate mne          # the script activates it itself
 #   bash run_gc_final.sh
 #   DRY_RUN=1 bash run_gc_final.sh          # print commands, run nothing
-#   TASKS=overtProd bash run_gc_final.sh    # skip perception
+#   TASKS="overtProd perception" bash run_gc_final.sh   # both tasks
 #   NORMALIZE=demean bash run_gc_final.sh   # ERP removed, same PC policy
 #   WINS=60 bash run_gc_final.sh            # one window only
 #   ORDER=10 WINS=40 bash run_gc_final.sh   # the earlier MO10 / 40 ms run
+#   ORDER=15 bash run_gc_final.sh           # the order-15 window sweep
 #
-# 3 windows x 6 pairs x 2 tasks x 2 contrasts = 72 configs, 20 subjects
-# each, PARALLEL at a time (8 by default — the shared-drive I/O ceiling; 56
-# crashed the workstation during the sweep). A block VAR costs more per
-# window than the 2-channel one (order x (k_i+k_j)^2 coefficients instead of
-# order x 4), and order 15 has 1.5x the coefficients of order 10, so expect
-# each config to take longer than the MO10 run at the same window.
+# (orders x windows that fit) x 6 pairs x tasks x 2 contrasts configs — 48
+# with the defaults — 20 subjects each, PARALLEL at a time (24 by default;
+# 8 was the shared-drive I/O ceiling found in the earlier sweep, where 56
+# crashed the workstation, so lower it if I/O stalls). A block VAR costs
+# more per window than the 2-channel one (order x (k_i+k_j)^2 coefficients
+# instead of order x 4), and the cost grows with the order.
 set -u
 
 cd "$(dirname "$0")"
 
-ORDER="${ORDER:-15}"
+ORDER="${ORDER:-20 25}"
 WINS="${WINS:-40 60 80}"
 TARGET_FS="${TARGET_FS:-500}"
-TASKS="${TASKS:-overtProd perception}"
+TASKS="${TASKS:-perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 METHOD="${METHOD:-LCMV}"
 ATLAS="${ATLAS:-custom}"
@@ -95,19 +100,16 @@ LEAK="${LEAK:---leakage-correction}"
 NORMALIZE="${NORMALIZE:-none}"
 NPCS="${NPCS:-2}"
 NPCS_ROI="${NPCS_ROI-pmc-lh=3}"
-PARALLEL="${PARALLEL:-8}"
+PARALLEL="${PARALLEL:-24}"
 INNER_JOBS="${INNER_JOBS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 OVERWRITE="${OVERWRITE:-${MAIN_OVERWRITE:-0}}"
 
-# every window must fit the order: the Morf recursion needs > order+1 samples
-for WIN_MS in $WINS; do
-    samp=$(( WIN_MS * TARGET_FS / 1000 ))
-    if [ "$samp" -le $(( ORDER + 1 )) ]; then
-        echo "ERROR: ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples, order $ORDER needs > $(( ORDER + 1 ))" >&2
-        exit 1
-    fi
-done
+# ORDER may list several orders; inside the loops below ORDER is one of them.
+ORDERS="$ORDER"
+# a window fits an order when it has > order+1 samples (Morf recursion);
+# combinations that do not fit are skipped
+fits () { [ $(( $2 * TARGET_FS / 1000 )) -gt $(( $1 + 1 )) ]; }
 
 PAIRS="\
 awfa-lh ifc-lh; \
@@ -133,9 +135,16 @@ if [ "$DRY_RUN" != "1" ]; then
 fi
 
 n_total=0
-for _ in $WINS; do for _ in "${PAIR_ARR[@]}"; do for _ in $TASKS; do for _ in $STIMS; do
-    n_total=$(( n_total + 1 ))
-done; done; done; done
+for ORDER in $ORDERS; do for WIN_MS in $WINS; do
+    fits "$ORDER" "$WIN_MS" || continue
+    for _ in "${PAIR_ARR[@]}"; do for _ in $TASKS; do for _ in $STIMS; do
+        n_total=$(( n_total + 1 ))
+    done; done; done
+done; done
+if [ "$n_total" -eq 0 ]; then
+    echo "ERROR: no window in [$WINS] ms fits any order in [$ORDERS] at ${TARGET_FS} Hz (needs > order+1 samples)" >&2
+    exit 1
+fi
 
 # Run label: normalize name plus the PC suffix (only for NPCS > 1, mirroring
 # gc_tag), used for the log directory and the per-config tags.
@@ -151,11 +160,16 @@ PC_FLAGS="--n-pcs $NPCS"
 [ -n "$NPCS_ROI" ] && PC_FLAGS="$PC_FLAGS --n-pcs-roi $NPCS_ROI"
 
 echo "final GC analysis — pairwise TRGC, ${NPCS} PC(s) per ROI${NPCS_ROI:+ (except $NPCS_ROI)}, normalize=$NORMALIZE, $METHOD/$ATLAS/$FEAT $LEAK"
-for WIN_MS in $WINS; do
+for ORDER in $ORDERS; do for WIN_MS in $WINS; do
     samp=$(( WIN_MS * TARGET_FS / 1000 ))
-    echo "  order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples" \
-         "(needs > $(( ORDER + 1 ))), memory $(( 1000 * ORDER / TARGET_FS )) ms"
-done
+    if fits "$ORDER" "$WIN_MS"; then
+        echo "  order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples" \
+             "(needs > $(( ORDER + 1 ))), memory $(( 1000 * ORDER / TARGET_FS )) ms"
+    else
+        echo "  order $ORDER, ${WIN_MS} ms @ ${TARGET_FS} Hz = ${samp} samples" \
+             "— SKIPPED, needs > $(( ORDER + 1 ))"
+    fi
+done; done
 echo "  $n_total configs, 20 subjects each, $PARALLEL at a time"
 [ "$OVERWRITE" = "1" ] && echo "  running with --overwrite"
 echo
@@ -166,10 +180,13 @@ t0=$(date +%s); n=0
 
 OVR=""
 [ "$OVERWRITE" = "1" ] && OVR="--overwrite"
-LOG_GLOB="logs/gc_final_order${ORDER}_win*ms_fs${TARGET_FS}_${RUN_LABEL}"
+LOG_DIRS=()
 
+for ORDER in $ORDERS; do
 for WIN_MS in $WINS; do
+fits "$ORDER" "$WIN_MS" || continue
 LOG_DIR="logs/gc_final_order${ORDER}_win${WIN_MS}ms_fs${TARGET_FS}_${RUN_LABEL}"
+LOG_DIRS+=("$LOG_DIR")
 [ "$DRY_RUN" = "1" ] || mkdir -p "$LOG_DIR"
 for PP in "${PAIR_ARR[@]}"; do
 PP=$(trim "$PP")
@@ -204,12 +221,13 @@ fi
 " >> "$CMD_FILE"
 done; done; done
 done
+done
 
 [ "$DRY_RUN" = "1" ] && exit 0
 
 echo
 echo "running $n_total configs, $PARALLEL at a time; each reports as it finishes."
-echo "Per-subject progress:  tail -f $LOG_GLOB/*.log"
+echo "Per-subject progress:  tail -f logs/gc_final_order*_fs${TARGET_FS}_${RUN_LABEL}/*.log"
 echo
 xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$CMD_FILE"
 
@@ -217,6 +235,12 @@ echo
 echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
 echo
 echo "Then stats + review figures for these runs (same knobs, so the paths match):"
-echo "  ORDER=$ORDER WINS=\"$WINS\" TARGET_FS=$TARGET_FS NORMALIZE=$NORMALIZE NPCS=$NPCS NPCS_ROI=\"$NPCS_ROI\" \\"
-echo "  TASKS=\"$TASKS\" STIMS=\"$STIMS\" bash exploratory/run_gc_stats_figs.sh"
-grep -h 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' $LOG_GLOB/*.log 2>/dev/null | sort | uniq -c | sort -rn | head -20
+for ORDER in $ORDERS; do
+    W=""
+    for WIN_MS in $WINS; do fits "$ORDER" "$WIN_MS" && W="$W $WIN_MS"; done
+    [ -n "$W" ] || continue
+    echo "  ORDER=$ORDER WINS=\"${W# }\" TARGET_FS=$TARGET_FS NORMALIZE=$NORMALIZE NPCS=$NPCS NPCS_ROI=\"$NPCS_ROI\" \\"
+    echo "  TASKS=\"$TASKS\" STIMS=\"$STIMS\" bash exploratory/run_gc_stats_figs.sh"
+done
+for d in "${LOG_DIRS[@]}"; do cat "$d"/*.log 2>/dev/null; done \
+    | grep 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' | sort | uniq -c | sort -rn | head -20
