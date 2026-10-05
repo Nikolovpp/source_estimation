@@ -36,6 +36,9 @@ New one-off, sweep, or figure code belongs here, not at the repo root.
 - `run_gc_stats_figs.sh` — stats + review figures for `run_gc_final.sh`
   results; takes the same knobs (`ORDER`, `WINS`, `TARGET_FS`, `NORMALIZE`,
   `NPCS`, `NPCS_ROI`), one pass per window.
+- `plot_gc_window_sweep.py` — overlays the window lengths of a
+  `run_gc_final.sh` sweep per task x contrast x pair (from the stats CSVs),
+  plus an overview of the pointwise t-test in a chosen time range.
 - `compare_normalize_arms.py`, `compare_gc_conditions.py` — cross-run
   aggregation and comparison of sweep outputs.
 - `report_gc_diagnostics.py` — per-run diagnostics (stability, consistency).
