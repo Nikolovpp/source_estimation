@@ -540,7 +540,12 @@ GC_TASK_START = {
 # moving-window MVAR boundary artifact: the last window straddles the
 # epoch end, so windows whose data reaches into the final win_ms are
 # excluded.  Set to tmax - 2*win (one window length before the last
-# window start).  Override with granger_stats.py --task-end.
+# window start) FOR 40 MS WINDOWS ONLY.
+# SUPERSEDED for granger_stats.py (2026-10-10): it now derives the task end
+# from the data as last window start - TAIL_GUARD_MS (50 ms), which is
+# window-length independent; this fixed value let 80 ms windows run to the
+# epoch end.  Still read by run_granger_mne.py (crop) and a few exploratory
+# figure scripts.
 #   perception epoch end +0.6 s (last window start +0.56)
 #   overtProd  epoch end +0.4 s (last window start +0.36)
 GC_TASK_END = {

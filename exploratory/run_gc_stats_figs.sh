@@ -32,6 +32,10 @@
 #                            -1.47..-1.37 s at guard 30. The epoch start is
 #                            read from the results (window_ms[0]).
 #                perception  BL_PERCEPTION, default -0.08..0 s
+#            Both passes drop every window whose data reaches into the last
+#            TAIL_GUARD (50) ms of the epoch (granger_stats --tail-guard): the
+#            task span ends at last window start - TAIL_GUARD for any window
+#            length, replacing the fixed config.GC_TASK_END crop.
 #            Reruns overwrite. SKIP_EXISTING=1 keeps dirs whose stats CSV is
 #            already there (resume after an interruption).
 #   review   per-pair review figure (exploratory/plot_gc_edge_review.py),
@@ -53,6 +57,7 @@
 #   BL_PERCEPTION="-0.12 -0.04" bash exploratory/run_gc_stats_figs.sh
 #   BL_OVERTPROD="-1.3 -1.1" bash exploratory/run_gc_stats_figs.sh   # explicit
 #   EDGE_GUARD=50 BL_DUR_MS=100 bash exploratory/run_gc_stats_figs.sh
+#   TAIL_GUARD=50 bash exploratory/run_gc_stats_figs.sh   # trailing guard (ms of data)
 #   TASKS=overtProd STIMS=prodDiff bash exploratory/run_gc_stats_figs.sh
 set -u
 cd "$(dirname "$0")/.."
@@ -73,6 +78,7 @@ TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 PAIRS="${PAIRS:-awfa-lh,ifc-lh awfa-lh,pmc-lh awfa-lh,tpc-lh ifc-lh,pmc-lh ifc-lh,tpc-lh pmc-lh,tpc-lh}"
 EDGE_GUARD="${EDGE_GUARD:-30}"            # ms, leading windows kept out of both baselines
+TAIL_GUARD="${TAIL_GUARD:-50}"            # ms of epoch data at the END no tested window may reach into
 BL_OVERTPROD="${BL_OVERTPROD:-auto}"      # "auto" or "start end" (s, window start)
 BL_DUR_MS="${BL_DUR_MS:-100}"             # ms, length of the auto overtProd baseline
 BL_PERCEPTION="${BL_PERCEPTION:--0.08 0}" # s, window start
@@ -132,7 +138,7 @@ export -f run; export DRY_RUN
 echo "GC stats + figures: order $ORDER, windows [$WINS] ms, fs $TARGET_FS, normalize=$NORMALIZE, ${NPCS} PC(s) per ROI${NPCS_ROI:+ (except $NPCS_ROI)}"
 echo "  results: $GC_ROOT"
 echo "  steps: $STEPS"
-echo "  edge guard ${EDGE_GUARD} ms; _bl baselines: overtProd [$BL_OVERTPROD_ARG]$([ "$BL_OVERTPROD_ARG" = auto ] && echo " = ${BL_DUR_MS} ms right after the edge guard"), perception [$BL_PERCEPTION] s"
+echo "  edge guard ${EDGE_GUARD} ms, tail guard ${TAIL_GUARD} ms; _bl baselines: overtProd [$BL_OVERTPROD_ARG]$([ "$BL_OVERTPROD_ARG" = auto ] && echo " = ${BL_DUR_MS} ms right after the edge guard"), perception [$BL_PERCEPTION] s"
 
 wi=0
 for WIN_MS in $WINS; do
@@ -182,14 +188,14 @@ for T in $TASKS; do for PR in $PAIRS; do for S in $STIMS; do
         echo "  kept  stats_${base}"
     else
         printf '%s\0' "run '$LOG_DIR/stats_${base}.log' python granger_stats.py --gc-dir '$D' --task $T \
---edge-guard $EDGE_GUARD --n-jobs $STATS_JOBS" >> "$JOBS"
+--edge-guard $EDGE_GUARD --tail-guard $TAIL_GUARD --n-jobs $STATS_JOBS" >> "$JOBS"
     fi
     if [ "$SKIP_EXISTING" = "1" ] && [ -f "$D/group_stats_bl/$csv" ]; then
         echo "  kept  stats_bl_${base}"
     else
         printf '%s\0' "run '$LOG_DIR/stats_bl_${base}.log' python granger_stats.py --gc-dir '$D' --task $T \
 --baseline-start $(bl_for $T | cut -d' ' -f1) --baseline-end $(bl_for $T | cut -d' ' -f2) \
---out-dir '$D/group_stats_bl' --n-jobs $STATS_JOBS" >> "$JOBS"
+--out-dir '$D/group_stats_bl' --tail-guard $TAIL_GUARD --n-jobs $STATS_JOBS" >> "$JOBS"
     fi
 done; done; done
 xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$JOBS"

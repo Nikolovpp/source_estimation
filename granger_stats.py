@@ -61,7 +61,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import DECODE_OUTPUT_ROOT, GC_TASK_END
+from config import DECODE_OUTPUT_ROOT
 from granger import DEFAULT_BANDS, band_masks
 from run_granger import gc_tag, roiset_tag, GC_OUTPUT_ROOT
 
@@ -83,6 +83,15 @@ GC_SENSOR_OUTPUT_ROOT = DECODE_OUTPUT_ROOT.parent / 'GC_sensor_space'
 
 # Matches source_stats_viz.py so GC and decoding are tested identically.
 N_PERMUTATIONS = 1024
+# Trailing edge guard (ms of EPOCH DATA): a moving window whose data reaches
+# into the last TAIL_GUARD_MS of the epoch is not tested.  The last windows of
+# every arm spike (the MVAR window straddles the epoch end); the former fixed
+# crop config.GC_TASK_END was sized for 40 ms windows and, in window-START
+# terms, let an 80 ms window run right up to the epoch end.  The guard is
+# applied to the window DATA, so it is window-length independent: a window
+# starting at s covers [s, s + win]; the epoch ends at last_start + win; so the
+# window is clear of the guard iff  s <= last_start - TAIL_GUARD_MS.
+TAIL_GUARD_MS = 50.0
 TFCE_THRESHOLD = dict(start=0, step=0.2)
 
 
@@ -575,7 +584,8 @@ def plot_directed_edge(agg, stats_by_band, src_name, tgt_name, pair_idx,
 def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
               alpha=0.05, bands=None, fmt='png', test='ttest', task_end_ms=None,
               baseline_dur_ms=100.0, edge_guard_ms=0.0, permutation=True,
-              n_permutations=N_PERMUTATIONS, tfce=True, seed=42, n_jobs=1):
+              n_permutations=N_PERMUTATIONS, tfce=True, seed=42, n_jobs=1,
+              tail_guard_ms=TAIL_GUARD_MS):
     """Aggregate a GC group directory, run stats, write figures + CSV.
 
     ``test`` selects the POINTWISE task-vs-baseline test ('ttest' or
@@ -625,10 +635,16 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
     The trailing end is worse than previously documented: at 60 ms the last
     6-16 windows are DEPRESSED to 46-79% of plateau, not the "sharp spike in
     the last ~2 windows" this docstring used to claim.  For the task span that
-    is handled by the task-end crop (config.GC_TASK_END); it is called out here
-    because anything that averages the full axis (e.g. the sweep summary) has
-    to drop it explicitly.  Override any of this with --baseline-start/
-    --baseline-end / --task-start / --task-end / --edge-guard.
+    is handled by ``tail_guard_ms`` (default ``TAIL_GUARD_MS`` = 50): every
+    window whose DATA reaches into the last 50 ms of the epoch is dropped from
+    the task span, i.e. the task ends at ``window_ms[-1] - tail_guard_ms`` in
+    window-start terms, whatever the window length.  (The former default,
+    ``config.GC_TASK_END``, was a fixed start time sized for 40 ms windows and
+    cropped NOTHING for 80 ms windows.)  ``task_end_ms`` overrides the guard.
+    Anything that averages the full axis (e.g. the sweep summary) has to drop
+    the trailing windows explicitly.  Override any of this with
+    --baseline-start / --baseline-end / --task-start / --task-end /
+    --edge-guard / --tail-guard.
     """
     if bands is None:
         bands = REPORT_BANDS       # theta / low_beta / high_beta / combined beta
@@ -645,12 +661,17 @@ def run_stats(gc_dir, task, out_dir, baseline_ms=None, task_start_ms=None,
         onset = TASK_ONSET_MS.get(task)
         if onset is not None:
             task_start_ms = max(task_start_ms, onset)
-    if task_end_ms is None and task in GC_TASK_END:
-        task_end_ms = GC_TASK_END[task] * 1000.0
-    end_str = f'{task_end_ms:g}' if task_end_ms is not None else 'end'
+    if task_end_ms is None:
+        # data-derived: drop every window whose data reaches into the last
+        # tail_guard_ms of the epoch (see TAIL_GUARD_MS)
+        task_end_ms = float(window_ms[-1]) - tail_guard_ms
+        end_note = (f' (last window start {window_ms[-1]:g} ms minus the '
+                    f'{tail_guard_ms:g} ms tail guard)')
+    else:
+        end_note = ' (explicit --task-end)'
     print(f'  GC baseline window: [{baseline_ms[0]:g}, {baseline_ms[1]:g}] ms '
           f'(epoch leading {baseline_dur_ms:g} ms); '
-          f'task windows [{task_start_ms:g}, {end_str}] ms')
+          f'task windows [{task_start_ms:g}, {task_end_ms:g}] ms{end_note}')
     # The default baseline is the LEADING part of the moving-window axis, which
     # is only a real pre-stimulus baseline if that axis starts before 0.  The
     # MNE cwt runs on the short perception crop start at about -45 ms, so the
@@ -875,8 +896,8 @@ def parse_args():
     p.add_argument('--out-dir', default=None,
                    help='Where to write figures/CSV (default: <gc-dir>/group_stats)')
     p.add_argument('--task', default=None, choices=['perception', 'overtProd'],
-                   help='Only sets the default task-end crop '
-                        '(config.GC_TASK_END). Inferred from --gc-dir when it '
+                   help='Only sets the default task START (perception: never '
+                        'before stimulus onset). Inferred from --gc-dir when it '
                         'contains the task name; required otherwise.')
     p.add_argument('--alpha', type=float, default=0.05)
     p.add_argument('--baseline-start', type=float, default=None,
@@ -889,9 +910,14 @@ def parse_args():
                    help='GC task windows begin here (s); default is the end of '
                         'the baseline window')
     p.add_argument('--task-end', type=float, default=None,
-                   help='GC task windows end here (s), dropping the trailing '
-                        'edge; default from config.GC_TASK_END[task]. Pass a '
-                        'value beyond the last window to disable the crop.')
+                   help='GC task windows end here (s, window start). Default: '
+                        'derived from --tail-guard. Pass a value beyond the '
+                        'last window to disable the crop.')
+    p.add_argument('--tail-guard', type=float, default=TAIL_GUARD_MS,
+                   help=f'ms of epoch DATA at the end that no tested window '
+                        f'may reach into (default {TAIL_GUARD_MS:g}); the task '
+                        'span then ends at last window start minus this, for '
+                        'any window length. Ignored when --task-end is given.')
     p.add_argument('--edge-guard', type=float, default=0.0,
                    help='ms of epoch onset trimmed before the baseline '
                         'starts. Default 10 (2 windows), measured on the '
@@ -978,7 +1004,8 @@ def main():
               test=args.test, task_end_ms=task_end_ms,
               edge_guard_ms=args.edge_guard, permutation=args.permutation,
               n_permutations=args.n_permutations, tfce=args.tfce,
-              seed=args.seed, n_jobs=args.n_jobs)
+              seed=args.seed, n_jobs=args.n_jobs,
+              tail_guard_ms=args.tail_guard)
 
 
 if __name__ == '__main__':
