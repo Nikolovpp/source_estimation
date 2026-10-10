@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Window-length sweep: the same edge at each sliding-window length, overlaid.
+"""Window-length (or model-order) sweep: the same edge at each setting, overlaid.
 
 For every task x contrast x ROI pair this draws one figure:
 
@@ -7,7 +7,10 @@ For every task x contrast x ROI pair this draws one figure:
                                        roi_j -> roi_i GC
                                        net Diff-TRGC (positive = i -> j)
     columns  the four report bands (theta, low beta, high beta, combined beta)
-    lines    one per window length (``--wins``), subject mean +/- SEM
+    lines    one per window length (``--wins``), subject mean +/- SEM;
+             with several ``--orders`` instead one per MODEL ORDER at a
+             fixed window length, one figure set per window in ``--wins``
+             (the "order sweep")
 
 Everything comes from the ``granger_stats.py`` CSVs (run
 ``exploratory/run_gc_stats_figs.sh`` first), so the figure shows exactly what
@@ -15,13 +18,13 @@ was tested:
 
   * the y-axis is the CHANGE FROM BASELINE (mean minus that run's
     ``baseline_mean``).  Raw GC cannot be overlaid usefully: the finite-sample
-    floor grows as the window shrinks, so a 40 ms run sits ~2x higher than an
-    80 ms run at every time point.  The raw baseline levels are printed in
-    each panel instead.
+    floor grows as the window shrinks (and as the order grows), so a 40 ms
+    run sits ~2x higher than an 80 ms run at every time point.  The raw
+    baseline levels are printed in each panel instead.
   * the x-axis is the window CENTER (window start + length / 2), so an event
     lands at the same x for every window length.  The stats themselves are
     defined on window starts; the bars below follow each window's own axis.
-  * ABOVE the traces, per window length (in its color): asterisks = the
+  * ABOVE the traces, per run (in its color): asterisks = the
     pointwise one-sample t-test at p < 0.05, uncorrected (GC right-tailed,
     Diff-TRGC two-tailed), and under them a thin bar = windows inside an
     FWER-significant permutation cluster (per edge x band, no correction
@@ -32,13 +35,24 @@ was tested:
     the trailing windows are outside the tested range and would set the scale.
 
 It also writes one overview figure and the table behind it: for every edge x
-band cell and window length, the share of windows whose CENTER falls in
+band cell and run, the share of windows whose CENTER falls in
 ``--overview-range`` (default 150..300 ms) that pass the pointwise t-test.
+
+Outputs go to ``_figures_final_review/window_sweep_order{N}_...`` (one order,
+windows overlaid) or ``_figures_final_review/order_sweep_win{W}ms_...`` (one
+window, orders overlaid); the summary CSV columns carry ``_{W}`` or
+``_order{N}`` suffixes accordingly.  The overview figure and summary CSV
+combine every task; a per-task copy of each is also written to a task
+subdirectory (``.../overtProd/``, ``.../perception/``) so a single-task run
+never overwrites the other task's overview.  ``--overview-only`` regenerates
+the CSVs and overviews without redrawing the per-pair figures.
 
     conda activate mne
     python exploratory/plot_gc_window_sweep.py                   # order 15, 40/60/80 ms
     python exploratory/plot_gc_window_sweep.py --stats-subdir group_stats
     python exploratory/plot_gc_window_sweep.py --tasks overtProd --pairs awfa-lh,ifc-lh
+    # orders 15 / 20 / 25 overlaid, one figure set each for 60 and 80 ms
+    python exploratory/plot_gc_window_sweep.py --orders 15 20 25 --wins 60 80 --tasks perception
 """
 import os
 import sys
@@ -59,8 +73,9 @@ BAND_LABEL = {'theta': 'theta 4–8 Hz', 'low_beta': 'low beta 12–18 Hz',
               'high_beta': 'high beta 18–30 Hz', 'beta': 'beta 12–30 Hz'}
 PAIRS = ['awfa-lh,ifc-lh', 'awfa-lh,pmc-lh', 'awfa-lh,tpc-lh',
          'ifc-lh,pmc-lh', 'ifc-lh,tpc-lh', 'pmc-lh,tpc-lh']
-# One fixed hue per window length, in sweep order (never re-assigned).
-WIN_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4']
+# One fixed hue per overlaid run (window length or order), in sweep order
+# (never re-assigned).
+RUN_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4']
 INK, MUTED, GRID, EMPTY = '#1f1f1e', '#6b6a63', '#e7e6e0', '#eeede8'
 CSV = 'gc_task_vs_baseline_stats_ttest.csv'
 
@@ -69,8 +84,25 @@ def short(roi):
     return roi.replace('-lh', '')
 
 
-def pair_dir(args, task, stim, pair, win):
-    tag = gc_tag(args.order, win, args.target_fs, args.normalize,
+# A "run" is one overlaid line: the (order, window ms) pair it was computed
+# with.  ``args.runs`` lists the runs of the current figure set and
+# ``args.sweep`` says which of the two varies ('window' or 'order'); the
+# other is fixed across the set.
+def run_key(args, run):
+    """Column suffix in the summary CSV: ``60`` (window sweep, as before)
+    or ``order20`` (order sweep)."""
+    order, win = run
+    return f'{win:g}' if args.sweep == 'window' else f'order{order}'
+
+
+def run_label(args, run):
+    order, win = run
+    return f'{win:g} ms window' if args.sweep == 'window' else f'order {order}'
+
+
+def pair_dir(args, task, stim, pair, run):
+    order, win = run
+    tag = gc_tag(order, win, args.target_fs, args.normalize,
                  n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi)
     return (GC_OUTPUT_ROOT / task / args.method / args.atlas
             / args.feature_mode / 'leakage_corrected' / tag
@@ -97,16 +129,16 @@ def baseline_ms(args, task, t0):
 
 
 def load_series(args, task, stim, pair):
-    """{win: {(measure, src, tgt, band): DataFrame sorted by window_ms}}."""
+    """{run: {(measure, src, tgt, band): DataFrame sorted by window_ms}}."""
     out = {}
-    for win in args.wins:
-        path = os.path.join(pair_dir(args, task, stim, pair, win),
+    for run in args.runs:
+        path = os.path.join(pair_dir(args, task, stim, pair, run),
                             args.stats_subdir, CSV)
         if not os.path.exists(path):
             print(f'  missing {path}')
             continue
         df = pd.read_csv(path)
-        out[win] = {k: g.sort_values('window_ms').reset_index(drop=True)
+        out[run] = {k: g.sort_values('window_ms').reset_index(drop=True)
                     for k, g in df.groupby(['measure', 'src', 'tgt', 'band'])}
     return out
 
@@ -139,8 +171,8 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
             ('dtrgc', ri, rj,
              f'net {short(ri)} ↔ {short(rj)}\n(+ = {short(ri)} → {short(rj)})',
              'ΔTRGC')]
-    wins = [w for w in args.wins if w in series]
-    color = {w: WIN_COLORS[args.wins.index(w)] for w in wins}
+    runs = [r for r in args.runs if r in series]
+    color = {r: RUN_COLORS[args.runs.index(r)] for r in runs}
     fig, axes = plt.subplots(len(rows), len(BANDS), figsize=(17, 9.6),
                              sharex=True, sharey='row', squeeze=False)
     n_subj, bl_note, x_lo, x_hi = 0, {}, np.inf, -np.inf
@@ -148,7 +180,7 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
         for c, band in enumerate(BANDS):
             ax = axes[r, c]
             marks, base_txt = [], []
-            for w in wins:
+            for w in runs:
                 g = series[w].get((measure, src, tgt, band))
                 if g is None:
                     continue
@@ -165,7 +197,7 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
                 bl_note[w] = bl if ok else None
                 show = (wm >= bl[0]) if ok else tested
                 show &= wm <= wm[tested].max()
-                x = wm + w / 2.0                         # window center
+                x = wm + w[1] / 2.0                      # window center
                 m = g['gc_mean'].to_numpy() - base
                 se = g['gc_sem'].to_numpy()
                 ax.fill_between(x[show], (m - se)[show], (m + se)[show],
@@ -195,15 +227,15 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
                               color=INK)
             if r == len(rows) - 1:
                 ax.set_xlabel('window center (ms)', fontsize=10, color=INK)
-    # Stats go ABOVE the traces: per window length a row of asterisks
-    # (pointwise t-test) with its thin cluster bar right under it, the
-    # shortest window on top.  The baseline bars stay under the traces.
+    # Stats go ABOVE the traces: per run a row of asterisks (pointwise
+    # t-test) with its thin cluster bar right under it, the first run on
+    # top.  The baseline bars stay under the traces.
     min_dx = 0.016 * (x_hi - x_lo)
     for r in range(len(rows)):
         y0, y1 = axes[r, 0].get_ylim()
         h = 0.04 * (y1 - y0)
-        axes[r, 0].set_ylim(y0 - (0.7 * len(wins) + 1.6) * h,
-                            y1 + (2 * len(wins) + 0.6) * h)
+        axes[r, 0].set_ylim(y0 - (0.7 * len(runs) + 1.6) * h,
+                            y1 + (2 * len(runs) + 0.6) * h)
         for c in range(len(BANDS)):
             ax = axes[r, c]
             for k, (w, x, bmask, sig_cl, sig_pt) in enumerate(ax._sweep_marks):
@@ -212,7 +244,7 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
                     for a, b in spans(bmask, x):
                         ax.plot([a, b], [yb, yb], color='0.62', lw=3,
                                 solid_capstyle='butt')
-                top = y1 + 2 * (len(wins) - k) * h
+                top = y1 + 2 * (len(runs) - k) * h
                 xs = star_x(sig_pt, x, min_dx)
                 ax.plot(xs, [top] * len(xs), ls='none', marker=(6, 2, 0),
                         ms=5.5, mew=0.9, color=color[w])
@@ -221,8 +253,8 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
                             color=color[w], lw=2, solid_capstyle='butt')
     axes[0, 0].set_xlim(x_lo, x_hi)
 
-    handles = [Line2D([], [], color=color[w], lw=2.2, label=f'{w:g} ms window')
-               for w in wins]
+    handles = [Line2D([], [], color=color[w], lw=2.2, label=run_label(args, w))
+               for w in runs]
     handles += [Line2D([], [], ls='none', marker=(6, 2, 0), ms=7, mew=1.1,
                        color=INK, label='pointwise t-test p < 0.05 '
                                         '(uncorrected)'),
@@ -234,12 +266,13 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
     over = ''.join(f', {o.split("=")[0].replace("-lh", "")} {o.split("=")[1]}'
                    for o in (args.n_pcs_roi or []))
     bl_txt = ' · '.join(
-        f'{w:g} ms: ' + ('not reproduced' if bl_note.get(w) is None
-                         else f'{bl_note[w][0]:g}..{bl_note[w][1]:g}')
-        for w in wins)
+        f'{run_label(args, w)}: '
+        + ('not reproduced' if bl_note.get(w) is None
+           else f'{bl_note[w][0]:g}..{bl_note[w][1]:g}')
+        for w in runs)
     fig.suptitle(
-        f'{short(ri)}–{short(rj)}   {task} / {stim}   window sweep at order '
-        f'{args.order} @ {args.target_fs:g} Hz   ({args.normalize}, '
+        f'{short(ri)}–{short(rj)}   {task} / {stim}   {args.sweep} sweep at '
+        f'{args.fixed_txt} @ {args.target_fs:g} Hz   ({args.normalize}, '
         f'{args.n_pcs} PCs{over}, n={n_subj})',
         fontsize=13, color=INK, y=0.992)
     fig.text(0.5, 0.948,
@@ -247,19 +280,19 @@ def plot_pair(args, task, stim, pair, series, out_dir, sfx):
              'in the window color: GC one-tailed (task > baseline), ΔTRGC '
              'two-tailed\n'
              f'baseline window starts (ms)  {bl_txt} · '
-             '"baseline a / b / c" = raw baseline level per window length',
+             '"baseline a / b / c" = raw baseline level per run',
              ha='center', va='center', fontsize=9, color=MUTED,
              linespacing=1.5)
     fig.tight_layout(rect=(0, 0, 1, 0.895))
     out = os.path.join(out_dir, f'{task}_{stim}_{short(ri)}+{short(rj)}'
-                                f'_window_sweep{sfx}.{args.format}')
+                                f'_{args.sweep}_sweep{sfx}.{args.format}')
     fig.savefig(out, dpi=170)
     plt.close(fig)
     return out
 
 
 def summarize(args, task, stim, pair, series):
-    """One row per tested series x band, with each window's cluster result."""
+    """One row per tested series x band, with each run's cluster result."""
     ri, rj = pair.split(',')
     rows = []
     for measure, src, tgt in (('gc', ri, rj), ('gc', rj, ri),
@@ -267,46 +300,48 @@ def summarize(args, task, stim, pair, series):
         for band in BANDS:
             row = {'task': task, 'stim': stim, 'measure': measure,
                    'src': src, 'tgt': tgt, 'band': band}
-            for w in args.wins:
+            for w in args.runs:
+                k = run_key(args, w)
                 g = series.get(w, {}).get((measure, src, tgt, band))
                 if g is None:
                     continue
                 sig = g['sig_cluster'].to_numpy(bool)
                 d = g['gc_mean'].to_numpy() - float(g['baseline_mean'].iloc[0])
-                row[f'p_cluster_min_{w:g}'] = float(g['p_cluster_min'].iloc[0])
-                row[f'n_sig_cluster_{w:g}'] = int(sig.sum())
-                row[f'n_sig_pointwise_{w:g}'] = int(g['sig'].sum())
+                row[f'p_cluster_min_{k}'] = float(g['p_cluster_min'].iloc[0])
+                row[f'n_sig_cluster_{k}'] = int(sig.sum())
+                row[f'n_sig_pointwise_{k}'] = int(g['sig'].sum())
                 # pointwise test inside the overview range (window centers)
-                xc = g['window_ms'].to_numpy() + w / 2.0
+                xc = g['window_ms'].to_numpy() + w[1] / 2.0
                 rng = ((xc >= args.overview_range[0])
                        & (xc <= args.overview_range[1])
                        & g['pval'].notna().to_numpy())
                 hit = rng & g['sig'].to_numpy(bool)
-                row[f'n_win_range_{w:g}'] = int(rng.sum())
-                row[f'n_sig_pointwise_range_{w:g}'] = int(hit.sum())
-                row[f'frac_sig_pointwise_range_{w:g}'] = (
+                row[f'n_win_range_{k}'] = int(rng.sum())
+                row[f'n_sig_pointwise_range_{k}'] = int(hit.sum())
+                row[f'frac_sig_pointwise_range_{k}'] = (
                     hit.sum() / rng.sum() if rng.any() else np.nan)
-                row[f'range_mean_delta_{w:g}'] = (float(d[hit].mean())
+                row[f'range_mean_delta_{k}'] = (float(d[hit].mean())
                                                   if hit.any() else np.nan)
-                row[f'baseline_mean_{w:g}'] = float(g['baseline_mean'].iloc[0])
+                row[f'baseline_mean_{k}'] = float(g['baseline_mean'].iloc[0])
                 # sign of the effect inside the significant windows
-                row[f'sig_mean_delta_{w:g}'] = (float(d[sig].mean())
+                row[f'sig_mean_delta_{k}'] = (float(d[sig].mean())
                                                 if sig.any() else np.nan)
-            row['n_windows_sig'] = sum(
-                row.get(f'n_sig_cluster_{w:g}', 0) > 0 for w in args.wins)
+            row['n_runs_sig'] = sum(
+                row.get(f'n_sig_cluster_{run_key(args, w)}', 0) > 0
+                for w in args.runs)
             rows.append(row)
     return rows
 
 
 def plot_overview(args, S, out_dir, tag, sfx):
     """Tiles: pointwise t-test inside ``--overview-range``, per cell and
-    window length.  Number = % of the windows in the range with p < 0.05
+    run.  Number = % of the windows in the range with p < 0.05
     (uncorrected); the fill darkens with it.  Diff-TRGC is two-tailed, so its
     number carries the sign of the effect (+ = net src -> tgt)."""
     lo, hi = args.overview_range
     tasks = [t for t in args.tasks if (S.task == t).any()]
     stims = [s for s in args.stims if (S.stim == s).any()]
-    nw = len(args.wins)
+    nw = len(args.runs)
     fig, axes = plt.subplots(len(tasks), len(stims), squeeze=False,
                              figsize=(max(13.0, 7.6 * len(stims)),
                                       1.6 + 6.2 * len(tasks)))
@@ -320,19 +355,20 @@ def plot_overview(args, S, out_dir, tag, sfx):
                 for c, band in enumerate(BANDS):
                     cell = sub[(sub.measure == measure) & (sub.src == src)
                                & (sub.tgt == tgt) & (sub.band == band)]
-                    for k, w in enumerate(args.wins):
-                        col = f'frac_sig_pointwise_range_{w:g}'
+                    for k, w in enumerate(args.runs):
+                        rk = run_key(args, w)
+                        col = f'frac_sig_pointwise_range_{rk}'
                         f = float(cell[col].iloc[0]) if col in cell else 0.0
                         f = 0.0 if np.isnan(f) else f
                         x0 = c * (nw + 0.6) + k
                         ax.add_patch(Rectangle(
                             (x0 + 0.04, y + 0.06), 0.92, 0.88, lw=0,
-                            color=WIN_COLORS[k] if f > 0 else EMPTY,
+                            color=RUN_COLORS[k] if f > 0 else EMPTY,
                             alpha=0.22 + 0.78 * f if f > 0 else 1.0))
                         if f > 0:
                             txt = f'{max(1, round(100 * f)):d}'
                             if measure == 'dtrgc':
-                                d = cell[f'range_mean_delta_{w:g}'].iloc[0]
+                                d = cell[f'range_mean_delta_{rk}'].iloc[0]
                                 txt = ('+' if d > 0 else '−') + txt
                             ax.text(x0 + 0.5, y + 0.5, txt, ha='center',
                                     va='center', fontsize=7.5,
@@ -355,32 +391,36 @@ def plot_overview(args, S, out_dir, tag, sfx):
             for s in ax.spines.values():
                 s.set_visible(False)
             hits = ', '.join(
-                f'{w:g} ms '
-                f'{int((sub[f"n_sig_pointwise_range_{w:g}"] > 0).sum())}'
-                for w in args.wins
-                if f'n_sig_pointwise_range_{w:g}' in sub)
+                f'{run_label(args, w)} '
+                f'{int((sub[f"n_sig_pointwise_range_{run_key(args, w)}"] > 0).sum())}'
+                for w in args.runs
+                if f'n_sig_pointwise_range_{run_key(args, w)}' in sub)
             ax.set_title(f'{task} / {stim}\ncells with any significant '
                          f'window: {hits} of {len(sub)}', fontsize=10.5,
                          loc='left', color=INK, pad=40)
-    handles = [Rectangle((0, 0), 1, 1, color=WIN_COLORS[k],
-                         label=f'{w:g} ms window')
-               for k, w in enumerate(args.wins)]
+    handles = [Rectangle((0, 0), 1, 1, color=RUN_COLORS[k],
+                         label=run_label(args, w))
+               for k, w in enumerate(args.runs)]
     handles.append(Rectangle((0, 0), 1, 1, color=EMPTY,
                              label='no significant window'))
-    fig.legend(handles=handles, loc='upper center', ncol=len(handles),
-               frameon=False, fontsize=10, bbox_to_anchor=(0.5, 0.965))
+    # header laid out in inches from the top, so it does not collapse when
+    # a single task makes the figure short
+    H = fig.get_size_inches()[1]
     fig.suptitle(
-        f'Pointwise t-test in {lo:g}–{hi:g} ms (window center), by window '
-        f'length   order {args.order} @ {args.target_fs:g} Hz, '
-        f'{args.stats_subdir}', fontsize=13, color=INK, y=0.99)
-    fig.text(0.5, 0.925,
+        f'Pointwise t-test in {lo:g}–{hi:g} ms (window center), by '
+        f'{"window length" if args.sweep == "window" else "model order"}   '
+        f'{args.fixed_txt} @ {args.target_fs:g} Hz, '
+        f'{args.stats_subdir}', fontsize=13, color=INK, y=1 - 0.12 / H)
+    fig.legend(handles=handles, loc='upper center', ncol=len(handles),
+               frameon=False, fontsize=10, bbox_to_anchor=(0.5, 1 - 0.38 / H))
+    fig.text(0.5, 1 - 0.82 / H,
              f'number = % of the windows in {lo:g}–{hi:g} ms with p < 0.05, '
              'uncorrected (darker = more; ≈5% expected by chance) · GC '
              'one-tailed (task > baseline) · ΔTRGC two-tailed, sign = '
              'direction (+ = first → second ROI)',
              ha='center', fontsize=9, color=MUTED)
-    fig.tight_layout(rect=(0, 0, 1, 0.915), h_pad=2.5)
-    out = os.path.join(out_dir, f'window_sweep_overview_{tag}{sfx}.'
+    fig.tight_layout(rect=(0, 0, 1, 1 - 1.0 / H), h_pad=2.5)
+    out = os.path.join(out_dir, f'{args.sweep}_sweep_overview_{tag}{sfx}.'
                                 f'{args.format}')
     fig.savefig(out, dpi=170)
     plt.close(fig)
@@ -389,10 +429,15 @@ def plot_overview(args, S, out_dir, tag, sfx):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    p.add_argument('--order', type=int, default=15)
+    p.add_argument('--order', type=int, default=None,
+                   help='single model order (default 15); the windows in '
+                        '--wins are overlaid at this order')
+    p.add_argument('--orders', type=int, nargs='+', default=None,
+                   help='several model orders: they are overlaid instead, '
+                        'one figure set per window in --wins')
     p.add_argument('--wins', type=float, nargs='+', default=[40, 60, 80],
                    help='window lengths (ms) to overlay, at most '
-                        f'{len(WIN_COLORS)}')
+                        f'{len(RUN_COLORS)}')
     p.add_argument('--target-fs', type=float, default=500.0)
     p.add_argument('--normalize', default='none')
     p.add_argument('--n-pcs', type=int, default=2)
@@ -424,21 +469,56 @@ def main():
                         'pointwise t-test inside this range')
     p.add_argument('--format', default='png', choices=['png', 'svg'])
     p.add_argument('--out-dir', default=None)
+    p.add_argument('--overview-only', action='store_true', default=False,
+                   help='skip the per-pair figures; write only the summary '
+                        'CSVs and overview figures (combined and per task)')
     args = p.parse_args()
-    if len(args.wins) > len(WIN_COLORS):
-        p.error(f'at most {len(WIN_COLORS)} window lengths')
+    if args.order is not None and args.orders is not None:
+        p.error('give --order or --orders, not both')
+    orders = args.orders or [args.order if args.order is not None else 15]
+    if len(orders) > 1:
+        args.sweep = 'order'
+        if len(orders) > len(RUN_COLORS):
+            p.error(f'at most {len(RUN_COLORS)} orders')
+    else:
+        args.sweep = 'window'
+        if len(args.wins) > len(RUN_COLORS):
+            p.error(f'at most {len(RUN_COLORS)} window lengths')
     args.n_pcs_roi = args.n_pcs_roi or None
-
-    # run label = the gc_tag without its window segment
-    tag = gc_tag(args.order, 0, args.target_fs, args.normalize,
-                 n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi).replace(
-                     '_win0ms', '')
     sfx = ('' if args.stats_subdir == 'group_stats'
            else '_' + args.stats_subdir.replace('group_stats_', ''))
-    out_dir = args.out_dir or os.path.join(
-        GC_OUTPUT_ROOT, '_figures_final_review', f'window_sweep_{tag}{sfx}')
-    os.makedirs(out_dir, exist_ok=True)
 
+    # Figure sets: a window sweep is one set per order (windows overlaid),
+    # an order sweep one set per window (orders overlaid).  The set's tag
+    # is the gc_tag with the varying segment dropped.
+    if args.sweep == 'window':
+        sets = [(o, None) for o in orders]
+    else:
+        sets = [(None, w) for w in args.wins]
+    for fixed_order, fixed_win in sets:
+        if args.sweep == 'window':
+            args.runs = [(fixed_order, w) for w in args.wins]
+            args.fixed_txt = f'order {fixed_order}'
+            tag = gc_tag(fixed_order, 0, args.target_fs, args.normalize,
+                         n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi
+                         ).replace('_win0ms', '')
+        else:
+            args.runs = [(o, fixed_win) for o in orders]
+            args.fixed_txt = f'{fixed_win:g} ms window'
+            tag = gc_tag(0, fixed_win, args.target_fs, args.normalize,
+                         n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi
+                         ).replace('order0_', '', 1)
+        out_dir = args.out_dir or os.path.join(
+            GC_OUTPUT_ROOT, '_figures_final_review',
+            f'{args.sweep}_sweep_{tag}{sfx}')
+        os.makedirs(out_dir, exist_ok=True)
+        print(f'\n== {args.sweep} sweep at {args.fixed_txt}: '
+              + ', '.join(run_label(args, r) for r in args.runs))
+        run_set(args, tag, sfx, out_dir)
+
+
+def run_set(args, tag, sfx, out_dir):
+    """Figures, summary CSV and console recap for one set of overlaid runs."""
     rows = []
     for task in args.tasks:
         for stim in args.stims:
@@ -446,39 +526,51 @@ def main():
                 series = load_series(args, task, stim, pair)
                 if not series:
                     continue
-                print('wrote', plot_pair(args, task, stim, pair, series,
-                                         out_dir, sfx))
+                if not args.overview_only:
+                    print('wrote', plot_pair(args, task, stim, pair, series,
+                                             out_dir, sfx))
                 rows += summarize(args, task, stim, pair, series)
     if not rows:
         raise SystemExit('no stats CSVs found — run '
                          'exploratory/run_gc_stats_figs.sh first')
     S = pd.DataFrame(rows)
-    csv = os.path.join(out_dir, f'window_sweep_summary_{tag}{sfx}.csv')
+    csv = os.path.join(out_dir, f'{args.sweep}_sweep_summary_{tag}{sfx}.csv')
     S.to_csv(csv, index=False)
     print('wrote', csv)
     print('wrote', plot_overview(args, S, out_dir, tag, sfx))
+    # The combined overview and CSV above cover every task in one file, so a
+    # run restricted to one task would overwrite them.  Each task therefore
+    # also gets its own copy in a task subdirectory (out_dir/overtProd,
+    # out_dir/perception): same file names, one task per figure.
+    for task in args.tasks:
+        St = S[S.task == task]
+        if St.empty:
+            continue
+        tdir = os.path.join(out_dir, task)
+        os.makedirs(tdir, exist_ok=True)
+        St.to_csv(os.path.join(tdir, os.path.basename(csv)), index=False)
+        print('wrote', plot_overview(args, St, tdir, tag, sfx))
 
     n = len(S)
     lo, hi = args.overview_range
     print(f'\n{n} edge x band cells ({args.stats_subdir}); pointwise t-test, '
           f'window centers {lo:g}..{hi:g} ms (about 5% of windows expected '
           'by chance)')
-    fr = [f'frac_sig_pointwise_range_{w:g}' for w in args.wins
-          if f'frac_sig_pointwise_range_{w:g}' in S]
-    for w in args.wins:
-        col = f'frac_sig_pointwise_range_{w:g}'
-        if col in S:
-            print(f'  {w:g} ms: {int((S[col] > 0).sum())} cells with any '
-                  f'significant window, {int((S[col] >= 0.5).sum())} with '
-                  f'half or more; mean share {100 * S[col].mean():.1f}%')
-    top = S[(S[fr] >= 0.25).all(axis=1)].copy()
+    fr = {f'frac_sig_pointwise_range_{run_key(args, w)}': run_label(args, w)
+          for w in args.runs
+          if f'frac_sig_pointwise_range_{run_key(args, w)}' in S}
+    for col, lbl in fr.items():
+        print(f'  {lbl}: {int((S[col] > 0).sum())} cells with any '
+              f'significant window, {int((S[col] >= 0.5).sum())} with '
+              f'half or more; mean share {100 * S[col].mean():.1f}%')
+    cols = list(fr)
+    top = S[(S[cols] >= 0.25).all(axis=1)].copy()
     if len(top):
-        top[fr] = (100 * top[fr]).round(0)
-        print('\ncells with >= 25% of the range significant at every window '
-              'length (% of windows):')
-        print(top[['task', 'stim', 'measure', 'src', 'tgt', 'band'] + fr]
-              .rename(columns={c: c.replace('frac_sig_pointwise_range_', '')
-                               + ' ms' for c in fr}).to_string(index=False))
+        top[cols] = (100 * top[cols]).round(0)
+        print(f'\ncells with >= 25% of the range significant at every '
+              f'{args.sweep} (% of windows):')
+        print(top[['task', 'stim', 'measure', 'src', 'tgt', 'band'] + cols]
+              .rename(columns=fr).to_string(index=False))
 
 
 if __name__ == '__main__':
