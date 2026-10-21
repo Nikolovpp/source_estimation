@@ -25,10 +25,10 @@ Swapping the localizer spheres for another parcellation of the same size does no
 |---|---|---|
 | eLORETA / sLORETA | `inverse_pipelines.py` (core) | `run_minimum_norm_lowram(method=…)` on the shared fixed-orientation inverse; `run_inverse_lowram()` dispatcher; `--method {dSPM,sLORETA,eLORETA,LCMV}` in every runner. eLORETA output stored in nA·m (×1e9) to keep the float32 caches and absolute regularizers sane. Smoke-tested on EEGPROD4003/perception. |
 | `sensorEquiv` atlas | `config.py` (core) | The four sensor pseudo-channel ROIs (Temporal, Inferior_Frontal, Superior_Frontal, Superior_Parietal; HCPMMP1 composites) + `Visual` (V1–V3) null ROI. Own atlas name ⇒ own cache dirs, no collision with the 16-ROI HCPMMP1 caches. `VISUAL_CONTROL_ROI` gives a visual ROI for aparc/HCPMMP1/Schaefer200 too. |
-| 500 Hz caches | `--fs 500` on the runners | Source-localizes the continuous-resampled 500 Hz EEGLAB exports into a separate `raw_fs500` / `leakage_corrected_fs500` cache dir (4× smaller and faster; same 0.1–30 Hz band). Smoke-tested for both tasks. |
+| 500 Hz caches | `--fs 500` on the runners | Source-localizes the continuous-resampled 500 Hz EEGLAB exports into a separate `raw_fs500` / `leakage_corrected_fs500` cache dir (4× smaller and faster; same 0.1–30 Hz band). Smoke-tested for both tasks. **Rule (user, 2026-10-22): decoding runs on the 2000 Hz caches, GC on the 500 Hz caches** — the driver localizes both rates (`DEC_FS=2000`, `GC_FS=500`). |
 | Windows of interest | `config.GC_WINDOWS_OF_INTEREST` | overtProd `phonloop` −1.2..−0.8 s, `preonset` −0.5..0 s; perception `auditory` 0.15..0.30 s. Used by the latency script, the leakage comparison and the translation-arm stats. |
 | Resolution analysis | `resolution_analysis.py` | ROI-level CTF/PSF of the pipeline's own inverses (no full resolution matrix): pattern overlap \|cos\| = expected zero-lag correlation, cross-talk %, se_own, spatial dispersion, peak location; sensor pseudo-channels on the same footing; brain maps optional. |
-| Translation arm | `run_translation_arm.sh` | localize → decode → latency → GC → stats for `sensorEquiv` × {dSPM, eLORETA, sLORETA}, raw, 500 Hz, sensor BSMART settings (order 10 / 40 ms / fs 500 / normalize none / 1 PC), plain GC + TRGC, stats on the full span and per window of interest. |
+| Translation arm | `run_translation_arm.sh` | localize (2000 Hz for decoding, 500 Hz for GC) → decode → latency → GC → stats for `sensorEquiv` × {dSPM, eLORETA, sLORETA}, raw, sensor BSMART settings (order 10 / 40 ms / fs 500 / normalize none / 1 PC), plain GC + TRGC, stats on the full span and per window of interest. |
 | Decoding timing | `decode_onset_latency.py` | Jackknife onset/peak latencies per ROI, ROI-vs-control cluster test over time, ROI × time RM-ANOVA cluster test, fixed-window accuracy vs control. Works on the existing custom results with `--control-roi vwfa-lh`. |
 | Leakage check | `compare_gc_leakage_arms.py` | Raw vs leakage-corrected arms of one GC config: overlays, arm similarity, fixed-window tests. Already run on `order10_win40ms_fs500` (results below). |
 
@@ -49,7 +49,7 @@ python exploratory/resolution_analysis.py --task overtProd --stim-class prodDiff
 python exploratory/resolution_analysis.py --task perception --stim-class percDiff \
     --methods dSPM sLORETA eLORETA LCMV --atlases custom sensorEquiv --n-jobs 8
 
-# B. translation arm, all stages (~120 GB of caches per method at 500 Hz)
+# B. translation arm, all stages (~600 GB of caches per method: 2000 Hz for decoding + 500 Hz for GC)
 bash exploratory/run_translation_arm.sh
 #   or stage by stage:
 STEPS=localize bash exploratory/run_translation_arm.sh
@@ -83,7 +83,7 @@ Outputs to look at, in order:
 ## 6. Notes and caveats
 
 * `sensorEquiv` composites share parcel lists with `SPEECH_ROIS['HCPMMP1']`; Temporal and Superior_Parietal are large (13 and 12 parcels).
-* The GC result path does not encode `--fs`; keep one sampling-rate variant per atlas (the arm uses 500 Hz throughout).
+* The decoding and GC result paths do not encode `--fs`; the arm's convention is fixed: decoding results come from the 2000 Hz caches, GC results from the 500 Hz caches.
 * `run_decode.py` requests every ROI of the atlas; a cache written with `--roi-subset` lacks the others and the subject is skipped — localize the full `sensorEquiv` set.
 * LCMV at 500 Hz input is a new arm, not comparable to the 2048-Hz LCMV caches (data-adaptive filter; see `project_gc_downsampling_order`).
 * The stats baselines for the windows-of-interest passes are the `_bl` ones (overtProd −1.47..−1.37 s, perception −0.08..0 s); the full-span pass uses the sensor-faithful leading 100 ms.

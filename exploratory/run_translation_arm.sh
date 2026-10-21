@@ -16,7 +16,11 @@
 #   inverse    dSPM, eLORETA and sLORETA (minimum-norm family; LCMV optional —
 #              it suppresses the correlated bilateral auditory/motor sources
 #              and produced the collapse bug), raw (no leakage correction:
-#              TRGC is the single leakage control), 500 Hz input files
+#              TRGC is the single leakage control)
+#   input fs   DECODING runs on the native 2000 Hz exports (DEC_FS=2000), GC
+#              on the 500 Hz exports (GC_FS=500) — user rule 2026-10-22. The
+#              localize stage therefore writes one cache per sampling rate
+#              (<arm>/ for 2000 Hz, <arm>_fs500/ for 500 Hz).
 #   decoding   logistic, tuned, 40 ms / 5 ms, no pseudo-trials (= the custom
 #              ROI runs), then exploratory/decode_onset_latency.py (timing vs
 #              the Visual control)
@@ -39,7 +43,8 @@
 #   METHODS   "dSPM eLORETA sLORETA"   add LCMV to include the beamformer
 #   TASKS     "overtProd perception"
 #   STIMS     "prodDiff percDiff"
-#   FS        500        input EEGLAB export (500 = 4x smaller caches; 2000 native)
+#   DEC_FS    2000       EEGLAB export source-localized for DECODING (native)
+#   GC_FS     500        EEGLAB export source-localized for GC (4x smaller caches)
 #   LOC_JOBS  8          subjects in parallel for source localization
 #   DEC_JOBS  64         (ROI x window) workers for run_decode.py
 #   GC_JOBS   10         pair workers inside run_granger.py (10 pairs)
@@ -47,9 +52,10 @@
 #   LEAK      ""         set to "--leakage-correction" for the double-corrected arm
 #   DRY_RUN   0          1 = print commands only
 #
-# DISK. sensorEquiv vertex caches at 500 Hz: ~2 GB (overtProd) / ~1 GB
-# (perception) per subject per contrast => ~120 GB per method for all four
-# cells; the runner prints the free space of ROI_TIMESERIES_SAVE_ROOT first.
+# DISK. sensorEquiv vertex caches: ~8 GB (overtProd) / ~4 GB (perception) per
+# subject per contrast at 2000 Hz, a quarter of that at 500 Hz => ~600 GB per
+# method for both rates and all four cells; the runner prints the free space
+# of ROI_TIMESERIES_SAVE_ROOT first.
 #
 #   conda activate mne           # the script activates it itself
 #   bash exploratory/run_translation_arm.sh
@@ -63,7 +69,8 @@ TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 ATLAS="${ATLAS:-sensorEquiv}"
 FEAT="${FEAT:-vertex_selectkbest}"
-FS="${FS:-500}"
+DEC_FS="${DEC_FS:-2000}"
+GC_FS="${GC_FS:-500}"
 LEAK="${LEAK:-}"
 LOC_JOBS="${LOC_JOBS:-8}"
 DEC_JOBS="${DEC_JOBS:-64}"
@@ -79,7 +86,10 @@ STATS_JOBS="${STATS_JOBS:-8}"
 DRY_RUN="${DRY_RUN:-0}"
 
 LEAK_TAG=raw; [ -n "$LEAK" ] && LEAK_TAG=leakage_corrected
-FS_FLAG=""; [ "$FS" != "2000" ] && FS_FLAG="--fs $FS"
+fs_flag () { [ "$1" != "2000" ] && echo "--fs $1"; return 0; }
+# sampling rates to localize: the decoding one and the GC one (deduplicated)
+LOC_FS="$DEC_FS"; [ "$GC_FS" != "$DEC_FS" ] && LOC_FS="$DEC_FS $GC_FS"
+GC_CACHE_TAG="$LEAK_TAG"; [ "$GC_FS" != "2000" ] && GC_CACHE_TAG="${LEAK_TAG}_fs${GC_FS}"
 LOG_ROOT="logs/translation_arm"
 mkdir -p "$LOG_ROOT"
 
@@ -108,28 +118,28 @@ run () {   # run <log> <cmd...>
 }
 has () { case " $STEPS " in *" $1 "*) return 0;; esac; return 1; }
 
-echo "translation arm: $ATLAS / methods [$METHODS] / tasks [$TASKS] / stims [$STIMS] / fs $FS / $LEAK_TAG"
+echo "translation arm: $ATLAS / methods [$METHODS] / tasks [$TASKS] / stims [$STIMS] / decode @ ${DEC_FS} Hz, GC @ ${GC_FS} Hz / $LEAK_TAG"
 echo "  steps: $STEPS"
 echo
 
 # ── 1. source localization ──────────────────────────────────────────────
 if has localize; then
-echo "== localize (subject-parallel, $LOC_JOBS workers)"
-for T in $TASKS; do for M in $METHODS; do
-    run "$LOG_ROOT/localize_${T}_${M}.log" \
+echo "== localize (subject-parallel, $LOC_JOBS workers; rates: $LOC_FS Hz)"
+for FS in $LOC_FS; do for T in $TASKS; do for M in $METHODS; do
+    run "$LOG_ROOT/localize_${T}_${M}_fs${FS}.log" \
         python run_source_localize.py --task "$T" --stim-class $STIMS --method "$M" \
-            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $FS_FLAG --n-jobs "$LOC_JOBS"
-done; done
+            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$FS") --n-jobs "$LOC_JOBS"
+done; done; done
 echo
 fi
 
 # ── 2. decoding ─────────────────────────────────────────────────────────
 if has decode; then
-echo "== decode (subject-sequential, $DEC_JOBS ROI x window workers)"
+echo "== decode (subject-sequential, $DEC_JOBS ROI x window workers, ${DEC_FS} Hz caches)"
 for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
     run "$LOG_ROOT/decode_${T}_${S}_${M}.log" \
         python run_decode.py --task "$T" --stim-class "$S" --method "$M" \
-            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $FS_FLAG \
+            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$DEC_FS") \
             --classifier "$CLASSIFIER" --tune-hyperparams --n-jobs "$DEC_JOBS"
 done; done; done
 echo
@@ -150,11 +160,11 @@ fi
 
 # ── 4. GC: all 10 pairs of the 5 ROIs, plain GC + TRGC ──────────────────
 if has gc; then
-echo "== gc (order $ORDER, $WIN_MS ms @ $TARGET_FS Hz, normalize none, 1 PC/ROI, --trgc)"
+echo "== gc (order $ORDER, $WIN_MS ms @ $TARGET_FS Hz, normalize none, 1 PC/ROI, --trgc; ${GC_FS} Hz caches)"
 for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
     run "$LOG_ROOT/gc_${T}_${S}_${M}.log" \
         python run_granger.py --task "$T" --stim-class "$S" --method "$M" \
-            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $FS_FLAG --gc-mode pairwise \
+            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$GC_FS") --gc-mode pairwise \
             --order "$ORDER" --win-ms "$WIN_MS" --target-fs "$TARGET_FS" \
             --normalize none --n-pcs 1 --trgc --n-jobs "$GC_JOBS"
 done; done; done
