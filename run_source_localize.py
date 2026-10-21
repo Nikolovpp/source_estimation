@@ -268,30 +268,6 @@ def main():
     print(f'  Input fs:     {args.fs} Hz'
           f'{"  (cache dir suffix _fs500)" if args.fs != 2000 else ""}')
 
-    # Preflight: show WHERE caches will be written and whether the volume has
-    # room.  The vertex caches are ~2.5 GB (overtProd) / ~1.2 GB (perception)
-    # per subject; a full drive truncates writes silently.  Set
-    # ROI_TIMESERIES_SAVE_ROOT in config.env to redirect to a roomy volume.
-    import shutil
-    from config import ROI_TIMESERIES_SAVE_ROOT
-    probe = ROI_TIMESERIES_SAVE_ROOT
-    while not probe.exists() and probe != probe.parent:
-        probe = probe.parent
-    try:
-        free_gb = shutil.disk_usage(probe).free / 1e9
-    except Exception:
-        free_gb = float('nan')
-    per = 2.5 if args.task == 'overtProd' else 1.2
-    if args.fs != 2000:
-        per /= 4.0
-    est_gb = len(subjects) * per * len(stim_classes)
-    print(f'  Save root:    {ROI_TIMESERIES_SAVE_ROOT}')
-    print(f'  Free space:   {free_gb:.0f} GB on {probe} | est. output ~{est_gb:.0f} GB')
-    if not (free_gb != free_gb) and free_gb < est_gb * 1.3:   # nan-safe check
-        print(f'  *** WARNING: free space is tight vs the estimated output — writes may '
-              f'TRUNCATE.  Point ROI_TIMESERIES_SAVE_ROOT at a bigger volume. ***')
-    print()
-
     print('Setting up fsaverage source space and ROI labels...')
     subjects_dir, fs_dir, src, bem = setup_fsaverage()
 
@@ -303,6 +279,40 @@ def main():
 
     if args.roi_subset:
         roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
+
+    # Preflight: show WHERE caches will be written, how big they will be and
+    # whether the volume has room.  Size is estimated from the ROI set: the
+    # vertex caches hold n_epochs x n_vertices(ico-5) x n_times float32 per
+    # subject, i.e. ~3.5 MB per ico-5 vertex for a 2048 Hz overtProd subject
+    # (222 epochs x 3891 samples), a quarter of that at 500 Hz and for
+    # perception (246 x 1639).  Labels are on the 163842-vertex fsaverage
+    # surface; ico-5 keeps 1 in 16.  A full drive truncates writes silently.
+    # Set ROI_TIMESERIES_SAVE_ROOT in config.env to redirect to a roomy
+    # volume.  Each worker also holds its subject's caches in RAM (plus the
+    # epochs and one full-cortex STC), so size --n-jobs by this number too.
+    import shutil
+    from config import ROI_TIMESERIES_SAVE_ROOT
+    probe = ROI_TIMESERIES_SAVE_ROOT
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        free_gb = shutil.disk_usage(probe).free / 1e9
+    except Exception:
+        free_gb = float('nan')
+    n_vert_ico5 = sum(len(l.vertices) for l in roi_dict.values()) / 16.0
+    samples = (222 * 3891) if args.task == 'overtProd' else (246 * 1639)
+    samples *= args.fs / 2000.0
+    per = n_vert_ico5 * samples * 4 / 1e9          # GB per subject per contrast
+    est_gb = len(subjects) * per * len(stim_classes)
+    print(f'  Save root:    {ROI_TIMESERIES_SAVE_ROOT}')
+    print(f'  Cache size:   ~{per:.1f} GB per subject per contrast '
+          f'(~{n_vert_ico5:.0f} ico-5 vertices in {len(roi_dict)} ROIs); '
+          f'~{per:.1f} GB RAM per worker on top of the epochs')
+    print(f'  Free space:   {free_gb:.0f} GB on {probe} | est. output ~{est_gb:.0f} GB')
+    if not (free_gb != free_gb) and free_gb < est_gb * 1.3:   # nan-safe check
+        print(f'  *** WARNING: free space is tight vs the estimated output — writes may '
+              f'TRUNCATE.  Point ROI_TIMESERIES_SAVE_ROOT at a bigger volume. ***')
+    print()
 
     # Build the forward solution ONCE (it is stim-class-independent — same montage
     # / info) if ANY (stim-class, subject) is uncached; reuse it across all

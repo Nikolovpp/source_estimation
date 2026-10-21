@@ -45,7 +45,11 @@
 #   STIMS     "prodDiff percDiff"
 #   DEC_FS    2000       EEGLAB export source-localized for DECODING (native)
 #   GC_FS     500        EEGLAB export source-localized for GC (4x smaller caches)
-#   LOC_JOBS  8          subjects in parallel for source localization
+#   LOC_JOBS  4          subjects in parallel for source localization. Each
+#                        worker holds its subject's vertex caches in RAM (~9 GB
+#                        for a 2048 Hz overtProd subject with the 5 sensorEquiv
+#                        ROIs, plus ~0.5 GB epochs + one full-cortex STC); 8
+#                        workers took the workstation down on 2026-10-22.
 #   DEC_JOBS  64         (ROI x window) workers for run_decode.py
 #   GC_JOBS   10         pair workers inside run_granger.py (10 pairs)
 #   ORDER / WIN_MS / TARGET_FS   10 / 40 / 500 (the sensor BSMART config)
@@ -58,9 +62,18 @@
 # of ROI_TIMESERIES_SAVE_ROOT first.
 #
 #   conda activate mne           # the script activates it itself
-#   bash exploratory/run_translation_arm.sh
+#   # detach it from the terminal/tmux so a crashed session does not kill it:
+#   nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_driver.log 2>&1 &
+#   tail -f logs/translation_arm_driver.log
 #   STEPS=localize METHODS="dSPM" bash exploratory/run_translation_arm.sh
 #   STEPS="gc stats" TASKS=overtProd bash exploratory/run_translation_arm.sh
+#
+# RESUMING. Every stage skips work that is already on disk: localize skips
+# subjects whose cache exists, gc skips subjects whose npz exists, stats
+# simply recompute (cheap). Re-running the same command after a crash
+# continues where it stopped; the decode stage re-decodes every subject of
+# a cell (run_decode.py has no per-subject skip), so use STEPS to leave out
+# cells that already finished.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -72,7 +85,7 @@ FEAT="${FEAT:-vertex_selectkbest}"
 DEC_FS="${DEC_FS:-2000}"
 GC_FS="${GC_FS:-500}"
 LEAK="${LEAK:-}"
-LOC_JOBS="${LOC_JOBS:-8}"
+LOC_JOBS="${LOC_JOBS:-4}"
 DEC_JOBS="${DEC_JOBS:-64}"
 GC_JOBS="${GC_JOBS:-10}"
 ORDER="${ORDER:-10}"
