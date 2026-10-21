@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))
                 if '__file__' in dir() else os.getcwd())
 
 from config import (
+    INVERSE_METHODS, ATLAS_CHOICES,
     SUBJECT_IDS, DECODE_OUTPUT_ROOT, SPEECH_ROIS,
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
     DEFAULT_C, ROI_TIMESERIES_ROOT, classifier_path_segment,
@@ -43,6 +44,7 @@ from config import (
 # Constants (not configurable via CLI)
 # ──────────────────────────────────────────────────────────────
 N_PERMUTATIONS = 1024
+CACHE_FS = 2000   # set from --fs in main(); read by _load_subject_npz
 TFCE_THRESHOLD = dict(start=0, step=0.2)
 
 STIM_COLORS = {
@@ -95,12 +97,12 @@ def parse_args():
     p.add_argument('--task', required=True,
                    choices=['perception', 'overtProd'])
     p.add_argument('--method', required=True,
-                   choices=['dSPM', 'LCMV'])
+                   choices=INVERSE_METHODS)
     p.add_argument('--feature-mode', required=True,
                    choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                             'vertex_selectkbest_all'])
     p.add_argument('--atlas', required=True,
-                   choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+                   choices=ATLAS_CHOICES)
     p.add_argument('--leakage-correction', action='store_true', default=False)
     p.add_argument('--pseudo-trial-size', type=int, default=0,
                    help='Pseudo-trial group size used during SVM decoding (must match the run)')
@@ -126,6 +128,9 @@ def parse_args():
                    default=['percDiff', 'prodDiff'],
                    choices=['percDiff', 'prodDiff'])
     p.add_argument('--subjects', nargs='+', default=SUBJECT_IDS)
+    p.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
+                   help='sampling-rate variant of the ROI cache the ERPs are '
+                        'read from (must match run_source_localize.py --fs)')
     p.add_argument('--skip-erp', action='store_true',
                    help='Skip source ERP computation (slow)')
     return p.parse_args()
@@ -569,7 +574,8 @@ def _load_subject_npz(subj, task, method, stim_class, feat_mode,
     roi_data_dict maps roi_name -> (n_epochs, n_times).
     """
     npz_file = find_cached_npz(task, method, atlas, feat_mode,
-                               leakage_correction, subj, stim_class)
+                               leakage_correction, subj, stim_class,
+                               fs=CACHE_FS)
     if npz_file is None:
         return None
     data = np.load(npz_file, allow_pickle=True)
@@ -596,7 +602,7 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
     Saves the result as .npz so future runs load from cache.
     """
     from data_loader import load_subject_epochs
-    from inverse_pipelines import run_dspm_lowram, run_lcmv_lowram
+    from inverse_pipelines import run_inverse_lowram
 
     try:
         epochs, y, sfreq = load_subject_epochs(subj, task, stim_class)
@@ -604,16 +610,10 @@ def _compute_one_subject_erp(subj, task, method, stim_class,
         print(f'    SKIP {subj}: {e}')
         return None
 
-    if method == 'dSPM':
-        X_roi, stc_times = run_dspm_lowram(
-            epochs, fwd, baseline_tmin, baseline_tmax,
-            roi_labels, src, feature_mode=feat_mode
-        )
-    elif method == 'LCMV':
-        X_roi, stc_times = run_lcmv_lowram(
-            epochs, fwd, baseline_tmin, baseline_tmax,
-            roi_labels, src, feature_mode=feat_mode
-        )
+    X_roi, stc_times = run_inverse_lowram(
+        method, epochs, fwd, baseline_tmin, baseline_tmax,
+        roi_labels, src, feature_mode=feat_mode
+    )
 
     # X_roi shape: (n_epochs, n_rois, n_times)
     roi_data = {}
@@ -811,6 +811,8 @@ def plot_source_erps(all_roi_data, all_y, times_ms, task, method, ylim=None):
 # ──────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
+    global CACHE_FS
+    CACHE_FS = args.fs
 
     task = args.task
     method = args.method

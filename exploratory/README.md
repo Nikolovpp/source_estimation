@@ -70,6 +70,25 @@ New one-off, sweep, or figure code belongs here, not at the repo root.
 - `plot_lcmv_order_sweep.py`, `plot_sampling_rate_tradeoff.py` — LCMV order
   and sampling-rate analyses behind the fs200 decision.
 
+## Source-space strategy 2026-10 (resolvability + translation arm)
+
+See `SOURCE_SPACE_STRATEGY_PLAN.md` in this directory for the rationale,
+the workstation run order and the decision rule.
+
+- `resolution_analysis.py` — ROI-level cross-talk / point-spread of the
+  pipeline's own inverses (dSPM, sLORETA, eLORETA, LCMV) for the custom and
+  `sensorEquiv` ROI sets, plus the sensor pseudo-channels on the same
+  footing; answers "can 64 channels separate these ROIs at all?".
+- `run_translation_arm.sh` — the sensor-space manuscript analysis re-done
+  literally in source space: `sensorEquiv` atlas (4 pseudo-channel ROIs +
+  Visual control), minimum-norm inverses, raw, 500 Hz, sensor BSMART GC
+  settings, stats on the full span and on `config.GC_WINDOWS_OF_INTEREST`.
+- `decode_onset_latency.py` — decoding TIMING per ROI against a null ROI:
+  jackknife onsets, ROI-vs-control cluster test, ROI x time RM-ANOVA,
+  fixed-window accuracy.
+- `compare_gc_leakage_arms.py` — raw vs leakage-corrected arms of one GC
+  config (overlays, similarity, fixed-window tests).
+
 ## Decoding exploration
 
 - `explore_hyperparams_summary.py`, `explore_viz_stats.py` — summaries and

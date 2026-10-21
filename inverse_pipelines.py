@@ -1,19 +1,45 @@
 """
-Two inverse-modeling pipelines for projecting sensor-space EEG epochs
-into source space:
+Inverse-modeling pipelines for projecting sensor-space EEG epochs into
+source space:
 
-  1. dSPM (dynamic Statistical Parametric Mapping) — minimum-norm family
+  1. minimum-norm family on ONE shared inverse operator (fixed orientation,
+     depth 0.8, shrunk baseline noise covariance):
+       - dSPM    (noise-normalized minimum norm; the original pipeline)
+       - sLORETA (standardized LORETA; resolution-matrix-normalized)
+       - eLORETA (exact LORETA; iterative weights, zero localization
+                  error for single sources; MNE ignores the depth prior
+                  for it by design — eLORETA compensates depth itself)
   2. LCMV (Linearly Constrained Minimum Variance) beamformer
 
-Both return lists of SourceEstimate objects with identical structure,
-so downstream ROI extraction and SVM decoding code is shared.
+All return the same structure, so downstream ROI extraction and decoding
+code is shared.  ``run_inverse_lowram(method, ...)`` dispatches on the
+method name; ``make_minimum_norm_inverse`` / ``make_lcmv_filters`` expose
+the fitted operators so other tools (e.g. the resolution analysis in
+exploratory/resolution_analysis.py) can use EXACTLY the pipeline's inverse.
 """
 import numpy as np
 import mne
 from mne.minimum_norm import make_inverse_operator, apply_inverse_epochs
 from mne.beamformer import make_lcmv, apply_lcmv_epochs
 
-from config import LAMBDA2
+from config import LAMBDA2, MINIMUM_NORM_METHODS, INVERSE_METHODS
+
+# eLORETA (like plain MNE) returns current density in A·m, ~1e-11 per vertex
+# for single trials, whereas dSPM / sLORETA are unitless noise-normalized
+# values of order 1.  The downstream code has small ABSOLUTE regularizers
+# (leakage_correction reg 1e-6 / 1e-10, rank tolerances) and float32 caches,
+# so eLORETA estimates are stored in nA·m (x 1e9) to keep them in a sane
+# numeric range.  Scaling is a constant per run: decoding (StandardScaler),
+# GC (scale-invariant) and leakage regression are unaffected in principle,
+# and only the numerics are protected.
+METHOD_OUTPUT_SCALE = {'eLORETA': 1e9}
+
+
+def _scaled(stc_gen, scale):
+    for stc in stc_gen:
+        if scale != 1.0:
+            stc.data *= scale
+        yield stc
 
 
 def _compute_data_rank(epochs):
@@ -36,6 +62,30 @@ def _compute_data_rank(epochs):
     same signal.  See README "EEG Reference and Data Rank".
     """
     return mne.compute_rank(epochs, verbose='error')
+
+
+def run_minimum_norm(epochs, fwd, baseline_tmin, baseline_tmax,
+                     method='dSPM'):
+    """Full-STC minimum-norm family (dSPM / sLORETA / eLORETA) on the
+    pipeline's shared inverse operator.  Returns a list of SourceEstimate
+    (one per epoch) — RAM-heavy; prefer run_inverse_lowram for full runs."""
+    if method not in MINIMUM_NORM_METHODS:
+        raise ValueError(f'method must be one of {MINIMUM_NORM_METHODS}, '
+                         f'got {method!r}')
+    inverse_operator, _, _ = make_minimum_norm_inverse(
+        epochs, fwd, baseline_tmin, baseline_tmax)
+    stcs = apply_inverse_epochs(
+        epochs, inverse_operator, lambda2=LAMBDA2, method=method,
+        pick_ori=None, nave=1, return_generator=False, verbose=True,
+    )
+    scale = METHOD_OUTPUT_SCALE.get(method, 1.0)
+    if scale != 1.0:
+        for stc in stcs:
+            stc.data *= scale
+    print(f'  {method}: {len(stcs)} source estimates, '
+          f'{stcs[0].data.shape[0]} vertices, '
+          f'{stcs[0].data.shape[1]} time points')
+    return stcs
 
 
 def run_dspm(epochs, fwd, baseline_tmin, baseline_tmax):
@@ -247,19 +297,12 @@ def _extract_rois_from_generator(stc_gen, n_epochs, roi_labels, src,
     return X_roi, stc_times
 
 
-def run_dspm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
-                    roi_labels, src, feature_mode='pca_flip'):
-    """
-    Low-RAM dSPM: uses a generator to extract ROI data per-epoch
-    without ever holding all SourceEstimates in memory.
+def make_minimum_norm_inverse(epochs, fwd, baseline_tmin, baseline_tmax):
+    """Fit the pipeline's minimum-norm inverse operator (shared by dSPM,
+    sLORETA and eLORETA): fixed orientation, depth 0.8, shrunk noise
+    covariance from the pre-stimulus baseline, data-driven rank.
 
-    Returns
-    -------
-    X_roi : ndarray or dict
-        ROI feature data (see _extract_rois_from_generator).
-    stc_times : ndarray
-        Time vector from the source estimates.
-    """
+    Returns (inverse_operator, noise_cov, rank)."""
     rank = _compute_data_rank(epochs)
     print(f'  Data rank: {rank}')
     print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s')
@@ -268,20 +311,74 @@ def run_dspm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
         epochs, tmin=baseline_tmin, tmax=baseline_tmax,
         method='shrunk', rank=rank, verbose=True,
     )
-
     inverse_operator = make_inverse_operator(
         epochs.info, fwd, noise_cov,
         loose=0.0, depth=0.8, fixed=True, rank=rank, verbose=True,
     )
+    return inverse_operator, noise_cov, rank
+
+
+def make_lcmv_filters(epochs, fwd, baseline_tmin, baseline_tmax):
+    """Fit the pipeline's LCMV spatial filter: empirical data covariance
+    from the post-baseline window, shrunk baseline noise covariance,
+    max-power orientation, unit-noise-gain, reg 0.05, data-driven rank.
+
+    Returns (filters, data_cov, noise_cov, rank)."""
+    rank = _compute_data_rank(epochs)
+    print(f'  Data rank: {rank}')
+    print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s')
+
+    data_cov = mne.compute_covariance(
+        epochs, tmin=baseline_tmax, tmax=None,
+        method='empirical', rank=rank, verbose=True,
+    )
+    noise_cov = mne.compute_covariance(
+        epochs, tmin=baseline_tmin, tmax=baseline_tmax,
+        method='shrunk', rank=rank, verbose=True,
+    )
+    filters = make_lcmv(
+        epochs.info, fwd, data_cov, reg=0.05,
+        noise_cov=noise_cov, pick_ori='max-power',
+        weight_norm='unit-noise-gain', reduce_rank=True,
+        rank=rank, verbose=True,
+    )
+    return filters, data_cov, noise_cov, rank
+
+
+def run_minimum_norm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                            roi_labels, src, feature_mode='pca_flip',
+                            method='dSPM'):
+    """
+    Low-RAM minimum-norm family (dSPM / sLORETA / eLORETA): one shared
+    inverse operator, ``method`` selects the estimator at apply time.  Uses
+    a generator to extract ROI data per-epoch without ever holding all
+    SourceEstimates in memory.
+
+    Returns
+    -------
+    X_roi : ndarray or dict
+        ROI feature data (see _extract_rois_from_generator).
+    stc_times : ndarray
+        Time vector from the source estimates.
+    """
+    if method not in MINIMUM_NORM_METHODS:
+        raise ValueError(f'method must be one of {MINIMUM_NORM_METHODS}, '
+                         f'got {method!r}')
+    inverse_operator, noise_cov, _ = make_minimum_norm_inverse(
+        epochs, fwd, baseline_tmin, baseline_tmax)
 
     stc_gen = apply_inverse_epochs(
         epochs, inverse_operator, lambda2=LAMBDA2,
-        method='dSPM', pick_ori=None, nave=1,
+        method=method, pick_ori=None, nave=1,
         return_generator=True, verbose=True,
     )
+    scale = METHOD_OUTPUT_SCALE.get(method, 1.0)
+    if scale != 1.0:
+        print(f'  {method}: output scaled by {scale:g} (A·m -> nA·m)')
+        stc_gen = _scaled(stc_gen, scale)
 
     n_epochs = len(epochs)
-    print(f'  dSPM (low-RAM): processing {n_epochs} epochs via generator...')
+    print(f'  {method} (low-RAM): processing {n_epochs} epochs via generator...')
 
     X_roi, stc_times = _extract_rois_from_generator(
         stc_gen, n_epochs, roi_labels, src, feature_mode
@@ -293,6 +390,28 @@ def run_dspm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
     gc.collect()
 
     return X_roi, stc_times
+
+
+def run_dspm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                    roi_labels, src, feature_mode='pca_flip'):
+    """Low-RAM dSPM (kept for backward compatibility; see
+    run_minimum_norm_lowram)."""
+    return run_minimum_norm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                                   roi_labels, src, feature_mode, 'dSPM')
+
+
+def run_sloreta_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                       roi_labels, src, feature_mode='pca_flip'):
+    """Low-RAM sLORETA on the pipeline's minimum-norm inverse operator."""
+    return run_minimum_norm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                                   roi_labels, src, feature_mode, 'sLORETA')
+
+
+def run_eloreta_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                       roi_labels, src, feature_mode='pca_flip'):
+    """Low-RAM eLORETA on the pipeline's minimum-norm inverse operator."""
+    return run_minimum_norm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
+                                   roi_labels, src, feature_mode, 'eLORETA')
 
 
 def run_lcmv_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
@@ -308,26 +427,8 @@ def run_lcmv_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
     stc_times : ndarray
         Time vector from the source estimates.
     """
-    rank = _compute_data_rank(epochs)
-    print(f'  Data rank: {rank}')
-    print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s')
-
-    data_cov = mne.compute_covariance(
-        epochs, tmin=baseline_tmax, tmax=None,
-        method='empirical', rank=rank, verbose=True,
-    )
-
-    noise_cov = mne.compute_covariance(
-        epochs, tmin=baseline_tmin, tmax=baseline_tmax,
-        method='shrunk', rank=rank, verbose=True,
-    )
-
-    filters = make_lcmv(
-        epochs.info, fwd, data_cov, reg=0.05,
-        noise_cov=noise_cov, pick_ori='max-power',
-        weight_norm='unit-noise-gain', reduce_rank=True,
-        rank=rank, verbose=True,
-    )
+    filters, data_cov, noise_cov, _ = make_lcmv_filters(
+        epochs, fwd, baseline_tmin, baseline_tmax)
 
     stc_gen = apply_lcmv_epochs(
         epochs, filters,
@@ -346,3 +447,18 @@ def run_lcmv_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
     gc.collect()
 
     return X_roi, stc_times
+
+
+def run_inverse_lowram(method, epochs, fwd, baseline_tmin, baseline_tmax,
+                       roi_labels, src, feature_mode='pca_flip'):
+    """Dispatch on the inverse method name (config.INVERSE_METHODS)."""
+    if method in MINIMUM_NORM_METHODS:
+        return run_minimum_norm_lowram(
+            epochs, fwd, baseline_tmin, baseline_tmax,
+            roi_labels, src, feature_mode, method)
+    if method == 'LCMV':
+        return run_lcmv_lowram(
+            epochs, fwd, baseline_tmin, baseline_tmax,
+            roi_labels, src, feature_mode)
+    raise ValueError(f'Unknown inverse method {method!r}; '
+                     f'choose from {INVERSE_METHODS}')

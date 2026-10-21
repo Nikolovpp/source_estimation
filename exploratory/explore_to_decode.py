@@ -48,9 +48,9 @@ def parse_args():
                    choices=['perception', 'overtProd'])
     p.add_argument('--stim-class', required=True,
                    choices=['prodDiff', 'percDiff'])
-    p.add_argument('--method', required=True, choices=['dSPM', 'LCMV'])
+    p.add_argument('--method', required=True, choices=['dSPM', 'sLORETA', 'eLORETA', 'LCMV'])
     p.add_argument('--atlas', required=True,
-                   choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+                   choices=['aparc', 'HCPMMP1', 'Schaefer200', 'sensorEquiv', 'custom'])
     p.add_argument('--feature-mode', required=True,
                    choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                             'vertex_selectkbest_all'])

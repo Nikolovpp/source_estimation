@@ -485,9 +485,9 @@ def parse_args():
                              'stim class only. Output files are written '
                              'under the primary --stim-class directory.')
     parser.add_argument('--method', required=True,
-                        choices=['dSPM', 'LCMV'])
+                        choices=['dSPM', 'sLORETA', 'eLORETA', 'LCMV'])
     parser.add_argument('--atlas', default='aparc',
-                        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+                        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'sensorEquiv', 'custom'])
     parser.add_argument('--feature-mode', default='pca_flip',
                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                                  'vertex_selectkbest_all'])

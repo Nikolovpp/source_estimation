@@ -916,7 +916,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--atlas', default='aparc',
-        choices=['aparc', 'Schaefer200', 'HCPMMP1', 'custom'],
+        choices=['aparc', 'Schaefer200', 'HCPMMP1', 'sensorEquiv', 'custom'],
         help='Cortical atlas for ROI parcellation (default: aparc). '
              '"custom" uses volumetric NIfTI ROIs from --custom-rois-dir.'
     )

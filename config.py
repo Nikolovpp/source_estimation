@@ -118,8 +118,24 @@ ATLAS_PARC_MAP = {
     'aparc': 'aparc',
     'HCPMMP1': 'HCPMMP1',
     'Schaefer200': 'Schaefer2018_200Parcels_17Networks_order',
+    # Translation arm (2026-10-21): the four sensor-space pseudo-channel
+    # ROIs plus a visual-cortex control, built from HCPMMP1 parcels.  Its
+    # own atlas name keeps the small 5-ROI caches apart from the 16-ROI
+    # HCPMMP1 caches (the cache path encodes the atlas, not the ROI set).
+    'sensorEquiv': 'HCPMMP1',
     # 'custom' is handled separately (volumetric NIfTI → surface projection)
 }
+
+# Every atlas a runner accepts (--atlas choices); keep the runners on this
+# list so a new atlas is added in one place.
+ATLAS_CHOICES = list(ATLAS_PARC_MAP) + ['custom']
+
+# Inverse methods a runner accepts (--method choices).  dSPM, sLORETA and
+# eLORETA share the minimum-norm inverse operator (inverse_pipelines.
+# MINIMUM_NORM_METHODS); LCMV is the beamformer.  The method is a path
+# component of every cache and result, so new methods never collide.
+MINIMUM_NORM_METHODS = ['dSPM', 'sLORETA', 'eLORETA']
+INVERSE_METHODS = MINIMUM_NORM_METHODS + ['LCMV']
 
 # ─────────────────────────────────────────────────────────────────────
 # Custom volumetric ROIs (functional-localizer based)
@@ -429,6 +445,38 @@ SPEECH_ROIS = {
     },
 }
 
+# ── Translation arm: sensor-equivalent ROIs + visual control ──────
+# The sensor-space manuscript analyses (SVM and BSMART GC) used four
+# 3-electrode pseudo-channels: Temporal (FT7/T7/TP7), Inferior_Frontal
+# (F5/FC5/FC3), Superior_Frontal (FCz/FC1/F1), Superior_Parietal
+# (CPz/CP1/P1).  This atlas is their literal source-space counterpart —
+# the same four HCPMMP1 composites defined above — plus 'Visual' (early
+# visual cortex V1-V3), a region with no role in an auditory/articulatory
+# task, as the null ROI for the decoding-latency and cross-talk checks.
+# Parcel lists are shared with SPEECH_ROIS['HCPMMP1'] by reference.
+SPEECH_ROIS['sensorEquiv'] = {
+    'Temporal':          SPEECH_ROIS['HCPMMP1']['Temporal'],
+    'Inferior_Frontal':  SPEECH_ROIS['HCPMMP1']['Inferior_Frontal'],
+    'Superior_Frontal':  SPEECH_ROIS['HCPMMP1']['Superior_Frontal'],
+    'Superior_Parietal': SPEECH_ROIS['HCPMMP1']['Superior_Parietal'],
+    'Visual': [
+        'L_V1_ROI-lh', 'L_V2_ROI-lh', 'L_V3_ROI-lh',
+    ],
+}
+# Visual-cortex control ROIs for the standard atlases (used by
+# exploratory/resolution_analysis.py and decode_onset_latency.py; NOT part
+# of SPEECH_ROIS, so existing HCPMMP1/Schaefer/aparc caches stay valid).
+VISUAL_CONTROL_ROI = {
+    'aparc': ['pericalcarine-lh', 'cuneus-lh', 'lingual-lh'],
+    'HCPMMP1': SPEECH_ROIS['sensorEquiv']['Visual'],
+    'Schaefer200': [
+        '17Networks_LH_VisCent_Striate_1-lh',
+        '17Networks_LH_VisPeri_StriCal_1-lh',
+        '17Networks_LH_VisCent_ExStr_1-lh',
+        '17Networks_LH_VisCent_ExStr_2-lh',
+    ],
+}
+
 # Ordered list of speech ROI names (for consistent iteration)
 SPEECH_ROI_NAMES = list(SPEECH_ROIS['aparc'].keys())
 
@@ -553,6 +601,20 @@ GC_TASK_END = {
     'overtProd':  0.320,
 }
 
+# A-priori windows of interest (seconds, window START times for GC, window
+# CENTER for decoding) — the fixed windows the task-level questions are asked
+# in (user decision 2026-10-21): WHEN motor-based or sound-based
+# representations come online during articulatory planning.
+#   overtProd  phonloop  -1.2..-0.8  phonological-loop / rehearsal period
+#              preonset  -0.5..0.0   pre-articulatory planning up to onset
+#   perception auditory   0.15..0.30 post-stimulus auditory-phonological window
+# granger_stats.py takes them as --task-start/--task-end; the translation-arm
+# driver (exploratory/run_translation_arm.sh) runs one stats pass per window.
+GC_WINDOWS_OF_INTEREST = {
+    'overtProd': {'phonloop': (-1.200, -0.800), 'preonset': (-0.500, 0.000)},
+    'perception': {'auditory': (0.150, 0.300)},
+}
+
 
 def cache_feat_mode(feat_mode):
     """Normalize a feature_mode to its cache-directory name.
@@ -566,16 +628,30 @@ def cache_feat_mode(feat_mode):
     return feat_mode
 
 
+def cache_leakage_tag(leakage_correction, fs=2000):
+    """Cache-directory segment for the leakage arm AND the input sampling
+    rate: 'raw' / 'leakage_corrected' for the native 2000 Hz exports (every
+    cache written before 2026-10-21), '<arm>_fs500' for caches built from the
+    continuous-resampled 500 Hz EEGLAB files (``--fs 500``).  The two hold
+    different data (and 4x different sizes), so they must never share a
+    path."""
+    tag = 'leakage_corrected' if leakage_correction else 'raw'
+    if int(fs) != 2000:
+        tag += f'_fs{int(fs)}'
+    return tag
+
+
 def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
-                    subj, stim_class):
+                    subj, stim_class, fs=2000):
     """Return the path to a cached .npz ROI timeseries file, or None.
 
     Checks ROI_TIMESERIES_ROOT first, then each path in
     ROI_TIMESERIES_EXTERNAL in order.  Also falls back to the legacy
     per-feat_mode directory name so existing ``vertex_pca`` /
-    ``vertex_selectkbest`` caches keep working.
+    ``vertex_selectkbest`` caches keep working.  ``fs`` selects the
+    sampling-rate variant of the cache (see cache_leakage_tag).
     """
-    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    leakage_tag = cache_leakage_tag(leakage_correction, fs)
     filename = f'{subj}_{task}_{stim_class}.npz'
     candidates = [cache_feat_mode(feat_mode)]
     if feat_mode not in candidates:

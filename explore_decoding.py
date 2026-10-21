@@ -81,6 +81,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
+    INVERSE_METHODS, ATLAS_CHOICES,
     SUBJECT_IDS, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
@@ -88,7 +89,10 @@ from config import (
 )
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
-from inverse_pipelines import run_dspm, run_lcmv
+from inverse_pipelines import run_minimum_norm, run_lcmv
+from config import MINIMUM_NORM_METHODS
+
+CACHE_FS = 2000   # set from --fs in main(); read by _load_subject
 from decoding import (
     extract_roi_data_vertices,
     extract_roi_data_pca_flip,
@@ -106,9 +110,9 @@ def parse_args():
     parser.add_argument('--stim-class', required=True,
                         choices=['prodDiff', 'percDiff'])
     parser.add_argument('--method', required=True,
-                        choices=['dSPM', 'LCMV'])
+                        choices=INVERSE_METHODS)
     parser.add_argument('--atlas', default='aparc',
-                        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+                        choices=ATLAS_CHOICES)
     roi_grp = parser.add_mutually_exclusive_group(required=True)
     roi_grp.add_argument('--roi',
                          help='Single ROI (fast-iteration mode, case-insensitive)')
@@ -118,6 +122,9 @@ def parse_args():
     parser.add_argument('--feature-mode', default='pca_flip',
                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                                  'vertex_selectkbest_all'])
+    parser.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
+                        help='sampling-rate variant of the ROI cache '
+                             '(must match run_source_localize.py --fs)')
     parser.add_argument('--subjects', nargs='+', default=None,
                         help='Subjects to process (default: all)')
     parser.add_argument('--classifiers', nargs='+',
@@ -210,10 +217,13 @@ def _compute_subject_rois(subj_id, task, stim_class, method, feature_mode,
         print(f'  SKIPPING {subj_id}: {e}')
         return None
 
-    if method == 'dSPM':
-        stcs = run_dspm(epochs, fwd, baseline_tmin, baseline_tmax)
+    if method in MINIMUM_NORM_METHODS:
+        stcs = run_minimum_norm(epochs, fwd, baseline_tmin, baseline_tmax,
+                                method=method)
     elif method == 'LCMV':
         stcs = run_lcmv(epochs, fwd, baseline_tmin, baseline_tmax)
+    else:
+        raise ValueError(f'Unknown inverse method {method!r}')
 
     rois = {}
     if feature_mode == 'pca_flip':
@@ -232,7 +242,8 @@ def _load_subject(subj_id, task, stim_class, method, feature_mode,
                   atlas, leakage_correction, roi_names, roi_dict, fwd, src):
     """Load requested ROIs for one subject — cache if available, else compute."""
     cached_npz = find_cached_npz(task, method, atlas, feature_mode,
-                                 leakage_correction, subj_id, stim_class)
+                                 leakage_correction, subj_id, stim_class,
+                                 fs=CACHE_FS)
     if cached_npz is not None:
         print(f'  Loading cache: {cached_npz.name}')
         t0 = time.time()
@@ -476,6 +487,8 @@ def _print_run_summary(df_summary_new, roi_name, atlas, n_subjects):
 # ──────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
+    global CACHE_FS
+    CACHE_FS = args.fs
     subjects = args.subjects if args.subjects else SUBJECT_IDS
     decode_tmin = DECODE_TMIN[args.task]
     requested_rois = [args.roi] if args.roi else args.rois
@@ -515,13 +528,14 @@ def main():
     # Forward model only built if at least one subject lacks cache
     any_uncached = any(
         find_cached_npz(args.task, args.method, args.atlas, args.feature_mode,
-                        args.leakage_correction, s, args.stim_class) is None
+                        args.leakage_correction, s, args.stim_class,
+                        fs=args.fs) is None
         for s in subjects
     )
     if any_uncached:
         print('\nBuilding forward solution (uncached subjects detected)...')
         first_epochs, _, _ = load_subject_epochs(
-            subjects[0], args.task, args.stim_class,
+            subjects[0], args.task, args.stim_class, fs=args.fs,
         )
         fwd = make_forward(first_epochs.info, src, bem)
         del first_epochs

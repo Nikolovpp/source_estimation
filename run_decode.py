@@ -56,6 +56,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
+    INVERSE_METHODS, ATLAS_CHOICES,
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     DECODE_TMIN, SPEECH_ROIS,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
@@ -166,7 +167,7 @@ def parse_args():
     parser.add_argument('--stim-class', required=True,
                         choices=['prodDiff', 'percDiff'])
     parser.add_argument('--method', required=True,
-                        choices=['dSPM', 'LCMV'])
+                        choices=INVERSE_METHODS)
     parser.add_argument('--feature-mode', default='pca_flip',
                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                                  'vertex_selectkbest_all'])
@@ -179,7 +180,7 @@ def parse_args():
     parser.add_argument('--sw-dur', type=int, default=SW_DUR)
     parser.add_argument('--sw-step', type=int, default=SW_STEP_SIZE)
     parser.add_argument('--atlas', default='aparc',
-                        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+                        choices=ATLAS_CHOICES)
     parser.add_argument('--leakage-correction', action='store_true', default=False,
                         help='Read leakage-corrected caches '
                              '(must match what was produced by run_source_localize.py)')
@@ -199,6 +200,9 @@ def parse_args():
     parser.add_argument('--tune-hyperparams', action='store_true', default=False,
                         help='Enable nested CV for hyperparameter tuning')
     parser.add_argument('--random-state', type=int, default=42)
+    parser.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
+                        help='sampling-rate variant of the ROI cache to read '
+                             '(must match run_source_localize.py --fs)')
     return parser.parse_args()
 
 
@@ -253,7 +257,7 @@ def main():
 
         cached_npz = find_cached_npz(
             args.task, args.method, args.atlas, args.feature_mode,
-            args.leakage_correction, subj_id, args.stim_class,
+            args.leakage_correction, subj_id, args.stim_class, fs=args.fs,
         )
         if cached_npz is None:
             print(f'  ERROR: no cached ROI .npz for {subj_id}.')

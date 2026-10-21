@@ -174,7 +174,7 @@ def parse_args():
     p = argparse.ArgumentParser(description='Compare two MNE GC configs by ROI pair')
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--stim-class', required=True, choices=['prodDiff', 'percDiff'])
-    p.add_argument('--method', required=True, choices=['dSPM', 'LCMV'])
+    p.add_argument('--method', required=True, choices=['dSPM', 'sLORETA', 'eLORETA', 'LCMV'])
     p.add_argument('--atlas', default='custom')
     p.add_argument('--feature-mode', default='vertex_selectkbest')
     p.add_argument('--leakage-correction', action='store_true', default=False)

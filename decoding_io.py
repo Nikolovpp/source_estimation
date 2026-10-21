@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from config import (cache_feat_mode, classifier_path_segment,
+                    cache_leakage_tag,
                     ROI_TIMESERIES_ROOT, ROI_TIMESERIES_SAVE_ROOT)
 
 
@@ -103,7 +104,7 @@ def _load_cached_roi_data(npz_path, feature_mode, roi_subset=None):
 def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                          feature_mode, roi_data, y, times, sfreq,
                          overwrite=False, atlas='aparc',
-                         leakage_correction=False):
+                         leakage_correction=False, fs=2000):
     """Save source-estimated ROI time series as .npz files.
 
     If the file already exists and *overwrite* is False, the save is
@@ -113,7 +114,7 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
       - pca_flip:  (n_trials, n_timepoints, 1)    — 1 virtual sensor per ROI
       - vertex_*:  (n_trials, n_timepoints, n_vertices) — vertices as "channels"
     """
-    leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
+    leakage_tag = cache_leakage_tag(leakage_correction, fs)
     ts_dir = (
         ROI_TIMESERIES_SAVE_ROOT / task_cond / method / atlas
         / cache_feat_mode(feature_mode) / leakage_tag
