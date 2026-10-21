@@ -57,6 +57,7 @@ from joblib import Parallel, delayed
 from config import (
     SUBJECT_IDS, SPEECH_ROIS, DECODE_OUTPUT_ROOT,
     find_cached_npz, cache_feat_mode,
+    INVERSE_METHODS, ATLAS_CHOICES,
 )
 from decoding_io import _load_cached_roi_data, filter_roi_dict
 from granger import (
@@ -576,9 +577,8 @@ def parse_args():
     p = argparse.ArgumentParser(description='Source-space pairwise Granger causality (BSMART port)')
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--stim-class', required=True, choices=['prodDiff', 'percDiff'])
-    p.add_argument('--method', required=True, choices=['dSPM', 'LCMV'])
-    p.add_argument('--atlas', default='HCPMMP1',
-                   choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'])
+    p.add_argument('--method', required=True, choices=INVERSE_METHODS)
+    p.add_argument('--atlas', default='HCPMMP1', choices=ATLAS_CHOICES)
     p.add_argument('--feature-mode', default='vertex_selectkbest',
                    choices=['vertex_pca', 'vertex_selectkbest',
                             'vertex_selectkbest_all'],
@@ -660,6 +660,11 @@ def parse_args():
     p.add_argument('--subjects', nargs='+', default=None)
     p.add_argument('--n-jobs', type=int, default=64)
     p.add_argument('--overwrite', action='store_true', default=False)
+    p.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
+                   help='sampling-rate variant of the ROI cache to read (must '
+                        'match run_source_localize.py --fs); the GC output '
+                        'path does not encode it, so keep one variant per '
+                        'atlas')
     return p.parse_args()
 
 
@@ -708,7 +713,7 @@ def main():
         for s in subjects:
             npz0 = find_cached_npz(args.task, args.method, args.atlas,
                                    args.feature_mode, args.leakage_correction,
-                                   s, args.stim_class)
+                                   s, args.stim_class, fs=args.fs)
             if npz0 is not None:
                 with np.load(npz0, allow_pickle=True) as d0:
                     cache_names = list(d0['roi_names'])
@@ -754,7 +759,7 @@ def main():
 
         npz = find_cached_npz(args.task, args.method, args.atlas,
                               args.feature_mode, args.leakage_correction,
-                              subj, args.stim_class)
+                              subj, args.stim_class, fs=args.fs)
         if npz is None:
             print(f'  {subj}: no vertex cache found — run run_source_localize.py first. SKIP')
             failed.append(subj)

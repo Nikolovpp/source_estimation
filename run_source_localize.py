@@ -66,11 +66,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     SUBJECT_IDS, SPEECH_ROIS, find_cached_npz,
+    INVERSE_METHODS, ATLAS_CHOICES,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
-from inverse_pipelines import run_dspm_lowram, run_lcmv_lowram
+from inverse_pipelines import run_inverse_lowram
 from decoding_io import _save_roi_timeseries, filter_roi_dict
 from plotting import save_sensor_erp
 
@@ -91,7 +92,7 @@ def _init_worker(fwd, src, roi_dict):
 
 def _process_subject(subj_id, task_cond, stim_class, method,
                      feature_mode, atlas, leakage_correction,
-                     overwrite_timeseries):
+                     overwrite_timeseries, fs=2000):
     """Run inverse + ROI extraction for one subject and save .npz cache."""
     subj_start = time.time()
     print(f'\n{"="*60}')
@@ -100,13 +101,15 @@ def _process_subject(subj_id, task_cond, stim_class, method,
 
     # Skip if cache already exists (unless we're forced to overwrite)
     cached_npz = find_cached_npz(task_cond, method, atlas, feature_mode,
-                                 leakage_correction, subj_id, stim_class)
+                                 leakage_correction, subj_id, stim_class,
+                                 fs=fs)
     if cached_npz is not None and not overwrite_timeseries:
         print(f'  Cache already exists, skipping: {cached_npz}')
         return subj_id
 
     try:
-        epochs, y, sfreq = load_subject_epochs(subj_id, task_cond, stim_class)
+        epochs, y, sfreq = load_subject_epochs(subj_id, task_cond, stim_class,
+                                               fs=fs)
     except FileNotFoundError as e:
         print(f'  SKIPPING {subj_id}: {e}')
         return None
@@ -135,16 +138,10 @@ def _process_subject(subj_id, task_cond, stim_class, method,
     extract_mode = 'pca_flip' if feature_mode == 'pca_flip' else 'vertex'
 
     print(f'  Running {method} inverse (low-RAM)...')
-    if method == 'dSPM':
-        X_roi, stc_times = run_dspm_lowram(
-            epochs, _fwd, baseline_tmin, baseline_tmax,
-            roi_labels, _src, feature_mode=extract_mode,
-        )
-    elif method == 'LCMV':
-        X_roi, stc_times = run_lcmv_lowram(
-            epochs, _fwd, baseline_tmin, baseline_tmax,
-            roi_labels, _src, feature_mode=extract_mode,
-        )
+    X_roi, stc_times = run_inverse_lowram(
+        method, epochs, _fwd, baseline_tmin, baseline_tmax,
+        roi_labels, _src, feature_mode=extract_mode,
+    )
 
     times = stc_times
     del epochs
@@ -181,7 +178,7 @@ def _process_subject(subj_id, task_cond, stim_class, method,
     _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                          feature_mode, roi_data, y, times, sfreq,
                          overwrite=overwrite_timeseries, atlas=atlas,
-                         leakage_correction=leakage_correction)
+                         leakage_correction=leakage_correction, fs=fs)
 
     del roi_data, X_roi
     gc.collect()
@@ -193,11 +190,11 @@ def _process_subject(subj_id, task_cond, stim_class, method,
 
 def _worker(args):
     (subj_id, task_cond, stim_class, method, feature_mode,
-     atlas, leakage_correction, overwrite_timeseries) = args
+     atlas, leakage_correction, overwrite_timeseries, fs) = args
     try:
         return _process_subject(
             subj_id, task_cond, stim_class, method, feature_mode,
-            atlas, leakage_correction, overwrite_timeseries,
+            atlas, leakage_correction, overwrite_timeseries, fs=fs,
         )
     except Exception as e:
         print(f'\n  FAILED {subj_id}: {e}')
@@ -216,7 +213,9 @@ def parse_args():
                              'subject-parallel batch, sharing the forward model '
                              '(e.g. --stim-class prodDiff percDiff)')
     parser.add_argument('--method', required=True,
-                        choices=['dSPM', 'LCMV'])
+                        choices=INVERSE_METHODS,
+                        help='inverse method: dSPM / sLORETA / eLORETA share '
+                             'one minimum-norm operator; LCMV is the beamformer')
     parser.add_argument('--feature-mode', default='pca_flip',
                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                                  'vertex_selectkbest_all'])
@@ -224,9 +223,10 @@ def parse_args():
     parser.add_argument('--n-jobs', type=int, default=2,
                         help='Number of parallel worker subjects (default: 2 for low-RAM)')
     parser.add_argument('--atlas', default='aparc',
-                        choices=['aparc', 'HCPMMP1', 'Schaefer200', 'custom'],
+                        choices=ATLAS_CHOICES,
                         help='Cortical atlas for ROI parcellation (default: aparc). '
-                             '"custom" uses volumetric NIfTI masks from config.CUSTOM_ROI_DIR')
+                             '"custom" uses volumetric NIfTI masks from config.CUSTOM_ROI_DIR; '
+                             '"sensorEquiv" = the 4 sensor pseudo-channel ROIs + Visual')
     parser.add_argument('--leakage-correction', action='store_true', default=False,
                         help='Apply leakage correction (orthogonalization for pca_flip, '
                              'regression for vertex modes)')
@@ -235,6 +235,14 @@ def parse_args():
                              'Case-insensitive, e.g., --roi-subset Temporal vSMC')
     parser.add_argument('--overwrite-timeseries', action='store_true',
                         help='Overwrite existing .npz ROI time series files')
+    parser.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
+                        help='EEGLAB export to source-localize: 2000 = native '
+                             '2048 Hz (default, every pre-2026-10-21 cache); '
+                             '500 = the continuous-resampled 500 Hz files, '
+                             '4x smaller/faster caches written to a separate '
+                             '"<arm>_fs500" cache directory (same 0.1-30 Hz '
+                             'band, so nothing below Nyquist is lost). '
+                             'Downstream runners need the same --fs.')
     return parser.parse_args()
 
 
@@ -257,6 +265,8 @@ def main():
     print(f'  Workers:      {args.n_jobs}')
     print(f'  Subjects:     {len(subjects)}')
     print(f'  Overwrite:    {args.overwrite_timeseries}')
+    print(f'  Input fs:     {args.fs} Hz'
+          f'{"  (cache dir suffix _fs500)" if args.fs != 2000 else ""}')
 
     # Preflight: show WHERE caches will be written and whether the volume has
     # room.  The vertex caches are ~2.5 GB (overtProd) / ~1.2 GB (perception)
@@ -272,6 +282,8 @@ def main():
     except Exception:
         free_gb = float('nan')
     per = 2.5 if args.task == 'overtProd' else 1.2
+    if args.fs != 2000:
+        per /= 4.0
     est_gb = len(subjects) * per * len(stim_classes)
     print(f'  Save root:    {ROI_TIMESERIES_SAVE_ROOT}')
     print(f'  Free space:   {free_gb:.0f} GB on {probe} | est. output ~{est_gb:.0f} GB')
@@ -297,7 +309,7 @@ def main():
     # stim-classes so queued batches don't each rebuild it.
     any_uncached = any(
         find_cached_npz(args.task, args.method, args.atlas, args.feature_mode,
-                        args.leakage_correction, s, sc) is None
+                        args.leakage_correction, s, sc, fs=args.fs) is None
         or args.overwrite_timeseries
         for sc in stim_classes for s in subjects
     )
@@ -305,7 +317,8 @@ def main():
         print('\nAll subjects/stim-classes cached — nothing to do.')
         return
     print('\nBuilding forward solution (shared across stim-classes)...')
-    first_epochs, _, _ = load_subject_epochs(subjects[0], args.task, stim_classes[0])
+    first_epochs, _, _ = load_subject_epochs(subjects[0], args.task,
+                                             stim_classes[0], fs=args.fs)
     fwd = make_forward(first_epochs.info, src, bem)
     del first_epochs, bem
     gc.collect()
@@ -319,7 +332,7 @@ def main():
         worker_args = [
             (subj_id, args.task, stim_class, args.method,
              args.feature_mode, args.atlas, args.leakage_correction,
-             args.overwrite_timeseries)
+             args.overwrite_timeseries, args.fs)
             for subj_id in subjects
         ]
         total_start = time.time()
