@@ -19,6 +19,14 @@ load_dotenv(Path(__file__).resolve().parent / 'config.env')
 # ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(os.environ['EEG_PROJECT_ROOT'])
 EEGLAB_DIR = PROJECT_ROOT / 'derivatives' / 'EEGLAB'
+
+# Optional extra EEGLAB input roots (e.g. the 500 Hz exports kept on another
+# drive).  Set EEGLAB_EXTERNAL in config.env to one or more colon-separated
+# directories that each contain {perception,overtProd}/{subj}/...; the data
+# path lookups try EEGLAB_DIR first, then each of these in order.
+_eeg_ext = os.environ.get('EEGLAB_EXTERNAL', '')
+EEGLAB_EXTERNAL = [Path(p) for p in _eeg_ext.split(':') if p.strip()]
+EEGLAB_DIRS = [EEGLAB_DIR] + [p for p in EEGLAB_EXTERNAL if p != EEGLAB_DIR]
 DECODE_OUTPUT_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'DECODE_source_space'
 ROI_TIMESERIES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'DECODE_source_space_timeseries'
 FIGURES_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'SOURCE_ESTIMATION'
@@ -74,14 +82,19 @@ def get_perception_data_path(subj_id, fs=2000):
     500 (continuous-resampled, ``*_500Hz_reSample_*``).  The fs=2000 branch
     is unchanged from the original single-argument behavior.
     """
-    base = EEGLAB_DIR / 'perception' / subj_id / 'average_ref' / 'eeglab_standard' / f'fs_{fs}'
-    for f in base.iterdir():
-        if not (f.name.endswith('popthresh120.mat') and 'good_trials' not in f.name):
+    bases = [root / 'perception' / subj_id / 'average_ref' / 'eeglab_standard'
+             / f'fs_{fs}' for root in EEGLAB_DIRS]
+    for base in bases:
+        if not base.is_dir():
             continue
-        if fs != 2000 and '500Hz_reSample' not in f.name:
-            continue
-        return f
-    raise FileNotFoundError(f'No popthresh120.mat (fs={fs}) found for {subj_id} in {base}')
+        for f in sorted(base.iterdir()):
+            if not (f.name.endswith('popthresh120.mat') and 'good_trials' not in f.name):
+                continue
+            if fs != 2000 and '500Hz_reSample' not in f.name:
+                continue
+            return f
+    raise FileNotFoundError(f'No popthresh120.mat (fs={fs}) found for {subj_id} '
+                            f'in any of {[str(b) for b in bases]}')
 
 
 def get_production_data_path(subj_id, fs=2000):
@@ -93,17 +106,22 @@ def get_production_data_path(subj_id, fs=2000):
     same -1.5–0.4 s epoch as the 2000 Hz default.  The fs=2000 branch is
     unchanged from the original single-argument behavior.
     """
-    base = EEGLAB_DIR / 'overtProd' / subj_id / 'average_ref' / f'fs_{fs}'
-    if fs == 2000:
-        for f in base.iterdir():
-            if f.name.endswith('ProdOnset.mat'):
-                return f
-    else:
-        for f in base.iterdir():
-            if (f.name.endswith('ProdOnset.mat') and 'good_trials' not in f.name
-                    and '500Hz_reSample' in f.name and '-1.5_0.4' in f.name):
-                return f
-    raise FileNotFoundError(f'No ProdOnset.mat (fs={fs}) found for {subj_id} in {base}')
+    bases = [root / 'overtProd' / subj_id / 'average_ref' / f'fs_{fs}'
+             for root in EEGLAB_DIRS]
+    for base in bases:
+        if not base.is_dir():
+            continue
+        if fs == 2000:
+            for f in sorted(base.iterdir()):
+                if f.name.endswith('ProdOnset.mat'):
+                    return f
+        else:
+            for f in sorted(base.iterdir()):
+                if (f.name.endswith('ProdOnset.mat') and 'good_trials' not in f.name
+                        and '500Hz_reSample' in f.name and '-1.5_0.4' in f.name):
+                    return f
+    raise FileNotFoundError(f'No ProdOnset.mat (fs={fs}) found for {subj_id} '
+                            f'in any of {[str(b) for b in bases]}')
 
 
 # ─────────────────────────────────────────────────────────────────────
