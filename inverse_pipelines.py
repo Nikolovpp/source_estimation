@@ -274,24 +274,32 @@ def _extract_rois_from_generator(stc_gen, n_epochs, roi_labels, src,
                 gc.collect()
         print(f'  Extracted pca_flip: {X_roi.shape}')
     else:
-        # vertex mode: extract per-ROI vertex data
-        roi_data = {j: [] for j in range(len(roi_labels))}
+        # vertex mode: extract per-ROI vertex data.  The per-ROI arrays are
+        # PREALLOCATED on the first epoch and filled in place: the earlier
+        # list-of-epochs -> np.array() conversion held two copies of every
+        # ROI at the end (~2x the cache size per worker, ~18 GB for a 2048 Hz
+        # overtProd subject with the 5 sensorEquiv ROIs), which is what took
+        # an 8-worker run over the workstation's memory.
+        X_roi = {}
         for i, stc in enumerate(stc_gen):
             if stc_times is None:
                 stc_times = stc.times.copy()
             for j, label in enumerate(roi_labels):
                 roi_stc = stc.in_label(label)
-                roi_data[j].append(roi_stc.data.astype(np.float32))
+                if j not in X_roi:
+                    X_roi[j] = np.zeros(
+                        (n_epochs, roi_stc.data.shape[0], roi_stc.data.shape[1]),
+                        dtype=np.float32)
+                X_roi[j][i] = roi_stc.data
                 del roi_stc
             del stc
             if (i + 1) % 50 == 0:
                 gc.collect()
-        X_roi = {j: np.array(v) for j, v in roi_data.items()}
-        del roi_data
         gc.collect()
         sample_shape = X_roi[0].shape
+        tot_gb = sum(a.nbytes for a in X_roi.values()) / 1e9
         print(f'  Extracted vertex data: {len(X_roi)} ROIs, '
-              f'shape per ROI e.g. {sample_shape}')
+              f'shape per ROI e.g. {sample_shape}, {tot_gb:.1f} GB in RAM')
 
     gc.collect()
     return X_roi, stc_times
