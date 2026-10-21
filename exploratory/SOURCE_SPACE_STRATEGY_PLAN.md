@@ -82,6 +82,7 @@ Outputs to look at, in order:
 
 ## 6. Notes and caveats
 
+* **Where the big outputs go.** The only large outputs are the vertex caches; they are written to `ROI_TIMESERIES_SAVE_ROOT` from `config.env` (on the workstation: `/media/maxlab_bigdrive/.../DECODE_source_space_timeseries`) and found again through the same root, so nothing of the ~600 GB touches the project drive. Decoding CSVs, GC npz and the resolution-analysis caches are small (MBs to a few GB in total) and stay under `derivatives/source_estimation/`.
 * `sensorEquiv` composites share parcel lists with `SPEECH_ROIS['HCPMMP1']`; Temporal and Superior_Parietal are large (13 and 12 parcels).
 * The decoding and GC result paths do not encode `--fs`; the arm's convention is fixed: decoding results come from the 2000 Hz caches, GC results from the 500 Hz caches.
 * `run_decode.py` requests every ROI of the atlas; a cache written with `--roi-subset` lacks the others and the subject is skipped — localize the full `sensorEquiv` set.
