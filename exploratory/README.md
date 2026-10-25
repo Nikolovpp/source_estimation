@@ -88,6 +88,18 @@ the workstation run order and the decision rule.
   fixed-window accuracy.
 - `compare_gc_leakage_arms.py` — raw vs leakage-corrected arms of one GC
   config (overlays, similarity, fixed-window tests).
+- `resolution_sweep.py` — inverse-settings sweep scored with the same CTF
+  machinery (the five levers of `INVERSE_OPTIMIZATION_PLAN.md`: DeFleCT ROI
+  filters, λ²/depth, noise covariance, LCMV conditioning, loose
+  orientation); adds `noise_gain` and `k_pc1_frac` so configurations are
+  comparable on the noise axis. Workstation compute; per-subject CSV/npz.
+- `resolution_sweep_report.py` — reads the sweep CSVs: one-knob factor
+  curves, Pareto (noise vs cross-talk), overlap matrices production vs best,
+  rankings, marginal effects, recommendation; `--brain-maps` for the best
+  configurations. Runs locally.
+- `run_resolution_sweep.sh` — workstation driver: baseline
+  `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
+- `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.
 
 ## Decoding exploration
 

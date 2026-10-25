@@ -46,6 +46,8 @@ Swapping the localizer spheres for another parcellation of the same size does no
 
 Content (identical across the three inverses, see `_onset_latency/prodDiff_summary.txt` in each result dir): all five ROIs peak at speech onset (−25..+25 ms; Temporal 0.617, Visual 0.609, IFG 0.607, SFG 0.573, SPL 0.550); jackknife onsets −100..−150 ms with no ROI earlier than Visual; **no ROI > Visual cluster anywhere**; the ROI × time interaction cluster (−152..214 ms) is driven by SPL/SFG peaking lower, not by any ROI beating the control. In the fixed windows the Visual control decodes *better* than every speech ROI (phonloop 0.529 vs 0.506–0.515, p ≤ .03; preonset 0.547 vs 0.523–0.540). Same picture as the custom arm, at the coarser scale: no regional selectivity in decoding amplitude or timing.
 
+**Next step (2026-10-25):** optimize the inverse on resolvability before more decode cells — `INVERSE_OPTIMIZATION_PLAN.md` (`run_resolution_sweep.sh`).
+
 ## 4. Workstation run order
 
 ```bash

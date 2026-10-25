@@ -305,49 +305,112 @@ def _extract_rois_from_generator(stc_gen, n_epochs, roi_labels, src,
     return X_roi, stc_times
 
 
-def make_minimum_norm_inverse(epochs, fwd, baseline_tmin, baseline_tmax):
+NOISE_COV_METHODS = ['shrunk', 'auto', 'ledoit_wolf', 'empirical', 'adhoc',
+                     'fullepoch', 'identity']
+
+
+def make_noise_cov(epochs, baseline_tmin, baseline_tmax, rank, method='shrunk'):
+    """Noise covariance for the inverse / beamformer.
+
+    method
+        'shrunk'      pipeline default: shrunk estimate from the baseline
+        'auto'        MNE's log-likelihood ranking of shrunk / diagonal_fixed /
+                      empirical / factor_analysis on the baseline
+        'ledoit_wolf' Ledoit-Wolf shrinkage on the baseline
+        'empirical'   sample covariance of the baseline (no shrinkage)
+        'adhoc'       diagonal of the empirical baseline covariance
+        'fullepoch'   shrunk estimate over the WHOLE epoch (data covariance
+                      used as noise covariance — the usual choice when no
+                      clean pre-stimulus baseline exists)
+        'identity'    ad hoc covariance with equal variances (unwhitened
+                      minimum norm)
+    """
+    if method == 'identity':
+        return mne.make_ad_hoc_cov(epochs.info, verbose=False)
+    if method == 'fullepoch':
+        return mne.compute_covariance(epochs, tmin=None, tmax=None,
+                                      method='shrunk', rank=rank,
+                                      verbose=False)
+    if method == 'adhoc':
+        cov = mne.compute_covariance(epochs, tmin=baseline_tmin,
+                                     tmax=baseline_tmax, method='empirical',
+                                     rank=rank, verbose=False)
+        cov['data'] = np.diag(np.diag(cov.data))
+        cov['eig'] = None
+        cov['eigvec'] = None
+        return cov
+    if method not in ('shrunk', 'auto', 'ledoit_wolf', 'empirical'):
+        raise ValueError(f'unknown noise covariance method {method!r}; '
+                         f'choose from {NOISE_COV_METHODS}')
+    return mne.compute_covariance(epochs, tmin=baseline_tmin, tmax=baseline_tmax,
+                                  method=method, rank=rank, verbose=False)
+
+
+def make_minimum_norm_inverse(epochs, fwd, baseline_tmin, baseline_tmax,
+                              depth=0.8, loose=0.0, noise_cov_method='shrunk',
+                              noise_cov=None):
     """Fit the pipeline's minimum-norm inverse operator (shared by dSPM,
-    sLORETA and eLORETA): fixed orientation, depth 0.8, shrunk noise
-    covariance from the pre-stimulus baseline, data-driven rank.
+    sLORETA and eLORETA).  Defaults = production settings: fixed
+    orientation, depth 0.8, shrunk noise covariance from the pre-stimulus
+    baseline, data-driven rank.  ``depth`` / ``loose`` / ``noise_cov_method``
+    (or a precomputed ``noise_cov``) are the knobs swept by
+    exploratory/resolution_sweep.py; ``loose > 0`` gives a free-orientation
+    operator that must be applied with ``pick_ori='normal'`` to stay linear.
 
     Returns (inverse_operator, noise_cov, rank)."""
     rank = _compute_data_rank(epochs)
     print(f'  Data rank: {rank}')
-    print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s')
+    print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s '
+          f'({noise_cov_method})')
 
-    noise_cov = mne.compute_covariance(
-        epochs, tmin=baseline_tmin, tmax=baseline_tmax,
-        method='shrunk', rank=rank, verbose=True,
-    )
+    if noise_cov is None:
+        noise_cov = make_noise_cov(epochs, baseline_tmin, baseline_tmax, rank,
+                                   noise_cov_method)
+    fixed = (loose == 0.0)
     inverse_operator = make_inverse_operator(
         epochs.info, fwd, noise_cov,
-        loose=0.0, depth=0.8, fixed=True, rank=rank, verbose=True,
+        loose=loose, depth=depth, fixed=fixed, rank=rank, verbose=True,
     )
     return inverse_operator, noise_cov, rank
 
 
-def make_lcmv_filters(epochs, fwd, baseline_tmin, baseline_tmax):
-    """Fit the pipeline's LCMV spatial filter: empirical data covariance
-    from the post-baseline window, shrunk baseline noise covariance,
-    max-power orientation, unit-noise-gain, reg 0.05, data-driven rank.
+def make_lcmv_filters(epochs, fwd, baseline_tmin, baseline_tmax,
+                      reg=0.05, weight_norm='unit-noise-gain',
+                      pick_ori='max-power', data_cov_window='task',
+                      noise_cov_method='shrunk', noise_cov=None):
+    """Fit the pipeline's LCMV spatial filter.  Defaults = production
+    settings: empirical data covariance from the post-baseline window,
+    shrunk baseline noise covariance, max-power orientation,
+    unit-noise-gain, reg 0.05, data-driven rank.  The keyword knobs are
+    swept by exploratory/resolution_sweep.py: ``data_cov_window`` 'task'
+    (post-baseline) or 'full' (whole epoch); ``noise_cov_method`` as in
+    make_noise_cov, or 'none' for no noise covariance (not allowed with
+    weight_norm='nai'); ``pick_ori`` 'max-power' or 'normal' (the forward
+    is converted to surface orientation for 'normal').
 
     Returns (filters, data_cov, noise_cov, rank)."""
     rank = _compute_data_rank(epochs)
     print(f'  Data rank: {rank}')
-    print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s')
+    print(f'  Noise cov baseline: [{baseline_tmin}, {baseline_tmax}] s '
+          f'({noise_cov_method})')
 
+    dc_tmin = baseline_tmax if data_cov_window == 'task' else None
     data_cov = mne.compute_covariance(
-        epochs, tmin=baseline_tmax, tmax=None,
+        epochs, tmin=dc_tmin, tmax=None,
         method='empirical', rank=rank, verbose=True,
     )
-    noise_cov = mne.compute_covariance(
-        epochs, tmin=baseline_tmin, tmax=baseline_tmax,
-        method='shrunk', rank=rank, verbose=True,
-    )
+    if noise_cov is None and noise_cov_method != 'none':
+        noise_cov = make_noise_cov(epochs, baseline_tmin, baseline_tmax, rank,
+                                   noise_cov_method)
+    if noise_cov is None and weight_norm == 'nai':
+        raise ValueError("weight_norm='nai' needs a noise covariance")
+    if pick_ori == 'normal' and not fwd['surf_ori']:
+        fwd = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=False,
+                                           use_cps=True, verbose=False)
     filters = make_lcmv(
-        epochs.info, fwd, data_cov, reg=0.05,
-        noise_cov=noise_cov, pick_ori='max-power',
-        weight_norm='unit-noise-gain', reduce_rank=True,
+        epochs.info, fwd, data_cov, reg=reg,
+        noise_cov=noise_cov, pick_ori=pick_ori,
+        weight_norm=weight_norm, reduce_rank=True,
         rank=rank, verbose=True,
     )
     return filters, data_cov, noise_cov, rank

@@ -509,16 +509,46 @@ def plot_roi_metrics(out_dir, roi_g, methods, atlases, weights, task, stim):
     plt.close(fig)
 
 
-def plot_brain_maps(out_dir, src, methods, atlases, weights):
-    """Group-mean |CTF| of every ROI on the fsaverage surface (lateral lh)."""
+def render_ctf_maps(acc, names, n_lh, src, title, out_png):
+    """Render group-mean |CTF| maps (one lateral-lh panel per ROI).
+
+    acc : (n_roi, n_src) non-negative, each row scaled to its max."""
     try:
         from visualize_rois import _load_surface, _render_brain_views
     except Exception as e:  # pragma: no cover - rendering is optional
         print(f'  brain maps skipped (visualize_rois import failed: {e})')
-        return
+        return False
     from mne.datasets import fetch_fsaverage
     subjects_dir = fetch_fsaverage(verbose=False).parent
     coords, faces = _load_surface(subjects_dir, 'lh', surf='pial', smooth=0.25)
+    vert_lh = src[0]['vertno']
+    n = len(names)
+    fig, axes = plt.subplots(1, n, figsize=(3.6 * n, 3.4))
+    axes = np.atleast_1d(axes)
+    for k, name in enumerate(names):
+        stc = mne.SourceEstimate(
+            acc[k][:n_lh, None], vertices=[vert_lh, np.array([], int)],
+            tmin=0, tstep=1, subject='fsaverage')
+        morph = mne.compute_source_morph(
+            stc, 'fsaverage', 'fsaverage', spacing=None, smooth=5,
+            subjects_dir=subjects_dir, verbose=False)
+        full = morph.apply(stc).data[:, 0][:len(coords)]   # lh only
+        scal = np.where(full > 0.05, full, np.nan).astype(float)
+        img = _render_brain_views(coords, faces, ['lateral'], 'lh',
+                                  size=(900, 700), vertex_scalars=scal,
+                                  cmap='hot', clim=(0, 1))['lateral']
+        axes[k].imshow(img)
+        axes[k].set_axis_off()
+        axes[k].set_title(name.replace('-lh', ''), fontsize=10)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    return True
+
+
+def plot_brain_maps(out_dir, src, methods, atlases, weights):
+    """Group-mean |CTF| of every ROI on the fsaverage surface (lateral lh)."""
     ps = out_dir / 'per_subject'
     for method in methods:
         for atlas in atlases:
@@ -534,31 +564,15 @@ def plot_brain_maps(out_dir, src, methods, atlases, weights):
                 names = list(d['roi_names'])
                 n_lh = int(d['n_lh'])
             acc /= len(files)
-            vert_lh = src[0]['vertno']
-            n = len(names)
-            fig, axes = plt.subplots(1, n, figsize=(3.6 * n, 3.4))
-            axes = np.atleast_1d(axes)
-            for k, name in enumerate(names):
-                stc = mne.SourceEstimate(
-                    acc[k][:n_lh, None], vertices=[vert_lh, np.array([], int)],
-                    tmin=0, tstep=1, subject='fsaverage')
-                morph = mne.compute_source_morph(
-                    stc, 'fsaverage', 'fsaverage', spacing=None, smooth=5,
-                    subjects_dir=subjects_dir, verbose=False)
-                full = morph.apply(stc).data[:, 0][:len(coords)]   # lh only
-                scal = np.where(full > 0.05, full, np.nan).astype(float)
-                img = _render_brain_views(coords, faces, ['lateral'], 'lh',
-                                          size=(900, 700), vertex_scalars=scal,
-                                          cmap='hot', clim=(0, 1))['lateral']
-                axes[k].imshow(img)
-                axes[k].set_axis_off()
-                axes[k].set_title(name.replace('-lh', ''), fontsize=10)
-            fig.suptitle(f'group-mean |CTF| (each ROI scaled to its max) — '
-                         f'{method} / {atlas} / {weights}', fontsize=11)
-            fig.tight_layout()
-            fig.savefig(out_dir / f'ctf_maps_{method}_{atlas}.png', dpi=150)
-            plt.close(fig)
-            print(f'  brain maps: {method} / {atlas}')
+            ok = render_ctf_maps(
+                acc, names, n_lh, src,
+                f'group-mean |CTF| (each ROI scaled to its max) — '
+                f'{method} / {atlas} / {weights}',
+                out_dir / f'ctf_maps_{method}_{atlas}.png')
+            if ok:
+                print(f'  brain maps: {method} / {atlas}')
+            else:
+                return
 
 
 def write_summary(out_dir, roi_g, pair_g, methods, atlases, weights, task, stim):
