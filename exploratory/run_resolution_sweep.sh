@@ -14,6 +14,10 @@
 #   BRAIN_MAPS=1                   render CTF brain maps (PyVista; set 0 if headless rendering fails)
 #   DRY_RUN=1                      print commands only
 # Every step resumes (per-subject caches are skipped when present).
+# PROGRESS: this log only gets a line when a step finishes; the live output of
+# the running step is in logs/resolution_sweep/<step>_<task>.log (one line per
+# subject as it completes), and finished subjects appear as files in
+# derivatives/source_estimation/RESOLUTION_ANALYSIS/{task}_{stim}/[sweep/]per_subject/.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -27,11 +31,20 @@ DRY_RUN="${DRY_RUN:-0}"
 LOG_ROOT="logs/resolution_sweep"
 mkdir -p "$LOG_ROOT"
 
-if [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
-    # shellcheck disable=SC1091
-    source "$HOME/miniforge3/etc/profile.d/conda.sh"
+# activate the mne env (same probing as run_translation_arm.sh)
+if ! command -v python >/dev/null 2>&1 || [ "${CONDA_DEFAULT_ENV:-}" != mne ]; then
+    if command -v conda >/dev/null 2>&1; then
+        # shellcheck disable=SC1091
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+    else
+        for _p in "$HOME/miniforge3" "$HOME/anaconda3" "$HOME/miniconda3" /opt/conda; do
+            # shellcheck disable=SC1091
+            [ -f "$_p/etc/profile.d/conda.sh" ] && { source "$_p/etc/profile.d/conda.sh"; break; }
+        done
+    fi
+    conda activate mne 2>/dev/null || { echo "ERROR: cannot activate conda env 'mne'" >&2; exit 1; }
 fi
-conda activate mne 2>/dev/null || true
+echo "python: $(command -v python)  ($(python -c 'import mne; print("mne", mne.__version__)' 2>/dev/null || echo 'mne import FAILED'))"
 
 has() { case " $STEPS " in *" $1 "*) return 0;; *) return 1;; esac; }
 stim_of() { [ "$1" = overtProd ] && echo prodDiff || echo percDiff; }
@@ -40,6 +53,7 @@ run() {
     echo "  $*"
     [ "$DRY_RUN" = 1 ] && return 0
     local t0=$SECONDS
+    echo "    running; live output: $log"
     if "$@" > "$log" 2>&1; then
         printf '    ok   %d min  (%s)\n' $(( (SECONDS - t0) / 60 )) "$log"
     else
