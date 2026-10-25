@@ -60,7 +60,7 @@ from config import (
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     DECODE_TMIN, SPEECH_ROIS,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
-    find_cached_npz,
+    find_cached_npz, classifier_path_segment,
 )
 from log_utils import setup_logging
 from forward_model import setup_fsaverage, build_roi_labels
@@ -203,7 +203,25 @@ def parse_args():
     parser.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
                         help='sampling-rate variant of the ROI cache to read '
                              '(must match run_source_localize.py --fs)')
+    parser.add_argument('--overwrite', action='store_true', default=False,
+                        help='Re-decode subjects whose result CSV already '
+                             'exists (default: skip them, so an interrupted '
+                             'run resumes at the first unfinished subject)')
     return parser.parse_args()
+
+
+def _result_csv(args, subj_id, effective_c):
+    """Path of the per-subject CSV that decoding_io._save_results writes."""
+    leakage_tag = 'leakage_corrected' if args.leakage_correction else 'raw'
+    pseudo_tag = (f'pseudo_{args.pseudo_trial_size}'
+                  if args.pseudo_trial_size > 0 else 'no_pseudo')
+    clf_tag = classifier_path_segment(args.classifier, effective_c,
+                                      args.tune_hyperparams)
+    return (DECODE_OUTPUT_ROOT / args.task / args.method / args.atlas
+            / args.feature_mode / leakage_tag / pseudo_tag
+            / f'{args.sw_dur}_{args.sw_step}' / clf_tag / args.stim_class
+            / f'{subj_id}_{args.task}_{args.stim_class}'
+              f'_{args.sw_dur}_{args.sw_step}.csv')
 
 
 def main():
@@ -248,12 +266,20 @@ def main():
 
     total_start = time.time()
     n_ok = 0
+    n_skipped = 0
     failed = []
 
     for s_idx, subj_id in enumerate(subjects, 1):
         print(f'\n{"="*60}')
         print(f'Subject {s_idx}/{len(subjects)}: {subj_id}')
         print(f'{"="*60}')
+
+        existing = _result_csv(args, subj_id, effective_c)
+        if existing.exists() and not args.overwrite:
+            print(f'  SKIP: result exists ({existing.name}); '
+                  f'use --overwrite to redo')
+            n_skipped += 1
+            continue
 
         cached_npz = find_cached_npz(
             args.task, args.method, args.atlas, args.feature_mode,
@@ -319,7 +345,8 @@ def main():
         n_ok += 1
 
     total_time = (time.time() - total_start) / 60.0
-    print(f'\n{n_ok}/{len(subjects)} subjects done in {total_time:.1f} minutes')
+    print(f'\n{n_ok}/{len(subjects)} subjects done in {total_time:.1f} minutes'
+          + (f' ({n_skipped} skipped, results already on disk)' if n_skipped else ''))
     if failed:
         print(f'FAILED subjects: {", ".join(failed)}')
 
