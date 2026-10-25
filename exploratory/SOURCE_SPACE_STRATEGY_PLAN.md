@@ -38,6 +38,14 @@ Swapping the localizer spheres for another parcellation of the same size does no
 
 **Decoding timing on the custom ROIs** (`DECODE_source_space/overtProd/LCMV/custom/vertex_selectkbest/leakage_corrected/no_pseudo/40_5/logistic_tuned/_onset_latency/`): see `prodDiff_summary.txt` after the run; the question it answers is whether any speech ROI decodes earlier or better than vwfa.
 
+**Translation-arm sanity pass, overtProd / prodDiff, dSPM + eLORETA + sLORETA (2026-10-25, n = 20, CSVs only).** Structure is clean: 5 ROIs incl. Visual, 381 windows on the same grid (−1480..375 ms, 4.9 ms step), no NaN, 5 CV repeats per window, accuracies in range, caches not confused between methods (no bit-identical curves). Two properties to know about, neither a bug of this arm:
+
+* **dSPM ≡ sLORETA for decoding** — group curves correlate at r = 1.000 (max |diff| 0.02 over subjects × windows). `StandardScaler` standardizes every vertex, which removes the per-vertex noise normalization that is the only difference between the two. Decoding sLORETA is therefore redundant → the driver takes `DEC_METHODS="dSPM eLORETA"`; GC (PC1 per ROI, no standardization) still differs and keeps all three methods. eLORETA differs from dSPM (r 0.97–0.997).
+* **Baseline window is slightly above chance** (−1480..−1380 ms: 0.507–0.515, t = 2–5) in every ROI; the existing custom-ROI LCMV run shows the same (0.509–0.515), so it is a property of the data/CV, not of the new inverses. Chance-referenced tests should rely on the permutation/cluster machinery, not on a 0.5 line.
+* Tuned C sits on the grid floor (C = 0.01) in 47 % of windows; the grid could be extended downward in a later sweep, but accuracy differences between C values are small.
+
+Content (identical across the three inverses, see `_onset_latency/prodDiff_summary.txt` in each result dir): all five ROIs peak at speech onset (−25..+25 ms; Temporal 0.617, Visual 0.609, IFG 0.607, SFG 0.573, SPL 0.550); jackknife onsets −100..−150 ms with no ROI earlier than Visual; **no ROI > Visual cluster anywhere**; the ROI × time interaction cluster (−152..214 ms) is driven by SPL/SFG peaking lower, not by any ROI beating the control. In the fixed windows the Visual control decodes *better* than every speech ROI (phonloop 0.529 vs 0.506–0.515, p ≤ .03; preonset 0.547 vs 0.523–0.540). Same picture as the custom arm, at the coarser scale: no regional selectivity in decoding amplitude or timing.
+
 ## 4. Workstation run order
 
 ```bash
@@ -50,7 +58,7 @@ python exploratory/resolution_analysis.py --task perception --stim-class percDif
     --methods dSPM sLORETA eLORETA LCMV --atlases custom sensorEquiv --n-jobs 8
 
 # B. translation arm, all stages (~600 GB of caches per method: 2000 Hz for decoding + 500 Hz for GC)
-bash exploratory/run_translation_arm.sh
+DEC_METHODS="dSPM eLORETA" bash exploratory/run_translation_arm.sh   # sLORETA decoding ≡ dSPM, skip it
 #   or stage by stage:
 STEPS=localize bash exploratory/run_translation_arm.sh
 STEPS="decode latency" bash exploratory/run_translation_arm.sh

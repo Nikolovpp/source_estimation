@@ -69,15 +69,24 @@
 #   STEPS="gc stats" TASKS=overtProd bash exploratory/run_translation_arm.sh
 #
 # RESUMING. Every stage skips work that is already on disk: localize skips
-# subjects whose cache exists, gc skips subjects whose npz exists, stats
-# simply recompute (cheap). Re-running the same command after a crash
-# continues where it stopped; the decode stage re-decodes every subject of
-# a cell (run_decode.py has no per-subject skip), so use STEPS to leave out
-# cells that already finished.
+# subjects whose cache exists, decode skips subjects whose result CSV exists
+# (run_decode.py --overwrite to redo), gc skips subjects whose npz exists,
+# stats simply recompute (cheap). Re-running the same command after a crash
+# or a kill continues at the first unfinished subject.
+#
+# DEC_METHODS (default = METHODS) restricts the decode + latency stages only.
+# dSPM and sLORETA give the same decoding curves (r = 1.000 on overtProd /
+# prodDiff, n = 20: the pipeline standardizes every vertex, which removes
+# the per-vertex noise normalization that is the only difference between
+# them), so decoding sLORETA is redundant; GC (PC1 per ROI, no
+# standardization) still differs between the two, so METHODS keeps all
+# three for localize / gc / stats:
+#   DEC_METHODS="dSPM eLORETA" bash exploratory/run_translation_arm.sh
 set -u
 cd "$(dirname "$0")/.."
 
 METHODS="${METHODS:-dSPM eLORETA sLORETA}"
+DEC_METHODS="${DEC_METHODS:-$METHODS}"   # decode + latency stages only
 TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 ATLAS="${ATLAS:-sensorEquiv}"
@@ -131,7 +140,7 @@ run () {   # run <log> <cmd...>
 }
 has () { case " $STEPS " in *" $1 "*) return 0;; esac; return 1; }
 
-echo "translation arm: $ATLAS / methods [$METHODS] / tasks [$TASKS] / stims [$STIMS] / decode @ ${DEC_FS} Hz, GC @ ${GC_FS} Hz / $LEAK_TAG"
+echo "translation arm: $ATLAS / methods [$METHODS] (decode: [$DEC_METHODS]) / tasks [$TASKS] / stims [$STIMS] / decode @ ${DEC_FS} Hz, GC @ ${GC_FS} Hz / $LEAK_TAG"
 echo "  steps: $STEPS"
 echo
 
@@ -149,7 +158,7 @@ fi
 # ── 2. decoding ─────────────────────────────────────────────────────────
 if has decode; then
 echo "== decode (subject-sequential, $DEC_JOBS ROI x window workers, ${DEC_FS} Hz caches)"
-for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
+for T in $TASKS; do for S in $STIMS; do for M in $DEC_METHODS; do
     run "$LOG_ROOT/decode_${T}_${S}_${M}.log" \
         python run_decode.py --task "$T" --stim-class "$S" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$DEC_FS") \
@@ -161,7 +170,7 @@ fi
 # ── 3. decoding timing vs the Visual control ────────────────────────────
 if has latency; then
 echo "== latency (decode_onset_latency.py, control = Visual)"
-for T in $TASKS; do for M in $METHODS; do
+for T in $TASKS; do for M in $DEC_METHODS; do
     run "$LOG_ROOT/latency_${T}_${M}.log" \
         python exploratory/decode_onset_latency.py --task "$T" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK \
