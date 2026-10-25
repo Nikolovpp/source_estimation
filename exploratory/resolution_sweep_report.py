@@ -230,6 +230,7 @@ def plot_matrices(pair, atlas, out_dir, task, stim, base_names, best):
                 cur = f'{cur}_{part}' if cur else part
         lines_.append(cur)
         ax.set_xlabel('\n'.join(lines_), fontsize=6.5, color='#52514e', labelpad=6)
+    fig.subplots_adjust(wspace=0.6, top=0.82, bottom=0.3)
     if im is not None:
         fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.7, pad=0.02)
     fig.suptitle(f'|cos(CTF_i, CTF_j)| — {atlas}, {task}/{stim}', fontsize=11)
