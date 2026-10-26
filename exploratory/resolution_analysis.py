@@ -382,8 +382,17 @@ def aggregate(out_dir):
     return roi, pair, roi_g, pair_g
 
 
-def sensor_pairs(out_dir):
-    """Group-mean |cos| matrix of the sensor pseudo-channel leadfield rows."""
+def sensor_pairs(out_dir, metric='cos'):
+    """Group-mean pairwise matrix of the sensor pseudo-channels.
+
+    metric='cos'   |cos| between the pseudo-channel leadfield rows (same
+                   quantity as ``pattern_cos`` for the source ROIs).
+    metric='xtalk' CTF cross-talk on the same footing as ``ctf_xtalk``: the
+                   pseudo-channel's leadfield row is its CTF, and its "own"
+                   vertices are the sensorEquiv ROI of the same name (the
+                   cortex under the electrodes), so the number is the mean
+                   squared gain over ROI j's vertices relative to ROI i's.
+    """
     files = sorted((out_dir / 'per_subject').glob('*_sensor.npz'))
     if not files:
         return None, None
@@ -392,8 +401,24 @@ def sensor_pairs(out_dir):
         d = np.load(f, allow_pickle=True)
         c = d['ctf']
         names = list(d['names'])
-        n = c / np.linalg.norm(c, axis=1, keepdims=True)
-        mats.append(np.abs(n @ n.T))
+        if metric == 'cos':
+            n = c / np.linalg.norm(c, axis=1, keepdims=True)
+            mats.append(np.abs(n @ n.T))
+            continue
+        subj = f.name.split('_sensor.npz')[0]
+        eq = sorted((out_dir / 'per_subject').glob(f'{subj}_*_sensorEquiv.npz'))
+        if not eq:
+            continue
+        e = np.load(eq[0], allow_pickle=True)
+        rows = dict(zip(list(e['roi_names']), list(e['roi_rows'])))
+        if not all(n in rows for n in names):
+            continue
+        own = np.array([np.mean(c[i, rows[n]] ** 2) for i, n in enumerate(names)])
+        M = np.array([[np.mean(c[i, rows[nj]] ** 2) / own[i] for nj in names]
+                      for i in range(len(names))])
+        mats.append(M)
+    if not mats:
+        return None, None
     return names, np.mean(mats, axis=0)
 
 
@@ -427,18 +452,24 @@ def _heat(ax, M, names, vmax, fmt, cmap, title):
 
 
 def plot_matrices(out_dir, pair_g, methods, atlases, weights, task, stim):
-    sens_names, sens_M = sensor_pairs(out_dir)
-    for col, vmax, fmt, cmap, fname, label in [
-        ('pattern_cos', 1.0, lambda v: f'{v:.2f}', 'Blues', 'pattern_overlap',
-         '|cos(CTF_i, CTF_j)| = expected zero-lag correlation under white sources'),
-        ('ctf_xtalk', 1.0, lambda v: f'{100 * v:.0f}', 'Oranges', 'crosstalk',
-         'CTF cross-talk: source power in ROI j reported by ROI i, % of its own'),
-    ]:
+    # (column, scale, vmax, cell format, cmap, file, title, colorbar label,
+    #  sensor-panel metric).  Cells and colorbar share the same units; values
+    # above vmax (LCMV cross-talk > 100 %) keep their number and saturate.
+    specs = [
+        ('pattern_cos', 1.0, 1.0, lambda v: f'{v:.2f}', 'Blues', 'pattern_overlap',
+         '|cos(CTF_i, CTF_j)| = expected zero-lag correlation under white sources',
+         '|cos|', 'cos'),
+        ('ctf_xtalk', 100.0, 100.0, lambda v: f'{v:.0f}', 'Oranges', 'crosstalk',
+         'CTF cross-talk: source power in ROI j reported by ROI i, % of its own',
+         '% of own-ROI power (cells > 100 saturate)', 'xtalk'),
+    ]
+    for col, scale, vmax, fmt, cmap, fname, label, cb_label, sens_metric in specs:
+        sens_names, sens_M = sensor_pairs(out_dir, sens_metric)
         n_rows = len(atlases) + (1 if sens_M is not None else 0)
         n_cols = len(methods)
         fig, axes = plt.subplots(n_rows, n_cols,
-                                 figsize=(3.6 * n_cols + 1.2, 3.2 * n_rows + 0.8),
-                                 squeeze=False)
+                                 figsize=(3.9 * n_cols + 1.4, 3.4 * n_rows + 0.8),
+                                 squeeze=False, layout='constrained')
         im = None
         for ai, atlas in enumerate(atlases):
             for mi, method in enumerate(methods):
@@ -449,19 +480,25 @@ def plot_matrices(out_dir, pair_g, methods, atlases, weights, task, stim):
                     ax.set_axis_off()
                     continue
                 names = list(dict.fromkeys(d.roi_i))
-                M = _matrix(d, names, col)
+                M = _matrix(d, names, col) * scale
                 im = _heat(ax, M, names, vmax, fmt, cmap,
                            f'{atlas} · {method}' if ai == 0 else atlas)
         if sens_M is not None:
             ax = axes[-1, 0]
-            im = _heat(ax, np.minimum(sens_M, vmax), sens_names, vmax, fmt, cmap,
+            SM = sens_M * scale
+            np.fill_diagonal(SM, np.nan)      # own/own, like the source panels
+            im = _heat(ax, SM, sens_names, vmax, fmt, cmap,
                        'sensor pseudo-channels (3-electrode means)')
             for mi in range(1, n_cols):
                 axes[-1, mi].set_axis_off()
         fig.suptitle(f'{label}\n{task} / {stim}, group mean over subjects, '
                      f'ROI weights = {weights}', fontsize=11)
         if im is not None:
-            fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.5, pad=0.02)
+            cb = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.5, pad=0.02)
+            cb.set_label(cb_label, fontsize=9)
+            if vmax == 100.0:
+                cb.set_ticks([0, 25, 50, 75, 100])
+                cb.set_ticklabels(['0', '25', '50', '75', '≥100'])
         fig.savefig(out_dir / f'{fname}.png', dpi=170, bbox_inches='tight')
         plt.close(fig)
 
@@ -576,7 +613,7 @@ def plot_brain_maps(out_dir, src, methods, atlases, weights):
 
 
 def write_summary(out_dir, roi_g, pair_g, methods, atlases, weights, task, stim):
-    sens_names, sens_M = sensor_pairs(out_dir)
+    sens_names, sens_M = sensor_pairs(out_dir, 'cos')
     lines = [f'Resolution analysis — {task} / {stim}  (weights = {weights})', '']
     if sens_M is not None:
         off = sens_M[~np.eye(len(sens_names), dtype=bool)]
