@@ -66,7 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     SUBJECT_IDS, SPEECH_ROIS, find_cached_npz,
-    INVERSE_METHODS, ATLAS_CHOICES,
+    INVERSE_METHODS, ATLAS_CHOICES, method_arg,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
@@ -213,7 +213,10 @@ def parse_args():
                              'subject-parallel batch, sharing the forward model '
                              '(e.g. --stim-class prodDiff percDiff)')
     parser.add_argument('--method', required=True,
-                        choices=INVERSE_METHODS,
+                        type=method_arg, metavar='METHOD',
+                        help=f'one of {INVERSE_METHODS} or a regularization '
+                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
+                             '(own cache/result dirs)',
                         help='inverse method: dSPM / sLORETA / eLORETA share '
                              'one minimum-norm operator; LCMV is the beamformer')
     parser.add_argument('--feature-mode', default='pca_flip',

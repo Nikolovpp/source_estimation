@@ -57,7 +57,7 @@ from joblib import Parallel, delayed
 from config import (
     SUBJECT_IDS, SPEECH_ROIS, DECODE_OUTPUT_ROOT,
     find_cached_npz, cache_feat_mode,
-    INVERSE_METHODS, ATLAS_CHOICES,
+    INVERSE_METHODS, ATLAS_CHOICES, method_arg,
 )
 from decoding_io import _load_cached_roi_data, filter_roi_dict
 from granger import (
@@ -577,7 +577,10 @@ def parse_args():
     p = argparse.ArgumentParser(description='Source-space pairwise Granger causality (BSMART port)')
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--stim-class', required=True, choices=['prodDiff', 'percDiff'])
-    p.add_argument('--method', required=True, choices=INVERSE_METHODS)
+    p.add_argument('--method', required=True, type=method_arg, metavar='METHOD',
+                        help=f'one of {INVERSE_METHODS} or a regularization '
+                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
+                             '(own cache/result dirs)')
     p.add_argument('--atlas', default='HCPMMP1', choices=ATLAS_CHOICES)
     p.add_argument('--feature-mode', default='vertex_selectkbest',
                    choices=['vertex_pca', 'vertex_selectkbest',

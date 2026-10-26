@@ -81,7 +81,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    INVERSE_METHODS, ATLAS_CHOICES,
+    INVERSE_METHODS, ATLAS_CHOICES, method_arg, parse_method,
     SUBJECT_IDS, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
@@ -110,7 +110,10 @@ def parse_args():
     parser.add_argument('--stim-class', required=True,
                         choices=['prodDiff', 'percDiff'])
     parser.add_argument('--method', required=True,
-                        choices=INVERSE_METHODS)
+                        type=method_arg, metavar='METHOD',
+                        help=f'one of {INVERSE_METHODS} or a regularization '
+                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
+                             '(own cache/result dirs)')
     parser.add_argument('--atlas', default='aparc',
                         choices=ATLAS_CHOICES)
     roi_grp = parser.add_mutually_exclusive_group(required=True)
@@ -217,10 +220,11 @@ def _compute_subject_rois(subj_id, task, stim_class, method, feature_mode,
         print(f'  SKIPPING {subj_id}: {e}')
         return None
 
-    if method in MINIMUM_NORM_METHODS:
+    base_method, _ = parse_method(method)
+    if base_method in MINIMUM_NORM_METHODS:
         stcs = run_minimum_norm(epochs, fwd, baseline_tmin, baseline_tmax,
                                 method=method)
-    elif method == 'LCMV':
+    elif base_method == 'LCMV':
         stcs = run_lcmv(epochs, fwd, baseline_tmin, baseline_tmax)
     else:
         raise ValueError(f'Unknown inverse method {method!r}')

@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))
                 if '__file__' in dir() else os.getcwd())
 
 from config import (
-    INVERSE_METHODS, ATLAS_CHOICES,
+    INVERSE_METHODS, ATLAS_CHOICES, method_arg,
     SUBJECT_IDS, DECODE_OUTPUT_ROOT, SPEECH_ROIS,
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
     DEFAULT_C, ROI_TIMESERIES_ROOT, classifier_path_segment,
@@ -97,7 +97,10 @@ def parse_args():
     p.add_argument('--task', required=True,
                    choices=['perception', 'overtProd'])
     p.add_argument('--method', required=True,
-                   choices=INVERSE_METHODS)
+                   type=method_arg, metavar='METHOD',
+                        help=f'one of {INVERSE_METHODS} or a regularization '
+                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
+                             '(own cache/result dirs)')
     p.add_argument('--feature-mode', required=True,
                    choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                             'vertex_selectkbest_all'])
@@ -128,6 +131,12 @@ def parse_args():
                    default=['percDiff', 'prodDiff'],
                    choices=['percDiff', 'prodDiff'])
     p.add_argument('--subjects', nargs='+', default=SUBJECT_IDS)
+    p.add_argument('--exclude-subjects', nargs='+', default=[], metavar='SUBJ',
+                   help='Subjects to withhold from the group stats (sensitivity '
+                        'check, e.g. EEGPROD4014 EEGPROD4020 or just 4014 4020). '
+                        'Stats CSVs, figures and the cluster log then go to an '
+                        'excl_<ids> subfolder next to the full-group outputs, '
+                        'which are left untouched.')
     p.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
                    help='sampling-rate variant of the ROI cache the ERPs are '
                         'read from (must match run_source_localize.py --fs)')
@@ -154,6 +163,33 @@ def find_contiguous_clusters(mask):
     if in_cluster:
         clusters.append((start_idx, len(mask) - 1))
     return clusters
+
+
+# Set by main() when --exclude-subjects is given: every output directory of
+# this run gets this extra trailing segment so the n=20 outputs survive.
+EXCL_SUBDIR = None
+
+
+def _out(path):
+    return path / EXCL_SUBDIR if EXCL_SUBDIR else path
+
+
+def resolve_exclusions(subjects, exclude):
+    """Apply --exclude-subjects (full IDs or bare numbers) and return
+    (kept subjects, subfolder tag or None)."""
+    if not exclude:
+        return list(subjects), None
+    full = []
+    for e in exclude:
+        e = str(e)
+        if not e.startswith('EEGPROD'):
+            e = f'EEGPROD{e}'
+        if e not in subjects:
+            print(f'  WARNING: --exclude-subjects {e} is not in the subject list')
+        full.append(e)
+    kept = [s for s in subjects if s not in full]
+    tag = 'excl_' + '_'.join(sorted(s.replace('EEGPROD', '') for s in full))
+    return kept, tag
 
 
 def load_subject_csvs(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
@@ -346,8 +382,8 @@ def compute_stats(task, method, atlas, feat_mode, leakage_tag, pseudo_tag,
 
     # Save CSVs
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
-    out_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
-               / leakage_tag / pseudo_tag / sw_tag / clf_tag / stim_class)
+    out_dir = _out(DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
+                   / leakage_tag / pseudo_tag / sw_tag / clf_tag / stim_class)
     out_dir.mkdir(parents=True, exist_ok=True)
     base = f'{task}_{stim_class}_{SW_DUR}_{SW_STEP_SIZE}_{n_subj}subjAvg'
 
@@ -825,7 +861,11 @@ def main():
     correct_across_rois = args.correct_across_rois
     effective_c = args.c if args.c is not None else DEFAULT_C.get(classifier, 1.0)
     stim_classes = args.stim_classes
-    subjects = args.subjects
+    global EXCL_SUBDIR
+    subjects, EXCL_SUBDIR = resolve_exclusions(args.subjects, args.exclude_subjects)
+    if EXCL_SUBDIR:
+        print(f'Withholding {args.exclude_subjects} -> {len(subjects)} subjects; '
+              f'outputs under .../{EXCL_SUBDIR}/')
     run_erp = not args.skip_erp
 
     leakage_tag = 'leakage_corrected' if leakage_correction else 'raw'
@@ -833,7 +873,7 @@ def main():
     clf_tag = classifier_path_segment(classifier, effective_c, tune_hyperparams)
     sw_tag = f'{SW_DUR}_{SW_STEP_SIZE}'
 
-    figures_dir = (
+    figures_dir = _out(
         DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
         / leakage_tag / pseudo_tag / sw_tag / clf_tag / 'figures'
     )
@@ -1016,8 +1056,8 @@ def main():
                         label=f'{sc} TFCE (ROI-Bonf)'))
 
         # Write log file next to the stats CSVs
-        log_dir = (DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
-                   / leakage_tag / pseudo_tag / sw_tag / clf_tag)
+        log_dir = _out(DECODE_OUTPUT_ROOT / task / method / atlas / feat_mode
+                       / leakage_tag / pseudo_tag / sw_tag / clf_tag)
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f'{task}_{method}_cluster_summary.log'
         log_file.write_text('\n'.join(log_lines) + '\n')

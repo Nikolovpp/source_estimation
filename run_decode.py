@@ -56,7 +56,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
-    INVERSE_METHODS, ATLAS_CHOICES,
+    INVERSE_METHODS, ATLAS_CHOICES, method_arg,
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     DECODE_TMIN, SPEECH_ROIS,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
@@ -167,7 +167,10 @@ def parse_args():
     parser.add_argument('--stim-class', required=True,
                         choices=['prodDiff', 'percDiff'])
     parser.add_argument('--method', required=True,
-                        choices=INVERSE_METHODS)
+                        type=method_arg, metavar='METHOD',
+                        help=f'one of {INVERSE_METHODS} or a regularization '
+                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
+                             '(own cache/result dirs)')
     parser.add_argument('--feature-mode', default='pca_flip',
                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                                  'vertex_selectkbest_all'])
