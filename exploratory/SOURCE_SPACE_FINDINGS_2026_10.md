@@ -170,6 +170,25 @@ stacked by receiving ROI), `summary.txt` and the parcel CSVs in that folder.
 DeFleCT with nulls on the other ROIs (same folder, `*_deflect_*`) lowers the
 sensorimotor share to 6–10 % and leaves the neighborhood leak as is.
 
+**9. Why dSPM and LCMV decode alike although their CTFs are nothing alike
+(checked 2026-10-26 in `DECODE_source_space`).** overtProd/prodDiff, raw,
+selectkbest, logistic_tuned, n = 20: LCMV/custom (July, post rank fix) peaks
+0.55–0.59 at speech onset, dSPM/sensorEquiv peaks 0.55–0.62 at speech onset;
+the accuracy curves of *any* LCMV ROI and *any* dSPM ROI correlate 0.83–0.97
+over time, and within one arm the ROI curves correlate 0.90–0.93. Perception
+(old matched arm, custom/vertex_pca/leakage, n = 18–20) is the same story at
+chance level. Reason: a linear classifier is blind to the inverse. An ROI's
+vertex time courses are the sensors passed through the ROI block of the
+kernel, and that block spans only 9–16 sensor-space directions at 1 % of
+the leading singular value (5–6 at 10 %) for every ROI; the leading
+directions are the smooth topographies over that part of the head, and the
+ROIs share them (50–80 % subspace overlap between any two ROIs, against
+8–16 % for random subspaces). What the classifier sees is the onset-locked
+sensor pattern projected into that shared subspace, under dSPM, eLORETA or
+LCMV alike. The CTF decides where the signal is *attributed*, not whether
+it is decodable, so resolution improvements change interpretation and GC,
+and should not be expected to move decoding peaks.
+
 ## Decisions and what runs next
 
 * Keep dSPM/eLORETA (SNR 3) as the production inverse; drop LCMV.
