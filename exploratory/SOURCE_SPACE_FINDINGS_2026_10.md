@@ -126,6 +126,27 @@ cluster structure are unchanged. Outputs in `.../logistic_tuned/prodDiff/
 excl_4014_4020/` and `.../figures/excl_4014_4020/` (via
 `source_stats_viz.py --exclude-subjects 4014 4020`).
 
+**8. Whole-brain leakage maps (where the cross-talk energy comes from;
+`exploratory/ctf_leakage_map.py`, both tasks agree).** Most of each ROI's
+leaked energy is its own neighborhood: Temporal from TE1p/TE1m/OP4/PF,
+Inferior Frontal from 46/p9-46v/8Av/8C/6r, Superior Frontal from 3b/4/SCEF/
+8Av, Superior Parietal from VIP/area 1/PFm/area 2. The sensorimotor strip
+(areas 1, 4, 3b, 3a, 2) is the only region that feeds *all four* speech ROIs
+and tops the common-leak ranking, but it is a modest share: 10–16 % of each
+speech ROI's energy, 20 % of all leaked energy. Right hemisphere: 1–4 % for
+Temporal/IFG, 10–18 % for SFG/SPL (midline ROIs). The Visual control takes
+28–33 % of its energy from the *right* early visual cortex and < 0.5 % from
+the sensorimotor strip, so Visual decoding as well as the speech ROIs
+cannot be sensorimotor leakage; it is either genuine visual discrimination
+of the stimuli or a signal that reaches every ROI through the sensors
+rather than through cortex (articulation EMG, eye movements).
+Figures: `R/overtProd_prodDiff/leakage_map/brain_sensorEquiv_mn_dSPM_snr3_d0.8_l0_shrunk.png`
+(per-ROI leak sources, total, common; lateral + medial),
+`parcels_sensorEquiv_mn_dSPM_snr3_d0.8_l0_shrunk.png` (top-20 parcels
+stacked by receiving ROI), `summary.txt` and the parcel CSVs in that folder.
+DeFleCT with nulls on the other ROIs (same folder, `*_deflect_*`) lowers the
+sensorimotor share to 6–10 % and leaves the neighborhood leak as is.
+
 ## Decisions and what runs next
 
 * Keep dSPM/eLORETA (SNR 3) as the production inverse; drop LCMV.
@@ -137,7 +158,9 @@ excl_4014_4020/` and `.../figures/excl_4014_4020/` (via
 * DeFleCT with nulls is the candidate for the GC stage (virtual-channel
   path), to be wired after the decoding comparison.
 * Group stats: report n = 20 and n = 18 (without 4014/4020) side by side.
-* Still open: the sensorimotor-leakage check (share of each ROI's CTF energy
-  on a sensorimotor label, computable from the saved CTF vectors), which
-  would decide between a DeFleCT null on sensorimotor cortex and adding it as
-  a sixth ROI.
+* The sensorimotor check is done (finding 8): the strip is the one common
+  source but only 10–16 % per ROI, so a DeFleCT null on areas 1/4/3b/3a/2 is
+  a cheap, targeted addition for the GC stage; adding the strip as a sixth
+  ROI is the alternative if its own time course is of interest. Neither
+  explains the Visual control, which needs the sensor-level (EMG / ocular)
+  check instead.

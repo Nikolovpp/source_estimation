@@ -103,6 +103,12 @@ the workstation run order and the decision rule.
   noise-gain per ROI, LCMV collapse detector, every subject's |cos| matrix,
   configuration-ranking agreement; `subject_qc/` per task + cross-task
   `overview.png`. Runs locally.
+- `ctf_leakage_map.py` — whole-brain answer to "where does each ROI's
+  cross-talk energy come from": energy-fraction maps from the saved sweep
+  CTF vectors, own ROI masked, summed and geometric-mean ("common") across
+  the speech ROIs, aggregated onto the 360 HCPMMP1 parcels (ranked table,
+  stacked bars, lateral+medial brain maps). Decides DeFleCT nulls / extra
+  ROIs without guessing. `leakage_map/` per task. Runs locally.
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.
