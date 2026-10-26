@@ -114,6 +114,11 @@ the workstation run order and the decision rule.
   per-ROI max first), diverging brain panels + per-ROI max/mean |diff| and
   cos table; shows that the minimum-norm family differs only at the edges
   and at Visual. `ctf_maps_diff_{A}-{B}_{atlas}.png` per task. Runs locally.
+- `compare_decoding_kernels.py` — overlays several `--method` decoding
+  arms ROI by ROI on identical subjects/windows and quantifies the paired
+  per-subject differences (r over time, max group difference, difference at
+  the reference peak ± SEM, t-test, vs the group SEM). Decides whether a
+  second kernel is worth its 1400 min. `_kernel_comparison/` per task.
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.
