@@ -214,11 +214,11 @@ def parse_args():
                              '(e.g. --stim-class prodDiff percDiff)')
     parser.add_argument('--method', required=True,
                         type=method_arg, metavar='METHOD',
-                        help=f'one of {INVERSE_METHODS} or a regularization '
-                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
-                             '(own cache/result dirs)',
-                        help='inverse method: dSPM / sLORETA / eLORETA share '
-                             'one minimum-norm operator; LCMV is the beamformer')
+                        help=f'one of {INVERSE_METHODS} (dSPM / sLORETA / eLORETA '
+                             'share one minimum-norm operator; LCMV is the '
+                             'beamformer) or a regularization variant '
+                             '<mn method>_snr<N>, e.g. dSPM_snr10 (own '
+                             'cache/result dirs)')
     parser.add_argument('--feature-mode', default='pca_flip',
                         choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                                  'vertex_selectkbest_all'])
