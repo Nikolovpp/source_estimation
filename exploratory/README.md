@@ -109,6 +109,11 @@ the workstation run order and the decision rule.
   the speech ROIs, aggregated onto the 360 HCPMMP1 parcels (ranked table,
   stacked bars, lateral+medial brain maps). Decides DeFleCT nulls / extra
   ROIs without guessing. `leakage_map/` per task. Runs locally.
+- `ctf_method_diff_map.py` — signed difference of two inverses' CTF maps
+  (default dSPM minus eLORETA; each method's group |CTF| scaled to its own
+  per-ROI max first), diverging brain panels + per-ROI max/mean |diff| and
+  cos table; shows that the minimum-norm family differs only at the edges
+  and at Visual. `ctf_maps_diff_{A}-{B}_{atlas}.png` per task. Runs locally.
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.

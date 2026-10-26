@@ -25,6 +25,15 @@ the overtProd figures are linked, the perception twins sit next to them.
   inside the ROI = well resolved; the LCMV maps paint half the hemisphere.
   The leakage maps (`leakage_map/brain_*.png`) use CTF² with the own-ROI
   vertices masked, again scaled to each map's max.
+* **dSPM, sLORETA and eLORETA maps look identical because they nearly are.**
+  dSPM and sLORETA are one minimum-norm kernel with different per-vertex
+  scale factors (their PSF ratio is constant across ROIs at every vertex),
+  so an ROI's CTF changes only through the within-ROI weights; eLORETA is a
+  different kernel that lands in the same place at 64 channels. Normalized
+  maps agree to cos 0.98–0.99 for the speech ROIs (mean |diff| 0.01–0.02,
+  max 0.06–0.16); Visual is the exception (cos 0.93–0.95, eLORETA tighter).
+  `ctf_maps_diff_dSPM-eLORETA_{atlas}.png` (`exploratory/ctf_method_diff_map.py`)
+  shows the signed difference on a diverging scale.
 * **|cos(CTF_i, CTF_j)|** = expected zero-lag correlation between ROI i and
   ROI j under spatially white sources; the quantity that matters for both
   decoding (shared signal) and TRGC (instantaneous mixing).
