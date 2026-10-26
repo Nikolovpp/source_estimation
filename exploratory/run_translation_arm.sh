@@ -74,6 +74,15 @@
 # stats simply recompute (cheap). Re-running the same command after a crash
 # or a kill continues at the first unfinished subject.
 #
+# DEFLECT ARM (2026-10-26). FEAT=deflect (or a full design string such as
+# deflect_k3_null2_other_rois_sm) replaces the vertex caches with k DeFleCT
+# virtual channels per ROI (deflect.py): no inverse, filters designed from the
+# leadfield + the subject's noise covariance at the SNR of METHODS
+# (dSPM_snr10 -> 10).  Caches are ~1 % of the vertex caches and the decode
+# stage is correspondingly faster (3 features instead of 200).  Logs carry the
+# feature mode in their name.  GC uses N_PCS components per ROI (<= k).
+#   FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect.log 2>&1 &
+#
 # REGULARIZATION VARIANTS (2026-10-26, from the resolution sweep). A method
 # may carry an _snr<N> suffix: METHODS="dSPM_snr10" runs the same pipeline
 # with lambda2 = 1/100 instead of the production 1/9 (config.parse_method).
@@ -109,6 +118,7 @@ ORDER="${ORDER:-10}"
 WIN_MS="${WIN_MS:-40}"
 TARGET_FS="${TARGET_FS:-500}"
 CLASSIFIER="${CLASSIFIER:-logistic}"
+N_PCS="${N_PCS:-1}"           # components per ROI for GC (<= k for a DeFleCT arm)
 STEPS="${STEPS:-localize decode latency gc stats}"
 EDGE_GUARD="${EDGE_GUARD:-30}"
 TAIL_GUARD="${TAIL_GUARD:-50}"
@@ -122,6 +132,9 @@ LOC_FS="$DEC_FS"; [ "$GC_FS" != "$DEC_FS" ] && LOC_FS="$DEC_FS $GC_FS"
 GC_CACHE_TAG="$LEAK_TAG"; [ "$GC_FS" != "2000" ] && GC_CACHE_TAG="${LEAK_TAG}_fs${GC_FS}"
 LOG_ROOT="logs/translation_arm"
 mkdir -p "$LOG_ROOT"
+# non-default feature modes (e.g. FEAT=deflect) get their own log names so a
+# DeFleCT arm never overwrites the vertex arm's logs for the same method
+# (FT is set after conda activation, once FEAT is canonical)
 
 # conda is needed even in DRY_RUN (the stats stage derives paths via python)
 if true; then
@@ -134,6 +147,12 @@ if true; then
     fi
     conda activate mne 2>/dev/null || { echo "ERROR: cannot activate 'mne'" >&2; exit 1; }
 fi
+
+# the python runners normalize the feature mode (deflect -> deflect_k3_null2_other_rois)
+# and use the full string as a path segment; do the same here so the stats
+# stage and the log names agree with what the runners write
+FEAT=$(python -c "from config import canonical_feature_mode; print(canonical_feature_mode('$FEAT'))") || { echo "ERROR: bad FEAT=$FEAT" >&2; exit 1; }
+FT=""; [ "$FEAT" != "vertex_selectkbest" ] && FT="_${FEAT}"
 
 run () {   # run <log> <cmd...>
     local log="$1"; shift
@@ -156,7 +175,7 @@ echo
 if has localize; then
 echo "== localize (subject-parallel, $LOC_JOBS workers; rates: $LOC_FS Hz)"
 for FS in $LOC_FS; do for T in $TASKS; do for M in $METHODS; do
-    run "$LOG_ROOT/localize_${T}_${M}_fs${FS}.log" \
+    run "$LOG_ROOT/localize_${T}_${M}${FT}_fs${FS}.log" \
         python run_source_localize.py --task "$T" --stim-class $STIMS --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$FS") --n-jobs "$LOC_JOBS"
 done; done; done
@@ -167,7 +186,7 @@ fi
 if has decode; then
 echo "== decode (subject-sequential, $DEC_JOBS ROI x window workers, ${DEC_FS} Hz caches)"
 for T in $TASKS; do for S in $STIMS; do for M in $DEC_METHODS; do
-    run "$LOG_ROOT/decode_${T}_${S}_${M}.log" \
+    run "$LOG_ROOT/decode_${T}_${S}_${M}${FT}.log" \
         python run_decode.py --task "$T" --stim-class "$S" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$DEC_FS") \
             --classifier "$CLASSIFIER" --tune-hyperparams --n-jobs "$DEC_JOBS"
@@ -179,7 +198,7 @@ fi
 if has latency; then
 echo "== latency (decode_onset_latency.py, control = Visual)"
 for T in $TASKS; do for M in $DEC_METHODS; do
-    run "$LOG_ROOT/latency_${T}_${M}.log" \
+    run "$LOG_ROOT/latency_${T}_${M}${FT}.log" \
         python exploratory/decode_onset_latency.py --task "$T" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK \
             --classifier "$CLASSIFIER" --tune-hyperparams --stim-classes $STIMS \
@@ -190,13 +209,13 @@ fi
 
 # ── 4. GC: all 10 pairs of the 5 ROIs, plain GC + TRGC ──────────────────
 if has gc; then
-echo "== gc (order $ORDER, $WIN_MS ms @ $TARGET_FS Hz, normalize none, 1 PC/ROI, --trgc; ${GC_FS} Hz caches)"
+echo "== gc (order $ORDER, $WIN_MS ms @ $TARGET_FS Hz, normalize none, $N_PCS PC/ROI, --trgc; ${GC_FS} Hz caches)"
 for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
-    run "$LOG_ROOT/gc_${T}_${S}_${M}.log" \
+    run "$LOG_ROOT/gc_${T}_${S}_${M}${FT}.log" \
         python run_granger.py --task "$T" --stim-class "$S" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$GC_FS") --gc-mode pairwise \
             --order "$ORDER" --win-ms "$WIN_MS" --target-fs "$TARGET_FS" \
-            --normalize none --n-pcs 1 --trgc --n-jobs "$GC_JOBS"
+            --normalize none --n-pcs "$N_PCS" --trgc --n-jobs "$GC_JOBS"
 done; done; done
 echo
 fi
@@ -205,7 +224,7 @@ fi
 if has stats; then
 echo "== stats (granger_stats.py)"
 GC_ROOT=$(python -c "from run_granger import GC_OUTPUT_ROOT, gc_tag; print(GC_OUTPUT_ROOT)")
-TAG=$(python -c "from run_granger import gc_tag; print(gc_tag($ORDER, $WIN_MS, $TARGET_FS, 'none'))")
+TAG=$(python -c "from run_granger import gc_tag; print(gc_tag($ORDER, $WIN_MS, $TARGET_FS, 'none', n_pcs=$N_PCS))")
 WINDOWS=$(python - <<'EOF'
 from config import GC_WINDOWS_OF_INTEREST
 for task, d in GC_WINDOWS_OF_INTEREST.items():
@@ -218,14 +237,14 @@ for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
     D="$GC_ROOT/$T/$M/$ATLAS/$FEAT/$LEAK_TAG/$TAG/all_rois/$S"
     if [ ! -d "$D" ] && [ "$DRY_RUN" != "1" ]; then echo "  MISSING $D"; continue; fi
     # (a) sensor-faithful: leading-100 ms baseline, whole task span, right-tailed t
-    run "$LOG_ROOT/stats_${T}_${S}_${M}_full.log" \
+    run "$LOG_ROOT/stats_${T}_${S}_${M}${FT}_full.log" \
         python granger_stats.py --gc-dir "$D" --out-dir "$D/group_stats" \
             --edge-guard "$EDGE_GUARD" --tail-guard "$TAIL_GUARD" --n-jobs "$STATS_JOBS"
     # (b) clean baseline + each a-priori window of interest
     BL=$(bl_for "$T")
     echo "$WINDOWS" | while read -r WT WN LO HI; do
         [ "$WT" = "$T" ] || continue
-        run "$LOG_ROOT/stats_${T}_${S}_${M}_${WN}.log" \
+        run "$LOG_ROOT/stats_${T}_${S}_${M}${FT}_${WN}.log" \
             python granger_stats.py --gc-dir "$D" --out-dir "$D/group_stats_win_${WN}" \
                 --baseline-start ${BL% *} --baseline-end ${BL#* } \
                 --task-start "$LO" --task-end "$HI" \

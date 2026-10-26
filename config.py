@@ -569,6 +569,81 @@ def method_arg(value):
         raise argparse.ArgumentTypeError(str(e))
     return value
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Feature modes.  The four production modes plus the DeFleCT virtual-channel
+# mode (Hauk & Stenroos 2014; see deflect.py).  A DeFleCT mode string carries
+# its design in the name, like the _snr method variants:
+#     deflect[_k<K>][_null<N>][_<nulls>]
+#   K      pass patterns per ROI = virtual channels per ROI (default 3)
+#   N      topographies nulled per null region (default 2)
+#   nulls  none | other_rois | other_rois_sm | sm   (default other_rois;
+#          sm = HCPMMP1 sensorimotor strip, DEFLECT_SM_PARCELS)
+# ``deflect`` alone means the default design; every spelling is normalized
+# to its canonical full string (cache dir and result dir), so 'deflect' and
+# 'deflect_k3_null2_other_rois' are the same arm.  The assumed SNR of the
+# filter design comes from the --method string (dSPM_snr10 -> 10), which is
+# also the {method} path segment the DeFleCT caches live under.
+# ─────────────────────────────────────────────────────────────────────
+PRODUCTION_FEATURE_MODES = ['pca_flip', 'vertex_pca', 'vertex_selectkbest',
+                            'vertex_selectkbest_all']
+DEFLECT_DEFAULTS = dict(k=3, null_comp=2, nulls='other_rois')
+DEFLECT_NULL_CHOICES = ['none', 'other_rois', 'other_rois_sm', 'sm']
+DEFLECT_SM_PARCELS = ['4', '3a', '3b', '1', '2']       # HCPMMP1 area names
+FEATURE_MODE_CHOICES = PRODUCTION_FEATURE_MODES + ['deflect']
+
+
+def parse_feature_mode(mode):
+    """Split a feature-mode string into (base, params).
+
+    base    one of PRODUCTION_FEATURE_MODES, or 'deflect'
+    params  {} for production modes; {'k', 'null_comp', 'nulls'} for DeFleCT
+    Raises ValueError for anything else."""
+    mode = str(mode)
+    if mode in PRODUCTION_FEATURE_MODES:
+        return mode, {}
+    if mode != 'deflect' and not mode.startswith('deflect_'):
+        raise ValueError(f'unknown feature mode {mode!r}; choose from '
+                         f'{PRODUCTION_FEATURE_MODES} or deflect[_k<K>]'
+                         f'[_null<N>][_<nulls>] with nulls in '
+                         f'{DEFLECT_NULL_CHOICES}')
+    prm = dict(DEFLECT_DEFAULTS)
+    toks = mode.split('_')[1:]
+    rest = []
+    for t in toks:
+        if t[:1] == 'k' and t[1:].isdigit() and not rest:
+            prm['k'] = int(t[1:])
+        elif t.startswith('null') and t[4:].isdigit() and not rest:
+            prm['null_comp'] = int(t[4:])
+        else:
+            rest.append(t)
+    if rest:
+        prm['nulls'] = '_'.join(rest)
+    if prm['nulls'] not in DEFLECT_NULL_CHOICES:
+        raise ValueError(f'{mode!r}: nulls must be one of {DEFLECT_NULL_CHOICES}')
+    if prm['k'] < 1 or prm['null_comp'] < 1:
+        raise ValueError(f'{mode!r}: k and null count must be >= 1')
+    return 'deflect', prm
+
+
+def canonical_feature_mode(mode):
+    """'deflect' -> 'deflect_k3_null2_other_rois'; production modes unchanged."""
+    base, prm = parse_feature_mode(mode)
+    if base != 'deflect':
+        return base
+    return f"deflect_k{prm['k']}_null{prm['null_comp']}_{prm['nulls']}"
+
+
+def feature_mode_arg(value):
+    """argparse ``type=`` for ``--feature-mode``; returns the canonical
+    string so every path segment downstream is unambiguous."""
+    try:
+        return canonical_feature_mode(value)
+    except ValueError as e:
+        import argparse
+        raise argparse.ArgumentTypeError(str(e))
+
+
 # Epoch parameters (in seconds)
 PERCEPTION_TMIN = -0.2
 PERCEPTION_TMAX = 0.6
@@ -688,6 +763,8 @@ def cache_feat_mode(feat_mode):
     """
     if feat_mode.startswith('vertex'):
         return 'vertex'
+    if feat_mode.startswith('deflect'):
+        return canonical_feature_mode(feat_mode)
     return feat_mode
 
 

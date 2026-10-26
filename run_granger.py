@@ -58,6 +58,7 @@ from config import (
     SUBJECT_IDS, SPEECH_ROIS, DECODE_OUTPUT_ROOT,
     find_cached_npz, cache_feat_mode,
     INVERSE_METHODS, ATLAS_CHOICES, method_arg,
+    feature_mode_arg, FEATURE_MODE_CHOICES,
 )
 from decoding_io import _load_cached_roi_data, filter_roi_dict
 from granger import (
@@ -583,10 +584,11 @@ def parse_args():
                              '(own cache/result dirs)')
     p.add_argument('--atlas', default='HCPMMP1', choices=ATLAS_CHOICES)
     p.add_argument('--feature-mode', default='vertex_selectkbest',
-                   choices=['vertex_pca', 'vertex_selectkbest',
-                            'vertex_selectkbest_all'],
-                   help='Locates the shared vertex cache (all vertex modes '
-                        'share it). pca_flip is NOT used for GC.')
+                   type=feature_mode_arg, metavar='MODE',
+                   help='Locates the cache: any vertex_* mode = the shared '
+                        'vertex cache; deflect[_k<K>][_null<N>][_<nulls>] = '
+                        'the DeFleCT virtual-channel cache (k channels per '
+                        'ROI; --n-pcs <= k). pca_flip is NOT used for GC.')
     p.add_argument('--leakage-correction', action='store_true', default=False)
     p.add_argument('--gc-mode', default='pairwise',
                    choices=['pairwise', 'conditional'],

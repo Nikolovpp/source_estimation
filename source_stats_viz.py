@@ -38,6 +38,7 @@ from config import (
     SW_DUR, SW_STEP_SIZE, BASELINE_WINDOWS,
     DEFAULT_C, ROI_TIMESERIES_ROOT, classifier_path_segment,
     find_cached_npz,
+    feature_mode_arg, FEATURE_MODE_CHOICES,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -102,8 +103,8 @@ def parse_args():
                              'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
                              '(own cache/result dirs)')
     p.add_argument('--feature-mode', required=True,
-                   choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
-                            'vertex_selectkbest_all'])
+                   type=feature_mode_arg, metavar='MODE',
+                   help=f'one of {FEATURE_MODE_CHOICES}; deflect may carry its design (deflect[_k<K>][_null<N>][_<nulls>], see run_source_localize.py)')
     p.add_argument('--atlas', required=True,
                    choices=ATLAS_CHOICES)
     p.add_argument('--leakage-correction', action='store_true', default=False)

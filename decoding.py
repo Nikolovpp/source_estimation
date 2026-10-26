@@ -10,6 +10,7 @@ Four feature-extraction strategies are supported:
   2. 'vertex_pca' — all vertices in ROI, PCA within sklearn pipeline
   3. 'vertex_selectkbest' — all vertices, SelectKBest(k=min(200, n_features))
   4. 'vertex_selectkbest_all' — all vertices, no feature selection (pass-through)
+  5. 'deflect*' — k DeFleCT virtual channels per ROI (deflect.py), pass-through
 
 Output CSV format:
   key, ms, mean_list, decode_acc, best_params
@@ -146,6 +147,8 @@ def _build_classifier_pipeline(classifier, feature_mode, n_features, c):
         steps.append(SelectKBest(f_classif, k=min(200, n_features)))
     elif feature_mode == 'vertex_selectkbest_all':
         pass  # no feature selection — all vertices go to the classifier
+    elif feature_mode.startswith('deflect'):
+        pass  # k DeFleCT virtual channels per ROI: all go to the classifier
 
     if classifier == 'svm':
         steps.append(LinearSVC(C=c, max_iter=5000))

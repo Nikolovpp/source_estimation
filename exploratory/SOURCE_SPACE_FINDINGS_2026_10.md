@@ -197,8 +197,14 @@ and should not be expected to move decoding peaks.
   (own caches/results under `{method} = dSPM_snr10`; resumes like the
   production arm). Whether halved cross-talk at doubled noise helps decoding
   is empirical; the resolution numbers cannot say.
-* DeFleCT with nulls is the candidate for the GC stage (virtual-channel
-  path), to be wired after the decoding comparison.
+* DeFleCT is wired (2026-10-26, `deflect.py`, feature mode `deflect`): K
+  virtual channels per ROI, other ROIs' topographies nulled, caches ~1 % of
+  the vertex caches. Run as its own arm, decoding *and* GC:
+  `FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect.log 2>&1 &`
+  Read the decoding of this arm as the specificity test (finding 9): the
+  vertex arm is the upper bound (signal reaches the ROI), the DeFleCT arm the
+  lower bound (signal is the ROI's own); a region is implicated when it
+  passes both. `deflect_other_rois_sm` adds the sensorimotor-strip null.
 * Group stats: report n = 20 and n = 18 (without 4014/4020) side by side.
 * The sensorimotor check is done (finding 8): the strip is the one common
   source but only 10–16 % per ROI, so a DeFleCT null on areas 1/4/3b/3a/2 is
