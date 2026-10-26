@@ -104,7 +104,7 @@ def _load_cached_roi_data(npz_path, feature_mode, roi_subset=None):
 def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                          feature_mode, roi_data, y, times, sfreq,
                          overwrite=False, atlas='aparc',
-                         leakage_correction=False, fs=2000):
+                         leakage_correction=False, fs=2000, extra=None):
     """Save source-estimated ROI time series as .npz files.
 
     If the file already exists and *overwrite* is False, the save is
@@ -113,6 +113,11 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
     Saved arrays use the original sensor-space pipeline's axis convention:
       - pca_flip:  (n_trials, n_timepoints, 1)    — 1 virtual sensor per ROI
       - vertex_*:  (n_trials, n_timepoints, n_vertices) — vertices as "channels"
+      - deflect_*: (n_trials, n_timepoints, k) — k DeFleCT virtual channels
+
+    ``extra`` : optional dict of additional arrays stored alongside (e.g. the
+    DeFleCT filters and diagnostics, keys ``deflect_*``); readers iterate
+    ``roi_names`` so they never confuse them with ROI data.
     """
     leakage_tag = cache_leakage_tag(leakage_correction, fs)
     ts_dir = (
@@ -139,6 +144,11 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
             save_dict[roi_name] = X_roi[:, :, np.newaxis]
         else:
             save_dict[roi_name] = X_roi.transpose(0, 2, 1)
+    if extra:
+        for k, v in extra.items():
+            if k in save_dict:
+                raise ValueError(f'extra key {k!r} collides with a cache field')
+            save_dict[k] = np.asarray(v)
 
     np.savez_compressed(npz_file, **save_dict)
     print(f'  Saved ROI time series: {npz_file}')

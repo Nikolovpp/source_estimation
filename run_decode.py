@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     INVERSE_METHODS, ATLAS_CHOICES, method_arg,
+    feature_mode_arg, FEATURE_MODE_CHOICES,
     SUBJECT_IDS, SW_DUR, SW_STEP_SIZE, DECODE_OUTPUT_ROOT,
     DECODE_TMIN, SPEECH_ROIS,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
@@ -172,8 +173,8 @@ def parse_args():
                              'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
                              '(own cache/result dirs)')
     parser.add_argument('--feature-mode', default='pca_flip',
-                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
-                                 'vertex_selectkbest_all'])
+                        type=feature_mode_arg, metavar='MODE',
+                        help=f'one of {FEATURE_MODE_CHOICES}; deflect may carry its design (deflect[_k<K>][_null<N>][_<nulls>], see run_source_localize.py)')
     parser.add_argument('--subjects', nargs='+', default=None)
     parser.add_argument('--n-jobs', type=int, default=64,
                         help='Worker processes for the (ROI x window) pool. '

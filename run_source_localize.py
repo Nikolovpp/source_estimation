@@ -58,6 +58,7 @@ import sys
 import time
 import warnings
 from multiprocessing import Pool
+import numpy as np
 
 warnings.filterwarnings('ignore')
 os.environ['PYTHONWARNINGS'] = 'ignore'
@@ -67,6 +68,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
     SUBJECT_IDS, SPEECH_ROIS, find_cached_npz,
     INVERSE_METHODS, ATLAS_CHOICES, method_arg,
+    feature_mode_arg, parse_feature_mode, parse_method, FEATURE_MODE_CHOICES,
 )
 from log_utils import setup_logging
 from data_loader import load_subject_epochs
@@ -80,14 +82,16 @@ from plotting import save_sensor_erp
 _fwd = None
 _src = None
 _roi_dict = None
+_sm_label = None      # HCPMMP1 sensorimotor strip (DeFleCT '*_sm' nulls only)
 
 
-def _init_worker(fwd, src, roi_dict):
+def _init_worker(fwd, src, roi_dict, sm_label=None):
     """Initialize each worker process with shared forward model data."""
-    global _fwd, _src, _roi_dict
+    global _fwd, _src, _roi_dict, _sm_label
     _fwd = fwd
     _src = src
     _roi_dict = roi_dict
+    _sm_label = sm_label
 
 
 def _process_subject(subj_id, task_cond, stim_class, method,
@@ -135,6 +139,39 @@ def _process_subject(subj_id, task_cond, stim_class, method,
 
     roi_labels = list(_roi_dict.values())
     roi_names = list(_roi_dict.keys())
+    fm_base, fm_prm = parse_feature_mode(feature_mode)
+
+    if fm_base == 'deflect':
+        # DeFleCT virtual channels: no whole-brain inverse.  One filter bank
+        # per ROI designed from the leadfield + this subject's noise
+        # covariance (assumed SNR from the --method string), applied to the
+        # sensor epochs -> (n_epochs, k, n_times) per ROI.  See deflect.py.
+        from deflect import run_deflect
+        _, snr = parse_method(method)
+        print(f'  Designing DeFleCT filter banks ({feature_mode}, SNR {snr:g})...')
+        roi_data, times, design = run_deflect(
+            epochs, _fwd, baseline_tmin, baseline_tmax, roi_labels, roi_names,
+            snr, fm_prm['k'], fm_prm['null_comp'], fm_prm['nulls'],
+            sm_label=_sm_label)
+        del epochs
+        gc.collect()
+        extra = {'deflect_ch_names': np.array(design['ch_names']),
+                 'deflect_snr': np.array(snr)}
+        for r in roi_names:
+            d = design['diag'][r]
+            extra[f'deflect_W__{r}'] = design['W'][r]
+            extra[f'deflect_se_own__{r}'] = d['se_own']
+            extra[f'deflect_noise_gain__{r}'] = d['noise_gain']
+        _save_roi_timeseries(subj_id, task_cond, stim_class, method,
+                             feature_mode, roi_data, y, times, sfreq,
+                             overwrite=overwrite_timeseries, atlas=atlas,
+                             leakage_correction=leakage_correction, fs=fs,
+                             extra=extra)
+        del roi_data
+        gc.collect()
+        print(f'  {subj_id} done in {(time.time() - subj_start) / 60.0:.1f} minutes')
+        return subj_id
+
     extract_mode = 'pca_flip' if feature_mode == 'pca_flip' else 'vertex'
 
     print(f'  Running {method} inverse (low-RAM)...')
@@ -220,8 +257,13 @@ def parse_args():
                              '<mn method>_snr<N>, e.g. dSPM_snr10 (own '
                              'cache/result dirs)')
     parser.add_argument('--feature-mode', default='pca_flip',
-                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
-                                 'vertex_selectkbest_all'])
+                        type=feature_mode_arg, metavar='MODE',
+                        help=f'one of {FEATURE_MODE_CHOICES}; deflect may '
+                             'carry its design: deflect[_k<K>][_null<N>]'
+                             '[_<none|other_rois|other_rois_sm|sm>] '
+                             '(default deflect = deflect_k3_null2_other_rois; '
+                             'k virtual channels per ROI, no inverse, see '
+                             'deflect.py)')
     parser.add_argument('--subjects', nargs='+', default=None)
     parser.add_argument('--n-jobs', type=int, default=2,
                         help='Number of parallel worker subjects (default: 2 for low-RAM)')
@@ -283,6 +325,18 @@ def main():
     if args.roi_subset:
         roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
 
+    fm_base, fm_prm = parse_feature_mode(args.feature_mode)
+    sm_label = None
+    if fm_base == 'deflect':
+        if args.leakage_correction:
+            raise SystemExit('--leakage-correction does not apply to DeFleCT '
+                             'virtual channels (the nulls are the leakage control)')
+        if fm_prm['nulls'] in ('sm', 'other_rois_sm'):
+            from deflect import sensorimotor_label
+            sm_label = sensorimotor_label(subjects_dir)
+            print(f'  DeFleCT extra null: HCPMMP1 sensorimotor strip '
+                  f'({len(sm_label.vertices)} surface vertices)')
+
     # Preflight: show WHERE caches will be written, how big they will be and
     # whether the volume has room.  Size is estimated from the ROI set: the
     # vertex caches hold n_epochs x n_vertices(ico-5) x n_times float32 per
@@ -303,6 +357,8 @@ def main():
     except Exception:
         free_gb = float('nan')
     n_vert_ico5 = sum(len(l.vertices) for l in roi_dict.values()) / 16.0
+    if fm_base == 'deflect':                     # k channels per ROI, not vertices
+        n_vert_ico5 = fm_prm['k'] * len(roi_dict)
     samples = (222 * 3891) if args.task == 'overtProd' else (246 * 1639)
     samples *= args.fs / 2000.0
     per = n_vert_ico5 * samples * 4 / 1e9          # GB per subject per contrast
@@ -352,7 +408,7 @@ def main():
         with Pool(
             processes=args.n_jobs,
             initializer=_init_worker,
-            initargs=(fwd, src, roi_dict),
+            initargs=(fwd, src, roi_dict, sm_label),
         ) as pool:
             results = pool.map(_worker, worker_args)
         total_time = (time.time() - total_start) / 60.0

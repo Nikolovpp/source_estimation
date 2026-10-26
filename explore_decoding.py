@@ -86,6 +86,7 @@ from config import (
     SPEECH_ROIS, BASELINE_WINDOWS, DECODE_TMIN,
     DEFAULT_C, PSEUDO_TRIAL_SIZE,
     find_cached_npz, explore_run_segment,
+    feature_mode_arg, FEATURE_MODE_CHOICES,
 )
 from data_loader import load_subject_epochs
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
@@ -123,8 +124,8 @@ def parse_args():
                          help='Multiple ROIs in one invocation (case-insensitive). '
                               'Amortizes subject loads and improves core utilization.')
     parser.add_argument('--feature-mode', default='pca_flip',
-                        choices=['pca_flip', 'vertex_pca', 'vertex_selectkbest',
-                                 'vertex_selectkbest_all'])
+                        type=feature_mode_arg, metavar='MODE',
+                        help=f'one of {FEATURE_MODE_CHOICES}; deflect may carry its design (deflect[_k<K>][_null<N>][_<nulls>], see run_source_localize.py)')
     parser.add_argument('--fs', type=int, default=2000, choices=[2000, 500],
                         help='sampling-rate variant of the ROI cache '
                              '(must match run_source_localize.py --fs)')
