@@ -97,6 +97,12 @@ the workstation run order and the decision rule.
   curves, Pareto (noise vs cross-talk), overlap matrices production vs best,
   rankings, marginal effects, recommendation; `--brain-maps` for the best
   configurations. Runs locally.
+- `resolution_subject_qc.py` — per-subject QC from the sweep CSVs (the
+  forward model is shared, so subject spread = that subject's noise / data
+  covariance): robust-z heatmap of the production dSPM/eLORETA/LCMV metrics,
+  noise-gain per ROI, LCMV collapse detector, every subject's |cos| matrix,
+  configuration-ranking agreement; `subject_qc/` per task + cross-task
+  `overview.png`. Runs locally.
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.
