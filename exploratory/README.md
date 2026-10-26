@@ -106,6 +106,8 @@ the workstation run order and the decision rule.
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.
+- `SOURCE_SPACE_FINDINGS_2026_10.md` — one-page record of the findings so
+  far (resolution, sweep, first decoding, subject QC), each with its figure.
 
 ## Decoding exploration
 

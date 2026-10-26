@@ -74,6 +74,14 @@
 # stats simply recompute (cheap). Re-running the same command after a crash
 # or a kill continues at the first unfinished subject.
 #
+# REGULARIZATION VARIANTS (2026-10-26, from the resolution sweep). A method
+# may carry an _snr<N> suffix: METHODS="dSPM_snr10" runs the same pipeline
+# with lambda2 = 1/100 instead of the production 1/9 (config.parse_method).
+# The full string is the {method} path segment everywhere, so the variant
+# gets its own caches / results / GC dirs and never touches the SNR-3 ones:
+#   METHODS="dSPM_snr10" nohup bash exploratory/run_translation_arm.sh \
+#       > logs/translation_arm_dSPM_snr10.log 2>&1 &
+#
 # DEC_METHODS (default = METHODS) restricts the decode + latency stages only.
 # dSPM and sLORETA give the same decoding curves (r = 1.000 on overtProd /
 # prodDiff, n = 20: the pipeline standardizes every vertex, which removes

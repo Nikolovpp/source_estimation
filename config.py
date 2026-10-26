@@ -524,6 +524,51 @@ N_CV_REPEATS = 5     # number of CV repeats (matches existing pipeline)
 SNR = 3.0
 LAMBDA2 = 1.0 / SNR ** 2  # regularization for MNE/dSPM
 
+
+def parse_method(method):
+    """Split an inverse-method string into (base method, assumed SNR).
+
+    ``'dSPM'`` -> ``('dSPM', SNR)``; ``'dSPM_snr10'`` -> ``('dSPM', 10.0)``.
+    The suffix is the regularization variant from the 2026-10 resolution
+    sweep (lambda2 = 1/snr^2); the full string is used verbatim as the
+    ``{method}`` path segment of every cache / result / figure directory, so
+    a variant never collides with the production (SNR 3) outputs.  Only the
+    minimum-norm family takes the suffix (LCMV has no lambda2).
+    """
+    base, sep, rest = str(method).partition('_snr')
+    if not sep:
+        if base not in INVERSE_METHODS:
+            raise ValueError(f'unknown inverse method {method!r}; choose from '
+                             f'{INVERSE_METHODS} or <mn method>_snr<N>')
+        return base, SNR
+    if base not in MINIMUM_NORM_METHODS:
+        raise ValueError(f'{method!r}: the _snr suffix applies to '
+                         f'{MINIMUM_NORM_METHODS} only')
+    try:
+        snr = float(rest)
+    except ValueError:
+        raise ValueError(f'{method!r}: bad SNR suffix {rest!r}') from None
+    if snr <= 0:
+        raise ValueError(f'{method!r}: SNR must be > 0')
+    return base, snr
+
+
+def lambda2_for(method):
+    """Regularization for a (possibly variant) minimum-norm method string."""
+    _, snr = parse_method(method)
+    return 1.0 / snr ** 2
+
+
+def method_arg(value):
+    """argparse ``type=`` for ``--method``: a production method name or a
+    ``<method>_snr<N>`` variant (e.g. ``dSPM_snr10``)."""
+    try:
+        parse_method(value)
+    except ValueError as e:
+        import argparse
+        raise argparse.ArgumentTypeError(str(e))
+    return value
+
 # Epoch parameters (in seconds)
 PERCEPTION_TMIN = -0.2
 PERCEPTION_TMAX = 0.6

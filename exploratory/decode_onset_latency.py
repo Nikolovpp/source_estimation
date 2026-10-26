@@ -65,7 +65,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from config import (SUBJECT_IDS, DECODE_OUTPUT_ROOT, DEFAULT_C, SW_DUR,
-                    SW_STEP_SIZE, INVERSE_METHODS, ATLAS_CHOICES,
+                    SW_STEP_SIZE, INVERSE_METHODS, ATLAS_CHOICES, method_arg,
                     GC_WINDOWS_OF_INTEREST, classifier_path_segment)
 
 CHANCE = 0.5
@@ -258,7 +258,10 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--task', required=True, choices=['perception', 'overtProd'])
     p.add_argument('--stim-classes', nargs='+', default=['prodDiff', 'percDiff'])
-    p.add_argument('--method', required=True, choices=INVERSE_METHODS)
+    p.add_argument('--method', required=True, type=method_arg, metavar='METHOD',
+                        help=f'one of {INVERSE_METHODS} or a regularization '
+                             'variant <mn method>_snr<N>, e.g. dSPM_snr10 '
+                             '(own cache/result dirs)')
     p.add_argument('--atlas', required=True, choices=ATLAS_CHOICES)
     p.add_argument('--feature-mode', default='vertex_selectkbest')
     p.add_argument('--leakage-correction', action='store_true', default=False)

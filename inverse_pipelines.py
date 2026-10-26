@@ -22,7 +22,8 @@ import mne
 from mne.minimum_norm import make_inverse_operator, apply_inverse_epochs
 from mne.beamformer import make_lcmv, apply_lcmv_epochs
 
-from config import LAMBDA2, MINIMUM_NORM_METHODS, INVERSE_METHODS
+from config import (LAMBDA2, MINIMUM_NORM_METHODS, INVERSE_METHODS,
+                    parse_method, lambda2_for)
 
 # eLORETA (like plain MNE) returns current density in A·m, ~1e-11 per vertex
 # for single trials, whereas dSPM / sLORETA are unitless noise-normalized
@@ -65,17 +66,22 @@ def _compute_data_rank(epochs):
 
 
 def run_minimum_norm(epochs, fwd, baseline_tmin, baseline_tmax,
-                     method='dSPM'):
+                     method='dSPM', lambda2=None):
     """Full-STC minimum-norm family (dSPM / sLORETA / eLORETA) on the
     pipeline's shared inverse operator.  Returns a list of SourceEstimate
-    (one per epoch) — RAM-heavy; prefer run_inverse_lowram for full runs."""
+    (one per epoch) — RAM-heavy; prefer run_inverse_lowram for full runs.
+    ``method`` may carry an ``_snr<N>`` suffix (config.parse_method), which
+    sets ``lambda2`` unless one is passed explicitly."""
+    method, snr = parse_method(method)
+    if lambda2 is None:
+        lambda2 = 1.0 / snr ** 2
     if method not in MINIMUM_NORM_METHODS:
         raise ValueError(f'method must be one of {MINIMUM_NORM_METHODS}, '
                          f'got {method!r}')
     inverse_operator, _, _ = make_minimum_norm_inverse(
         epochs, fwd, baseline_tmin, baseline_tmax)
     stcs = apply_inverse_epochs(
-        epochs, inverse_operator, lambda2=LAMBDA2, method=method,
+        epochs, inverse_operator, lambda2=lambda2, method=method,
         pick_ori=None, nave=1, return_generator=False, verbose=True,
     )
     scale = METHOD_OUTPUT_SCALE.get(method, 1.0)
@@ -418,7 +424,7 @@ def make_lcmv_filters(epochs, fwd, baseline_tmin, baseline_tmax,
 
 def run_minimum_norm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
                             roi_labels, src, feature_mode='pca_flip',
-                            method='dSPM'):
+                            method='dSPM', lambda2=None):
     """
     Low-RAM minimum-norm family (dSPM / sLORETA / eLORETA): one shared
     inverse operator, ``method`` selects the estimator at apply time.  Uses
@@ -432,14 +438,18 @@ def run_minimum_norm_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
     stc_times : ndarray
         Time vector from the source estimates.
     """
+    method, snr = parse_method(method)
+    if lambda2 is None:
+        lambda2 = 1.0 / snr ** 2
     if method not in MINIMUM_NORM_METHODS:
         raise ValueError(f'method must be one of {MINIMUM_NORM_METHODS}, '
                          f'got {method!r}')
     inverse_operator, noise_cov, _ = make_minimum_norm_inverse(
         epochs, fwd, baseline_tmin, baseline_tmax)
+    print(f'  {method}: lambda2 = {lambda2:.4g} (assumed SNR {snr:g})')
 
     stc_gen = apply_inverse_epochs(
-        epochs, inverse_operator, lambda2=LAMBDA2,
+        epochs, inverse_operator, lambda2=lambda2,
         method=method, pick_ori=None, nave=1,
         return_generator=True, verbose=True,
     )
@@ -522,12 +532,14 @@ def run_lcmv_lowram(epochs, fwd, baseline_tmin, baseline_tmax,
 
 def run_inverse_lowram(method, epochs, fwd, baseline_tmin, baseline_tmax,
                        roi_labels, src, feature_mode='pca_flip'):
-    """Dispatch on the inverse method name (config.INVERSE_METHODS)."""
-    if method in MINIMUM_NORM_METHODS:
+    """Dispatch on the inverse method name (config.INVERSE_METHODS, or a
+    ``<mn method>_snr<N>`` regularization variant, see config.parse_method)."""
+    base, _ = parse_method(method)
+    if base in MINIMUM_NORM_METHODS:
         return run_minimum_norm_lowram(
             epochs, fwd, baseline_tmin, baseline_tmax,
             roi_labels, src, feature_mode, method)
-    if method == 'LCMV':
+    if base == 'LCMV':
         return run_lcmv_lowram(
             epochs, fwd, baseline_tmin, baseline_tmax,
             roi_labels, src, feature_mode)
