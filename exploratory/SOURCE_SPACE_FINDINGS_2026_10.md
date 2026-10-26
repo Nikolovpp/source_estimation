@@ -17,9 +17,23 @@ the overtProd figures are linked, the perception twins sit next to them.
   model is the fsaverage template for every subject, so the only
   subject-specific ingredients are the baseline noise covariance (whitens K)
   and the task-window data covariance (LCMV weights, pc1 ROI weights).
+* **CTF brain maps** (`ctf_maps_*.png`) show |CTF_i| on the fsaverage
+  surface, one panel per ROI, each panel divided by its own maximum: 1 =
+  the vertex that ROI listens to most, 0.5 = a vertex whose unit source
+  enters the ROI time course at half that gain, < 0.05 not drawn. Compare
+  the *shape* across panels, not the brightness. A tight map with its peak
+  inside the ROI = well resolved; the LCMV maps paint half the hemisphere.
+  The leakage maps (`leakage_map/brain_*.png`) use CTF² with the own-ROI
+  vertices masked, again scaled to each map's max.
 * **|cos(CTF_i, CTF_j)|** = expected zero-lag correlation between ROI i and
   ROI j under spatially white sources; the quantity that matters for both
   decoding (shared signal) and TRGC (instantaneous mixing).
+* **ctf_xtalk** (`crosstalk.png`, in %) = mean CTF_i² over ROI j's vertices
+  divided by the mean over ROI i's own: the per-vertex source power in j
+  that ROI i reports, relative to its own; > 100 % (LCMV) means it hears j
+  better than itself. The sensor panel uses the same definition with the
+  pseudo-channel's leadfield row as its CTF and the sensorEquiv ROI of the
+  same name as its "own" vertices.
 * **se_own** = share of CTF_i energy on ROI i's own vertices.
   **peak_in_roi**, **sd_mm** = where the CTF peaks and how far it spreads.
   **noise_gain** = sensor noise SD reaching the ROI time course per unit

@@ -560,7 +560,8 @@ def render_ctf_maps(acc, names, n_lh, src, title, out_png):
     coords, faces = _load_surface(subjects_dir, 'lh', surf='pial', smooth=0.25)
     vert_lh = src[0]['vertno']
     n = len(names)
-    fig, axes = plt.subplots(1, n, figsize=(3.6 * n, 3.4))
+    fig, axes = plt.subplots(1, n, figsize=(3.6 * n + 0.9, 3.4),
+                             layout='constrained')
     axes = np.atleast_1d(axes)
     for k, name in enumerate(names):
         stc = mne.SourceEstimate(
@@ -577,8 +578,13 @@ def render_ctf_maps(acc, names, n_lh, src, title, out_png):
         axes[k].imshow(img)
         axes[k].set_axis_off()
         axes[k].set_title(name.replace('-lh', ''), fontsize=10)
-    fig.suptitle(title, fontsize=11)
-    fig.tight_layout()
+    fig.suptitle(f'{title}\ncolor = how strongly a unit source at each vertex '
+                 'enters the ROI time course, relative to the vertex the ROI '
+                 'hears best (< 0.05 of max not drawn)', fontsize=10)
+    sm = plt.cm.ScalarMappable(cmap='hot', norm=plt.Normalize(0, 1))
+    cb = fig.colorbar(sm, ax=axes.tolist(), shrink=0.75, pad=0.01,
+                      ticks=[0, 0.25, 0.5, 0.75, 1])
+    cb.set_label('|CTF| / max of that ROI', fontsize=8)
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
     return True
