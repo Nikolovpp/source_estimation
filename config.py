@@ -141,6 +141,10 @@ ATLAS_PARC_MAP = {
     # own atlas name keeps the small 5-ROI caches apart from the 16-ROI
     # HCPMMP1 caches (the cache path encodes the atlas, not the ROI set).
     'sensorEquiv': 'HCPMMP1',
+    # sensorEquiv + the sensorimotor strip (areas 4/3a/3b/1/2) as a sixth
+    # ROI (2026-10-29): the one neighbor that leaks into both dorsal ROIs,
+    # measured instead of only nulled.  Own atlas name = own caches.
+    'sensorEquivSM': 'HCPMMP1',
     # 'custom' is handled separately (volumetric NIfTI → surface projection)
 }
 
@@ -484,9 +488,20 @@ SPEECH_ROIS['sensorEquiv'] = {
 # Visual-cortex control ROIs for the standard atlases (used by
 # exploratory/resolution_analysis.py and decode_onset_latency.py; NOT part
 # of SPEECH_ROIS, so existing HCPMMP1/Schaefer/aparc caches stay valid).
+# sensorEquiv + 'Sensorimotor' = the pre/postcentral strip (areas 4, 3a, 3b,
+# 1, 2; the DeFleCT '*_sm' null region, DEFLECT_SM_PARCELS below).  With the
+# strip inside the set, a DeFleCT 'other_rois' design nulls it for every
+# other ROI automatically, and its own time course is decoded / enters GC.
+# (SPEECH_ROIS['HCPMMP1']['vSMC'] is the wider Chang definition with 6v, 43,
+# OP4; the strip is used here so ROI and null coincide.)
+SPEECH_ROIS['sensorEquivSM'] = dict(SPEECH_ROIS['sensorEquiv'])
+SPEECH_ROIS['sensorEquivSM']['Sensorimotor'] = [
+    'L_4_ROI-lh', 'L_3a_ROI-lh', 'L_3b_ROI-lh', 'L_1_ROI-lh', 'L_2_ROI-lh',
+]
 VISUAL_CONTROL_ROI = {
     'aparc': ['pericalcarine-lh', 'cuneus-lh', 'lingual-lh'],
     'HCPMMP1': SPEECH_ROIS['sensorEquiv']['Visual'],
+    'sensorEquivSM': SPEECH_ROIS['sensorEquiv']['Visual'],
     'Schaefer200': [
         '17Networks_LH_VisCent_Striate_1-lh',
         '17Networks_LH_VisPeri_StriCal_1-lh',
