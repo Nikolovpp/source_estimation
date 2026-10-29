@@ -108,7 +108,7 @@ def _process_subject(subj_id, task_cond, stim_class, method,
     # Skip if cache already exists (unless we're forced to overwrite)
     cached_npz = find_cached_npz(task_cond, method, atlas, feature_mode,
                                  leakage_correction, subj_id, stim_class,
-                                 fs=fs)
+                                 fs=fs, validate=True)
     if cached_npz is not None and not overwrite_timeseries:
         print(f'  Cache already exists, skipping: {cached_npz}')
         return subj_id
@@ -384,7 +384,7 @@ def main():
     # stim-classes so queued batches don't each rebuild it.
     any_uncached = any(
         find_cached_npz(args.task, args.method, args.atlas, args.feature_mode,
-                        args.leakage_correction, s, sc, fs=args.fs) is None
+                        args.leakage_correction, s, sc, fs=args.fs, validate=True) is None
         or args.overwrite_timeseries
         for sc in stim_classes for s in subjects
     )

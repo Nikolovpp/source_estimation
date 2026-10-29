@@ -43,6 +43,7 @@ import argparse
 import sys
 import time
 import warnings
+import zipfile
 from itertools import combinations
 
 import numpy as np
@@ -771,9 +772,15 @@ def main():
             continue
 
         # ROIs to load (resolved above).
-        roi_data, y, times, sfreq = _load_cached_roi_data(
-            npz, feature_mode=args.feature_mode, roi_subset=subset,
-        )
+        try:
+            roi_data, y, times, sfreq = _load_cached_roi_data(
+                npz, feature_mode=args.feature_mode, roi_subset=subset,
+            )
+        except (zipfile.BadZipFile, OSError, EOFError, ValueError) as e:
+            print(f'  {subj}: vertex cache unreadable ({type(e).__name__}: {e}) — '
+                  f'delete it and rerun run_source_localize.py. SKIP  [{npz}]')
+            failed.append(subj)
+            continue
         if roi_data is None:
             print(f'  {subj}: requested ROIs missing from cache. SKIP')
             failed.append(subj)

@@ -17,12 +17,15 @@ the active source tree.
 """
 import sys
 
+import os
 import numpy as np
 import pandas as pd
 
 from config import (cache_feat_mode, classifier_path_segment,
                     cache_leakage_tag,
-                    ROI_TIMESERIES_ROOT, ROI_TIMESERIES_SAVE_ROOT)
+                    ROI_TIMESERIES_ROOT, ROI_TIMESERIES_SAVE_ROOT,
+    npz_is_valid,
+)
 
 
 def filter_roi_dict(roi_dict, roi_subset, atlas):
@@ -129,8 +132,10 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
     npz_file = ts_dir / f'{subj_id}_{task_cond}_{stim_class}.npz'
 
     if npz_file.exists() and not overwrite:
-        print(f'  ROI time series already exists, skipping: {npz_file}')
-        return
+        if npz_is_valid(npz_file):
+            print(f'  ROI time series already exists, skipping: {npz_file}')
+            return
+        print(f'  existing ROI time series is corrupt, rewriting: {npz_file}')
 
     save_dict = {
         'y': y,
@@ -150,7 +155,17 @@ def _save_roi_timeseries(subj_id, task_cond, stim_class, method,
                 raise ValueError(f'extra key {k!r} collides with a cache field')
             save_dict[k] = np.asarray(v)
 
-    np.savez_compressed(npz_file, **save_dict)
+    # write to a temporary name and rename at the end, so a write cut off by
+    # a full disk or a kill never leaves a half-written file under the final
+    # name (which every stage would then take for a finished cache)
+    tmp_file = ts_dir / f'.{npz_file.name}.partial'
+    try:
+        with open(tmp_file, 'wb') as fh:
+            np.savez_compressed(fh, **save_dict)
+        os.replace(tmp_file, npz_file)
+    finally:
+        if tmp_file.exists():
+            tmp_file.unlink()
     print(f'  Saved ROI time series: {npz_file}')
 
 
