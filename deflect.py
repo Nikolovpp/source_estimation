@@ -12,9 +12,11 @@ small bank of sensor-space spatial filters designed directly for it:
                    leadfield G).  Channel c of the ROI passes topography c with
                    unit gain and gives zero output to the other k-1.
 * N  (n_ch x m)    the nulled topographies: the leading ``null_comp``
-                   topographies of every null region (the other ROIs, and/or
-                   the HCPMMP1 sensorimotor strip), to which every channel of
-                   the ROI gives zero output.
+                   topographies of every null region (the other ROIs, the
+                   HCPMMP1 sensorimotor strip, and/or the ``ring`` = every
+                   HCPMMP1 parcel bordering the ROI on the mesh, one null
+                   region per parcel), to which every channel of the ROI
+                   gives zero output.
 * elsewhere the output power w^T (G G^T + C/snr^2) w is minimal, which keeps
   the cross-talk function compact where it is not constrained and bounds the
   sensor-noise gain (the minimum-norm prior; C = baseline noise covariance,
@@ -123,9 +125,60 @@ def sensorimotor_label(subjects_dir):
                             composite_rois=comp)['Sensorimotor']
 
 
+def adjacent_parcels(subjects_dir, roi_label, atlas_parc='HCPMMP1',
+                     surf='white', min_shared=3):
+    """HCPMMP1 parcels that border ``roi_label`` on the fsaverage mesh.
+
+    A parcel is adjacent when at least ``min_shared`` of its vertices are
+    mesh neighbors (share a triangle) of ROI vertices.  Returns an ordered
+    dict {parcel_name: Label}, largest shared border first."""
+    import os
+    hemi = roi_label.hemi
+    _, faces = mne.read_surface(os.path.join(str(subjects_dir), 'fsaverage',
+                                             'surf', f'{hemi}.{surf}'))
+    n_vert = int(faces.max()) + 1
+    in_roi = np.zeros(n_vert, bool)
+    in_roi[roi_label.vertices] = True
+    touch = in_roi[faces].any(axis=1)                 # triangles touching the ROI
+    ring = np.unique(faces[touch])
+    ring = ring[~in_roi[ring]]                         # neighbors outside the ROI
+    labels = mne.read_labels_from_annot('fsaverage', parc=atlas_parc, hemi=hemi,
+                                        subjects_dir=subjects_dir, verbose=False)
+    out = []
+    for lbl in labels:
+        if lbl.name.startswith('???'):
+            continue
+        shared = np.intersect1d(ring, lbl.vertices).size
+        if shared >= min_shared:
+            out.append((shared, lbl))
+    out.sort(key=lambda t: -t[0])
+    return {lbl.name: lbl for _, lbl in out}
+
+
+def build_ring_labels(subjects_dir, roi_dict, verbose=True, **kw):
+    """{roi_name: [Label, ...]} of the parcels bordering each ROI (the
+    ``ring`` null regions).  Parcels that are part of the ROI itself cannot
+    appear (they are inside it); parcels of other ROIs can, and are then
+    nulled as parcels (the whole other ROI is added only in ring_rois)."""
+    rings = {}
+    for name, lbl in roi_dict.items():
+        adj = adjacent_parcels(subjects_dir, lbl, **kw)
+        rings[name] = list(adj.values())
+        if verbose:
+            short = [n.replace('_ROI-lh', '').replace('_ROI-rh', '') for n in adj]
+            print(f'  ring of {name} ({len(adj)} parcels): {", ".join(short)}')
+    return rings
+
+
 def design_filters(G, verts, C, snr, roi_labels, roi_names, k, null_comp,
-                   nulls, sm_label=None, verbose=True):
+                   nulls, sm_label=None, ring_labels=None, verbose=True):
     """Design the DeFleCT bank for every ROI.
+
+    nulls        none | other_rois | other_rois_sm | sm | ring | ring_rois
+    sm_label     the sensorimotor strip (for the *_sm modes)
+    ring_labels  {roi_name: [Label, ...]} = the parcels bordering each ROI
+                 (build_ring_labels; for the ring modes), each one a null
+                 region of its own with ``null_comp`` patterns
 
     Returns dict with
       W        {roi: (k_eff, n_ch)}
@@ -142,25 +195,34 @@ def design_filters(G, verts, C, snr, roi_labels, roi_names, k, null_comp,
     Minv = deflect_Minv(G, C, snr)
     n_ch = G.shape[0]
     W, diag, ctf1 = {}, {}, {}
+    if nulls in ('ring', 'ring_rois') and not ring_labels:
+        raise ValueError(f'nulls={nulls!r} needs ring_labels (build_ring_labels)')
     for name in roi_names:
         own = rows[name]
-        null_rows = []
-        if nulls in ('other_rois', 'other_rois_sm'):
+        null_rows, used = [], own.copy()
+
+        def _add(r, what):
+            # every null region excludes the ROI's own vertices and vertices
+            # already covered by an earlier null region of this ROI, so the
+            # null patterns stay linearly independent
+            r2 = np.setdiff1d(r, used)
+            if len(r2) < len(r) and verbose:
+                print(f'    {name}: null region {what} shares {len(r) - len(r2)} '
+                      f'vertices with the ROI / earlier nulls; those are left out')
+            if len(r2):
+                null_rows.append(r2)
+                return np.union1d(used, r2)
+            return used
+
+        if nulls in ('ring', 'ring_rois'):
+            for lbl in ring_labels.get(name, []):
+                used = _add(label_rows(lbl, verts[0], verts[1]), lbl.name)
+        if nulls in ('other_rois', 'other_rois_sm', 'ring_rois'):
             for o in roi_names:
-                if o == name:
-                    continue
-                r = np.setdiff1d(rows[o], own)
-                if len(r) < len(rows[o]) and verbose:
-                    print(f'    {name}: null region {o} shares '
-                          f'{len(rows[o]) - len(r)} vertices with it; '
-                          f'those are left out of the null')
-                null_rows.append(r)
+                if o != name:
+                    used = _add(rows[o], o)
         if nulls in ('sm', 'other_rois_sm') and sm_rows is not None:
-            r = np.setdiff1d(sm_rows, own)
-            if len(r) < len(sm_rows) and verbose:
-                print(f'    {name}: sensorimotor null shares '
-                      f'{len(sm_rows) - len(r)} vertices with it; left out')
-            null_rows.append(r)
+            used = _add(sm_rows, 'sensorimotor strip')
         Wi, U, n_null = deflect_filter_bank(G, Minv, own, null_rows, k, null_comp)
         if Wi.shape[0] + n_null >= n_ch - 1:
             raise ValueError(f'{name}: {Wi.shape[0]} pass + {n_null} null '
@@ -206,7 +268,8 @@ def apply_filter_bank(epochs, W, P):
 
 
 def run_deflect(epochs, fwd, baseline_tmin, baseline_tmax, roi_labels,
-                roi_names, snr, k, null_comp, nulls, sm_label=None):
+                roi_names, snr, k, null_comp, nulls, sm_label=None,
+                ring_labels=None):
     """Full per-subject path: noise covariance -> design -> apply.
 
     Returns (roi_data {roi: (n_ep, k, n_t)}, times, design dict with the
@@ -219,7 +282,8 @@ def run_deflect(epochs, fwd, baseline_tmin, baseline_tmax, roi_labels,
     C = np.asarray(noise_cov.data, float)[np.ix_(idx, idx)]
     G, verts, P = leadfield_fixed(fwd, epochs.info)
     design = design_filters(G, verts, C, snr, roi_labels, roi_names, k,
-                            null_comp, nulls, sm_label=sm_label)
+                            null_comp, nulls, sm_label=sm_label,
+                            ring_labels=ring_labels)
     roi_data = apply_filter_bank(epochs, design['W'], P)
     design['ch_names'] = ch
     design['snr'] = snr
