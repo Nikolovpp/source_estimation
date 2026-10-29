@@ -231,7 +231,7 @@ SPL is not reporting "its" electrodes; the template inverse attributes a
 bilateral central component to the superficial dorsal parietal/postcentral
 cortex, and of the five ROIs SPL (areas 5, 7PC, AIP border the postcentral
 gyrus) is the one whose own leadfield spans it. Decisive test: the
-`deflect_other_rois_sm` variant (adds the sensorimotor-strip null); if SPL
+`deflect_null4_other_rois_sm` variant (adds the sensorimotor-strip null, finding 11); if SPL
 keeps its percDiff peak, it is parietal; if it falls to the others' level,
 it was central.
 
@@ -250,6 +250,42 @@ holds one subject and its stats were computed with n = 1.
 Figures: `TRANSLATION_ARM_REVIEW/gc/gc_matrix_{task}_{stim}.png` (overview),
 `gc_trgc_*.png`, `gc_directed_*_{arm}.png`; tables `gc_edge_summary.csv`,
 `gc_significant_edges.md`.
+
+**11. "Null the adjacent cortex" is not possible with 64 channels
+(2026-10-29).** The question was whether each left ROI's DeFleCT bank should
+null its *neighbors* rather than the other ROIs of the set (the current
+default never touches the right hemisphere; the nulls are the four other
+left ROIs). Added `ring` / `ring_rois` null modes (every HCPMMP1 parcel that
+borders the ROI on the fsaverage mesh — Temporal 13 parcels, IFG 13, SFG 15,
+SPL 21, Visual 9 — each a null region; `deflect.build_ring_labels`) and
+designed the banks on the template leadfield (`exploratory/ctf_region_shares.py
+--designs ...`, identity noise covariance). Hard nulls on the ring destroy
+the filter: own-energy 0.00–0.01 and noise ×6–600 for the four speech ROIs
+(Visual, which has a distinct posterior field, survives at 0.44). The
+neighbors' topographies *are* the ROI's topographies at this channel count,
+so nulling them nulls the ROI — the mechanism behind finding 4 (nulls never
+helped the adjacent custom spheres). Softer versions do not rescue it: the
+ring as one region with a single nulled pattern halves IFG's own energy
+(0.29 → 0.13), costs ×2–4 noise and *raises* the sensitivity to the
+sensorimotor strip (SPL 24 → 34 %), because the filter pushes its passband
+wherever it is not constrained. The one adjacent region that can be nulled
+is the sensorimotor strip, an elongated patch with its own field: with 4
+patterns per null region (`deflect_k3_null4_other_rois_sm`) SPL's per-vertex
+sensitivity to the strip drops from 22 % to 5 % and SFG's from 17 % to 7 %,
+at own-energy 0.22–0.23 and ×1.9–2.5 noise (2 patterns: 16 % / 10 % at
+×1.5; 3 patterns no better than 2). So "one left ROI nulling its adjacent
+ROIs" is realized as: other ROIs of the set + the sensorimotor strip, 4
+patterns each. The ring modes stay in the code as a documented negative
+result.
+
+| template leadfield, SNR 10, k 3 | n nulls (SPL) | se_own SPL | noise × | SPL sens. to SM strip | SFG sens. to SM strip |
+|---|---|---|---|---|---|
+| no nulls | 0 | 0.32 | 1.0 | 24 % | 18 % |
+| other_rois, 2 patterns (arm run) | 8 | 0.33 | 1.1 | 22 % | 17 % |
+| ring, 1 pattern per parcel | 21 | 0.01 | 33 | — | — |
+| ring as one region, 1 pattern | 1 | 0.25 | 1.6 | 34 % | 17 % |
+| other_rois_sm, 2 patterns | 10 | 0.31 | 1.5 | 16 % | 10 % |
+| other_rois_sm, 4 patterns | 20 | 0.22 | 2.5 | 5 % | 7 % |
 
 ## Decisions and what runs next
 
@@ -280,8 +316,10 @@ Figures: `TRANSLATION_ARM_REVIEW/gc/gc_matrix_{task}_{stim}.png` (overview),
   (resumes past EEGPROD4001) — and delete the stray copy
   `GC_source_space/dSPM/` (an overtProd/percDiff duplicate without the task
   level) plus the decode-tree copies under `GC_source_space/{task}/{method}/
-  sensorEquiv/*/raw/no_pseudo/`; (b) run the sensorimotor-null variant for the
-  Superior Parietal question, decoding only:
-  `FEAT=deflect_other_rois_sm METHODS="dSPM_snr10" STEPS="localize decode latency" TASKS=perception STIMS=percDiff nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect_sm.log 2>&1 &`;
+  sensorEquiv/*/raw/no_pseudo/`; (b) run the sensorimotor-null variant (finding 11: the only
+  adjacent null that works at 64 channels), both tasks, decoding + GC:
+  `FEAT=deflect_null4_other_rois_sm METHODS="dSPM_snr10" N_PCS=3 nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect_sm.log 2>&1 &`
+  — if Superior Parietal keeps its perception/percDiff peak with the strip
+  nulled it is parietal, if it falls to the others' level it was central;
   (c) read DeFleCT GC through TRGC only, or rerun its GC with
   `--normalize demean` (ERP removal) before trusting any directed theta edge.

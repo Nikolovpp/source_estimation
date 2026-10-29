@@ -28,8 +28,10 @@ Outputs (RESOLUTION_ANALYSIS/{task}_{stim}/):
 
 Usage (local, leadfield only):
     python exploratory/ctf_region_shares.py --task perception --stim-class percDiff
+    python exploratory/ctf_region_shares.py --designs null2_other_rois null1_ring null2_ring_rois
 """
 import os
+import re
 import sys
 import glob
 import argparse
@@ -49,7 +51,7 @@ import mne
 from config import SPEECH_ROIS, DEFLECT_SM_PARCELS
 from resolution_analysis import OUT_ROOT
 from forward_model import setup_fsaverage, make_forward, build_roi_labels
-from deflect import leadfield_fixed, label_rows, design_filters
+from deflect import leadfield_fixed, label_rows, design_filters, build_ring_labels, sensorimotor_label
 
 ROIS = ['Temporal', 'Inferior_Frontal', 'Superior_Frontal', 'Superior_Parietal', 'Visual']
 ABBR = {'Temporal': 'Temporal', 'Inferior_Frontal': 'Inf. Frontal', 'Superior_Frontal': 'Sup. Frontal',
@@ -109,7 +111,11 @@ def main():
     ap.add_argument('--method', default='dSPM', help='vertex-arm method whose baseline CTFs are read')
     ap.add_argument('--snr', type=float, default=10.0)
     ap.add_argument('--k', type=int, default=3)
-    ap.add_argument('--null-comp', type=int, default=2)
+    ap.add_argument('--null-comp', type=int, default=2, help='(ignored when --designs is given)')
+    ap.add_argument('--designs', nargs='+', default=None,
+                    help='DeFleCT null designs to compare, as null<N>_<nulls>, e.g. '
+                         'null2_other_rois null1_ring null2_ring_rois (default: '
+                         'null<--null-comp>_other_rois and _none)')
     args = ap.parse_args()
 
     out_dir = OUT_ROOT / f'{args.task}_{args.stim_class}'
@@ -152,19 +158,32 @@ def main():
 
     # ── DeFleCT banks (identity noise covariance) ──
     roi_labels = [labels[r] for r in ROIS]
+    roi_dict = {r: labels[r] for r in ROIS}
     C = np.eye(G.shape[0])
-    for nulls in ['other_rois', 'none']:
-        des = design_filters(G, verts, C, args.snr, roi_labels, ROIS, args.k, args.null_comp, nulls)
+    designs = args.designs or [f'null{args.null_comp}_other_rois', f'null{args.null_comp}_none']
+    ring_labels = sm_lbl = None
+    if any('ring' in d for d in designs):
+        ring_labels = build_ring_labels(subjects_dir, roi_dict)
+    if any(d.endswith('sm') for d in designs):
+        sm_lbl = sensorimotor_label(subjects_dir)
+    designs_parsed = []
+    for d in designs:
+        m = re.match(r'null(\d+)_(.+)$', d)
+        if not m:
+            raise SystemExit(f'bad design {d!r}: expected null<N>_<nulls>')
+        designs_parsed.append((int(m.group(1)), m.group(2)))
+    for nc, nulls in designs_parsed:
+        des = design_filters(G, verts, C, args.snr, roi_labels, ROIS, args.k, nc, nulls,
+                             sm_label=sm_lbl, ring_labels=ring_labels)
+        tag = f'DeFleCT k{args.k} null{nc} {nulls} SNR {args.snr:g}'
         for r in ROIS:
             W = des['W'][r]
             ctf = W @ G
             rec = shares(ctf[0], rows, r, n_lh)
-            rec.update(filter=f'DeFleCT k{args.k} null{args.null_comp} {nulls} SNR {args.snr:g} (ch 1)', roi=r)
-            records.append(rec)
+            rec.update(filter=f'{tag} (ch 1)', roi=r); records.append(rec)
             e_sum = np.sqrt((ctf ** 2).sum(axis=0))
             rec = shares(e_sum, rows, r, n_lh)
-            rec.update(filter=f'DeFleCT k{args.k} null{args.null_comp} {nulls} SNR {args.snr:g} (3 ch energy)', roi=r)
-            records.append(rec)
+            rec.update(filter=f'{tag} (3 ch energy)', roi=r); records.append(rec)
 
     # per-vertex sensitivity relative to the own ROI (the ctf_xtalk convention:
     # mean CTF^2 over the region / mean CTF^2 over the own vertices, in %).
@@ -192,11 +211,15 @@ def main():
         for r in ROIS:
             rec = {k: float(np.mean([a[r][k] for a in acc])) for k in acc[0][r]}
             rec.update(filter=f'{args.method} SNR 3 (PC1 CTF, n={len(acc)} subj)', roi=r); grecs.append(rec)
-    for nulls in ['other_rois', 'none']:
-        des = design_filters(G, verts, C, args.snr, roi_labels, ROIS, args.k, args.null_comp, nulls, verbose=False)
+    for nc, nulls in designs_parsed:
+        des = design_filters(G, verts, C, args.snr, roi_labels, ROIS, args.k, nc, nulls,
+                             sm_label=sm_lbl, ring_labels=ring_labels, verbose=False)
         for r in ROIS:
+            d = des['diag'][r]
             rec = gains((des['W'][r] @ G)[0], r)
-            rec.update(filter=f'DeFleCT k{args.k} null{args.null_comp} {nulls} SNR {args.snr:g} (ch 1)', roi=r); grecs.append(rec)
+            rec.update({'se_own ch1': float(d['se_own'][0]), 'noise gain ch1 (x1e-2)': 100 * float(d['noise_gain'][0]),
+                        'max |cos| other ROI': d['max_xtalk_cos'], 'n_null': d['n_null']})
+            rec.update(filter=f'DeFleCT k{args.k} null{nc} {nulls} SNR {args.snr:g} (ch 1)', roi=r); grecs.append(rec)
     gdf = pd.DataFrame(grecs)
     gcols = ['filter', 'roi'] + [c for c in gdf.columns if c not in ('filter', 'roi')]
     gdf = gdf[gcols]
@@ -219,9 +242,10 @@ def main():
     # ── figure: stacked bars, one panel per filter ──
     filts = list(dict.fromkeys(df['filter']))
     show = [f for f in filts if '3 ch energy' not in f]
+    fig_w = min(4.6 * len(show), 26)
     parts = cols[2:-1]
     pal = ['#1b9e77', '#66c2a5', '#d95f02', '#fdae61', '#7570b3', '#bcbddc', '#e7298a', '#cccccc', '#888888']
-    fig, axes = plt.subplots(1, len(show), figsize=(4.6 * len(show), 3.8), sharey=True, layout='constrained')
+    fig, axes = plt.subplots(1, len(show), figsize=(fig_w, 3.8), sharey=True, layout='constrained')
     axes = np.atleast_1d(axes)
     for ax, filt in zip(axes, show):
         g = df[df['filter'] == filt].set_index('roi').loc[ROIS]

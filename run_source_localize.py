@@ -83,15 +83,17 @@ _fwd = None
 _src = None
 _roi_dict = None
 _sm_label = None      # HCPMMP1 sensorimotor strip (DeFleCT '*_sm' nulls only)
+_ring_labels = None   # {roi: [bordering parcels]} (DeFleCT 'ring*' nulls only)
 
 
-def _init_worker(fwd, src, roi_dict, sm_label=None):
+def _init_worker(fwd, src, roi_dict, sm_label=None, ring_labels=None):
     """Initialize each worker process with shared forward model data."""
-    global _fwd, _src, _roi_dict, _sm_label
+    global _fwd, _src, _roi_dict, _sm_label, _ring_labels
     _fwd = fwd
     _src = src
     _roi_dict = roi_dict
     _sm_label = sm_label
+    _ring_labels = ring_labels
 
 
 def _process_subject(subj_id, task_cond, stim_class, method,
@@ -152,7 +154,7 @@ def _process_subject(subj_id, task_cond, stim_class, method,
         roi_data, times, design = run_deflect(
             epochs, _fwd, baseline_tmin, baseline_tmax, roi_labels, roi_names,
             snr, fm_prm['k'], fm_prm['null_comp'], fm_prm['nulls'],
-            sm_label=_sm_label)
+            sm_label=_sm_label, ring_labels=_ring_labels)
         del epochs
         gc.collect()
         extra = {'deflect_ch_names': np.array(design['ch_names']),
@@ -260,7 +262,7 @@ def parse_args():
                         type=feature_mode_arg, metavar='MODE',
                         help=f'one of {FEATURE_MODE_CHOICES}; deflect may '
                              'carry its design: deflect[_k<K>][_null<N>]'
-                             '[_<none|other_rois|other_rois_sm|sm>] '
+                             '[_<none|other_rois|other_rois_sm|sm|ring|ring_rois>] '
                              '(default deflect = deflect_k3_null2_other_rois; '
                              'k virtual channels per ROI, no inverse, see '
                              'deflect.py)')
@@ -326,7 +328,7 @@ def main():
         roi_dict = filter_roi_dict(roi_dict, args.roi_subset, args.atlas)
 
     fm_base, fm_prm = parse_feature_mode(args.feature_mode)
-    sm_label = None
+    sm_label, ring_labels = None, None
     if fm_base == 'deflect':
         if args.leakage_correction:
             raise SystemExit('--leakage-correction does not apply to DeFleCT '
@@ -336,6 +338,10 @@ def main():
             sm_label = sensorimotor_label(subjects_dir)
             print(f'  DeFleCT extra null: HCPMMP1 sensorimotor strip '
                   f'({len(sm_label.vertices)} surface vertices)')
+        if fm_prm['nulls'] in ('ring', 'ring_rois'):
+            from deflect import build_ring_labels
+            print('  DeFleCT ring nulls (HCPMMP1 parcels bordering each ROI):')
+            ring_labels = build_ring_labels(subjects_dir, roi_dict)
 
     # Preflight: show WHERE caches will be written, how big they will be and
     # whether the volume has room.  Size is estimated from the ROI set: the
@@ -408,7 +414,7 @@ def main():
         with Pool(
             processes=args.n_jobs,
             initializer=_init_worker,
-            initargs=(fwd, src, roi_dict, sm_label),
+            initargs=(fwd, src, roi_dict, sm_label, ring_labels),
         ) as pool:
             results = pool.map(_worker, worker_args)
         total_time = (time.time() - total_start) / 60.0

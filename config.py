@@ -577,8 +577,16 @@ def method_arg(value):
 #     deflect[_k<K>][_null<N>][_<nulls>]
 #   K      pass patterns per ROI = virtual channels per ROI (default 3)
 #   N      topographies nulled per null region (default 2)
-#   nulls  none | other_rois | other_rois_sm | sm   (default other_rois;
-#          sm = HCPMMP1 sensorimotor strip, DEFLECT_SM_PARCELS)
+#   nulls  none | other_rois | other_rois_sm | sm | ring | ring_rois
+#          (default other_rois; sm = HCPMMP1 sensorimotor strip,
+#          DEFLECT_SM_PARCELS; ring = every HCPMMP1 parcel that borders the
+#          ROI on the fsaverage mesh, each parcel a null region of its own;
+#          ring_rois = ring + the other ROIs of the set).  The ring modes are
+#          a documented negative result at 64 channels: the neighbors'
+#          topographies ARE the ROI's, so nulling them removes the ROI's own
+#          energy (se_own 0.00-0.01, noise x6-600; SOURCE_SPACE_FINDINGS 11).
+#          The adjacent region that can be nulled is the sensorimotor strip
+#          (other_rois_sm, 4 patterns: deflect_null4_other_rois_sm).
 # ``deflect`` alone means the default design; every spelling is normalized
 # to its canonical full string (cache dir and result dir), so 'deflect' and
 # 'deflect_k3_null2_other_rois' are the same arm.  The assumed SNR of the
@@ -588,7 +596,7 @@ def method_arg(value):
 PRODUCTION_FEATURE_MODES = ['pca_flip', 'vertex_pca', 'vertex_selectkbest',
                             'vertex_selectkbest_all']
 DEFLECT_DEFAULTS = dict(k=3, null_comp=2, nulls='other_rois')
-DEFLECT_NULL_CHOICES = ['none', 'other_rois', 'other_rois_sm', 'sm']
+DEFLECT_NULL_CHOICES = ['none', 'other_rois', 'other_rois_sm', 'sm', 'ring', 'ring_rois']
 DEFLECT_SM_PARCELS = ['4', '3a', '3b', '1', '2']       # HCPMMP1 area names
 FEATURE_MODE_CHOICES = PRODUCTION_FEATURE_MODES + ['deflect']
 
