@@ -804,9 +804,26 @@ def cache_leakage_tag(leakage_correction, fs=2000):
     return tag
 
 
+def npz_is_valid(path):
+    """True when ``path`` is a readable .npz with a ``roi_names`` member.
+    A write cut off by a full disk or a killed process leaves a file that
+    exists but is not a zip archive; np.load then raises BadZipFile.  Only
+    the zip directory is read, so this is cheap even for multi-GB caches."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            return 'roi_names.npy' in z.namelist()
+    except (zipfile.BadZipFile, OSError, EOFError):
+        return False
+
+
 def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
-                    subj, stim_class, fs=2000):
+                    subj, stim_class, fs=2000, validate=False):
     """Return the path to a cached .npz ROI timeseries file, or None.
+
+    ``validate=True`` additionally opens the file's zip directory and treats
+    a truncated / corrupt file as absent (with a warning), so a rebuild can
+    overwrite it.
 
     Checks ROI_TIMESERIES_ROOT first, then each path in
     ROI_TIMESERIES_EXTERNAL in order.  Also falls back to the legacy
@@ -829,6 +846,10 @@ def find_cached_npz(task, method, atlas, feat_mode, leakage_correction,
         for name in candidates:
             path = root / task / method / atlas / name / leakage_tag / filename
             if path.exists():
+                if validate and not npz_is_valid(path):
+                    print(f'  WARNING: corrupt ROI cache (not a readable npz, '
+                          f'{path.stat().st_size / 1e6:.0f} MB) will be rebuilt: {path}')
+                    return None
                 return path
     return None
 
