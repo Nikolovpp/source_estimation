@@ -47,14 +47,32 @@ subdirectory (``.../overtProd/``, ``.../perception/``) so a single-task run
 never overwrites the other task's overview.  ``--overview-only`` regenerates
 the CSVs and overviews without redrawing the per-pair figures.
 
+``--arms`` is the third mode, the "arm sweep": the runs are complete
+result-directory tags (``order{N}_win{W}ms_fs{F}[_{normalize}][_pc{K}...]``),
+so arms that differ in sampling rate, PC count or normalization can sit next
+to each other, up to ``len(RUN_COLORS)`` of them.  Only the overview and the
+summary CSV are written (a per-pair overlay of a dozen arms is unreadable),
+under ``_figures_final_review/arm_sweep_{tasks}_{n}arms{sfx}`` (or
+``--tag``); the CSV column suffixes are the tags.  The legend numbers the
+arms in the order given, and the panel titles count the cells per arm by
+that number.  Every arm must have been analysed with the same
+granger_stats.py settings (run exploratory/run_gc_stats_figs.sh with the
+arm's ORDER / WINS / TARGET_FS / NPCS first), or the tiles compare different
+tests.
+
     conda activate mne
     python exploratory/plot_gc_window_sweep.py                   # order 15, 40/60/80 ms
     python exploratory/plot_gc_window_sweep.py --stats-subdir group_stats
     python exploratory/plot_gc_window_sweep.py --tasks overtProd --pairs awfa-lh,ifc-lh
     # orders 15 / 20 / 25 overlaid, one figure set each for 60 and 80 ms
     python exploratory/plot_gc_window_sweep.py --orders 15 20 25 --wins 60 80 --tasks perception
+    # every comparable overtProd arm side by side (overview + CSV only)
+    python exploratory/plot_gc_window_sweep.py --tasks overtProd --arms \
+        order10_win40ms_fs500_pc2_pmc-lh3 order15_win40ms_fs500_pc2_pmc-lh3 \
+        order15_win60ms_fs500_pc2_pmc-lh3 order25_win200ms_fs200_pc2_pmc-lh3
 """
 import os
+import re
 import sys
 import argparse
 import numpy as np
@@ -73,9 +91,14 @@ BAND_LABEL = {'theta': 'theta 4–8 Hz', 'low_beta': 'low beta 12–18 Hz',
               'high_beta': 'high beta 18–30 Hz', 'beta': 'beta 12–30 Hz'}
 PAIRS = ['awfa-lh,ifc-lh', 'awfa-lh,pmc-lh', 'awfa-lh,tpc-lh',
          'ifc-lh,pmc-lh', 'ifc-lh,tpc-lh', 'pmc-lh,tpc-lh']
-# One fixed hue per overlaid run (window length or order), in sweep order
-# (never re-assigned).
-RUN_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4']
+# One fixed hue per overlaid run (window length, order or arm), in sweep
+# order (never re-assigned).  The first five are the window / order sweep
+# colors of the earlier figures; the rest only come into play in an arm
+# sweep, where position within the band group, not hue, identifies a run.
+RUN_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4',
+              '#7b5cc9', '#1a9fb8', '#b8522d', '#5f8f2a', '#c9a227',
+              '#a1457d', '#5c6b73']
+N_OVERLAY = 5          # at most this many runs are overlaid in a pair figure
 INK, MUTED, GRID, EMPTY = '#1f1f1e', '#6b6a63', '#e7e6e0', '#eeede8'
 CSV = 'gc_task_vs_baseline_stats_ttest.csv'
 
@@ -88,22 +111,47 @@ def short(roi):
 # with.  ``args.runs`` lists the runs of the current figure set and
 # ``args.sweep`` says which of the two varies ('window' or 'order'); the
 # other is fixed across the set.
+ARM_RE = re.compile(r'^order(\d+)_win(\d+(?:\.\d+)?)ms_fs(\d+(?:\.\d+)?)(.*)$')
+
+
+def parse_arm(tag):
+    """(order, window ms, fs, rest) from a result-directory tag such as
+    ``order10_win80ms_fs200_pc2_pmc-lh3``; ``rest`` is the normalize / PC
+    part (``_pc2_pmc-lh3``; empty for a plain 1-PC, non-normalized arm)."""
+    m = ARM_RE.match(tag)
+    if m is None:
+        raise SystemExit(f'--arms: {tag!r} is not an order*_win*ms_fs* tag')
+    return int(m.group(1)), float(m.group(2)), float(m.group(3)), m.group(4)
+
+
+# In an arm sweep a run is (order, window ms, tag): the first two keep the
+# window-center arithmetic below unchanged, the tag locates the results.
 def run_key(args, run):
-    """Column suffix in the summary CSV: ``60`` (window sweep, as before)
-    or ``order20`` (order sweep)."""
-    order, win = run
+    """Column suffix in the summary CSV: ``60`` (window sweep, as before),
+    ``order20`` (order sweep) or the full result tag (arm sweep)."""
+    order, win = run[:2]
+    if args.sweep == 'arm':
+        return run[2]
     return f'{win:g}' if args.sweep == 'window' else f'order{order}'
 
 
 def run_label(args, run):
-    order, win = run
+    order, win = run[:2]
+    if args.sweep == 'arm':
+        _, _, fs, rest = parse_arm(run[2])
+        lbl = (f'{args.runs.index(run) + 1}: order {order}, {win:g} ms, '
+               f'{fs:g} Hz')
+        if len({parse_arm(r[2])[3] for r in args.runs}) > 1:
+            lbl += ', ' + (rest.strip('_').replace('_', ' ') or '1 PC')
+        return lbl
     return f'{win:g} ms window' if args.sweep == 'window' else f'order {order}'
 
 
 def pair_dir(args, task, stim, pair, run):
-    order, win = run
-    tag = gc_tag(order, win, args.target_fs, args.normalize,
-                 n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi)
+    order, win = run[:2]
+    tag = run[2] if args.sweep == 'arm' else gc_tag(
+        order, win, args.target_fs, args.normalize,
+        n_pcs=args.n_pcs, n_pcs_roi=args.n_pcs_roi)
     return (GC_OUTPUT_ROOT / task / args.method / args.atlas
             / args.feature_mode / 'leakage_corrected' / tag
             / roiset_tag(pair.split(',')) / stim)
@@ -342,12 +390,19 @@ def plot_overview(args, S, out_dir, tag, sfx):
     tasks = [t for t in args.tasks if (S.task == t).any()]
     stims = [s for s in args.stims if (S.stim == s).any()]
     nw = len(args.runs)
-    fig, axes = plt.subplots(len(tasks), len(stims), squeeze=False,
-                             figsize=(max(13.0, 7.6 * len(stims)),
-                                      1.6 + 6.2 * len(tasks)))
+    # Up to N_OVERLAY runs: task rows x contrast columns, as before.  More
+    # runs (arm sweep) need wider tiles, so the task x contrast panels are
+    # stacked in one column instead.
+    stack = nw > N_OVERLAY
+    n_row, n_col = ((len(tasks) * len(stims), 1) if stack
+                    else (len(tasks), len(stims)))
+    panel_w = max(7.6, 2.8 + 0.44 * len(BANDS) * (nw + 0.6))
+    fig, axes = plt.subplots(n_row, n_col, squeeze=False,
+                             figsize=(max(13.0, panel_w * n_col),
+                                      1.6 + 6.2 * n_row))
     for a, task in enumerate(tasks):
         for b, stim in enumerate(stims):
-            ax = axes[a, b]
+            ax = axes[a * len(stims) + b, 0] if stack else axes[a, b]
             sub = S[(S.task == task) & (S.stim == stim)]
             edges = list(dict.fromkeys(
                 zip(sub.measure, sub.src, sub.tgt)))
@@ -365,6 +420,16 @@ def plot_overview(args, S, out_dir, tag, sfx):
                             (x0 + 0.04, y + 0.06), 0.92, 0.88, lw=0,
                             color=RUN_COLORS[k] if f > 0 else EMPTY,
                             alpha=0.22 + 0.78 * f if f > 0 else 1.0))
+                        # outline = this edge x band has an FWER-significant
+                        # permutation cluster somewhere in the tested span
+                        ccol = f'n_sig_cluster_{rk}'
+                        if ccol in cell and float(cell[ccol].iloc[0]) > 0:
+                            ax.add_patch(Rectangle(
+                                (x0 + 0.04, y + 0.06), 0.92, 0.88, lw=1.5,
+                                edgecolor=INK, facecolor='none', zorder=3))
+                        if y == 0 and args.sweep == 'arm':
+                            ax.text(x0 + 0.5, -0.1, str(k + 1), ha='center',
+                                    va='bottom', fontsize=7, color=MUTED)
                         if f > 0:
                             txt = f'{max(1, round(100 * f)):d}'
                             if measure == 'dtrgc':
@@ -376,7 +441,7 @@ def plot_overview(args, S, out_dir, tag, sfx):
                 if y % 3 == 0 and y:
                     ax.axhline(y, color=MUTED, lw=0.5)
             ax.set_xlim(0, len(BANDS) * (nw + 0.6) - 0.6)
-            ax.set_ylim(len(edges), 0)
+            ax.set_ylim(len(edges), -0.5 if args.sweep == 'arm' else 0)
             ax.set_yticks(np.arange(len(edges)) + 0.5)
             ax.set_yticklabels(
                 [f'{short(s)} → {short(t)}' if m == 'gc'
@@ -390,11 +455,17 @@ def plot_overview(args, S, out_dir, tag, sfx):
             ax.tick_params(length=0)
             for s in ax.spines.values():
                 s.set_visible(False)
-            hits = ', '.join(
-                f'{run_label(args, w)} '
-                f'{int((sub[f"n_sig_pointwise_range_{run_key(args, w)}"] > 0).sum())}'
+            counts = [
+                (w, int((sub[f'n_sig_pointwise_range_{run_key(args, w)}']
+                         > 0).sum()))
                 for w in args.runs
-                if f'n_sig_pointwise_range_{run_key(args, w)}' in sub)
+                if f'n_sig_pointwise_range_{run_key(args, w)}' in sub]
+            if args.sweep == 'arm':      # arms are numbered in the legend
+                hits = 'arm: cells  ' + ' · '.join(
+                    f'{args.runs.index(w) + 1}: {n}' for w, n in counts)
+            else:
+                hits = ', '.join(f'{run_label(args, w)} {n}'
+                                 for w, n in counts)
             ax.set_title(f'{task} / {stim}\ncells with any significant '
                          f'window: {hits} of {len(sub)}', fontsize=10.5,
                          loc='left', color=INK, pad=40)
@@ -403,23 +474,34 @@ def plot_overview(args, S, out_dir, tag, sfx):
                for k, w in enumerate(args.runs)]
     handles.append(Rectangle((0, 0), 1, 1, color=EMPTY,
                              label='no significant window'))
+    handles.append(Rectangle((0, 0), 1, 1, facecolor='none', edgecolor=INK,
+                             lw=1.5, label='outline = significant cluster '
+                                           'anywhere in the tested span '
+                                           '(permutation, per cell)'))
     # header laid out in inches from the top, so it does not collapse when
     # a single task makes the figure short
     H = fig.get_size_inches()[1]
+    by = {'window': 'window length', 'order': 'model order',
+          'arm': 'analysis arm'}[args.sweep]
+    setting = (f'{args.fixed_txt} @ {args.target_fs:g} Hz'
+               if args.sweep != 'arm' else ', '.join(tasks))
+    # a long arm legend wraps onto several rows; push the caption and the
+    # panels down by that much (header laid out in inches from the top)
+    ncol = min(len(handles), 4 if args.sweep == 'arm' else len(handles))
+    extra = 0.24 * (-(-len(handles) // ncol) - 1)
     fig.suptitle(
-        f'Pointwise t-test in {lo:g}–{hi:g} ms (window center), by '
-        f'{"window length" if args.sweep == "window" else "model order"}   '
-        f'{args.fixed_txt} @ {args.target_fs:g} Hz, '
-        f'{args.stats_subdir}', fontsize=13, color=INK, y=1 - 0.12 / H)
-    fig.legend(handles=handles, loc='upper center', ncol=len(handles),
+        f'Pointwise t-test in {lo:g}–{hi:g} ms (window center), by {by}   '
+        f'{setting}, {args.stats_subdir}', fontsize=13, color=INK,
+        y=1 - 0.12 / H)
+    fig.legend(handles=handles, loc='upper center', ncol=ncol,
                frameon=False, fontsize=10, bbox_to_anchor=(0.5, 1 - 0.38 / H))
-    fig.text(0.5, 1 - 0.82 / H,
+    fig.text(0.5, 1 - (0.82 + extra) / H,
              f'number = % of the windows in {lo:g}–{hi:g} ms with p < 0.05, '
              'uncorrected (darker = more; ≈5% expected by chance) · GC '
              'one-tailed (task > baseline) · ΔTRGC two-tailed, sign = '
              'direction (+ = first → second ROI)',
              ha='center', fontsize=9, color=MUTED)
-    fig.tight_layout(rect=(0, 0, 1, 1 - 1.0 / H), h_pad=2.5)
+    fig.tight_layout(rect=(0, 0, 1, 1 - (1.0 + extra) / H), h_pad=2.5)
     out = os.path.join(out_dir, f'{args.sweep}_sweep_overview_{tag}{sfx}.'
                                 f'{args.format}')
     fig.savefig(out, dpi=170)
@@ -437,7 +519,16 @@ def main():
                         'one figure set per window in --wins')
     p.add_argument('--wins', type=float, nargs='+', default=[40, 60, 80],
                    help='window lengths (ms) to overlay, at most '
-                        f'{len(RUN_COLORS)}')
+                        f'{N_OVERLAY}')
+    p.add_argument('--arms', nargs='+', default=None, metavar='TAG',
+                   help='arm sweep: complete result-directory tags '
+                        '(order10_win80ms_fs200_pc2_pmc-lh3 ...) compared '
+                        f'side by side, at most {len(RUN_COLORS)}; replaces '
+                        '--order/--orders/--wins/--target-fs/--n-pcs; '
+                        'overview and CSV only')
+    p.add_argument('--tag', default=None,
+                   help='arm sweep: name of the output set (default '
+                        '{tasks}_{n}arms)')
     p.add_argument('--target-fs', type=float, default=500.0)
     p.add_argument('--normalize', default='none')
     p.add_argument('--n-pcs', type=int, default=2)
@@ -476,17 +567,37 @@ def main():
     if args.order is not None and args.orders is not None:
         p.error('give --order or --orders, not both')
     orders = args.orders or [args.order if args.order is not None else 15]
-    if len(orders) > 1:
+    if args.arms is not None:
+        if args.order is not None or args.orders is not None:
+            p.error('--arms replaces --order/--orders')
+        if len(args.arms) > len(RUN_COLORS):
+            p.error(f'at most {len(RUN_COLORS)} arms')
+        if len(set(args.arms)) < len(args.arms):
+            p.error('--arms: duplicate tag')
+        args.sweep = 'arm'
+    elif len(orders) > 1:
         args.sweep = 'order'
-        if len(orders) > len(RUN_COLORS):
-            p.error(f'at most {len(RUN_COLORS)} orders')
+        if len(orders) > N_OVERLAY:
+            p.error(f'at most {N_OVERLAY} orders')
     else:
         args.sweep = 'window'
-        if len(args.wins) > len(RUN_COLORS):
-            p.error(f'at most {len(RUN_COLORS)} window lengths')
+        if len(args.wins) > N_OVERLAY:
+            p.error(f'at most {N_OVERLAY} window lengths')
     args.n_pcs_roi = args.n_pcs_roi or None
     sfx = ('' if args.stats_subdir == 'group_stats'
            else '_' + args.stats_subdir.replace('group_stats_', ''))
+
+    if args.sweep == 'arm':
+        args.runs = [parse_arm(t)[:2] + (t,) for t in args.arms]
+        args.fixed_txt = 'analysis arms'
+        tag = args.tag or f'{"+".join(args.tasks)}_{len(args.runs)}arms'
+        out_dir = args.out_dir or os.path.join(
+            GC_OUTPUT_ROOT, '_figures_final_review', f'arm_sweep_{tag}{sfx}')
+        os.makedirs(out_dir, exist_ok=True)
+        print('\n== arm sweep (overview only):\n   '
+              + '\n   '.join(run_label(args, r) for r in args.runs))
+        run_set(args, tag, sfx, out_dir)
+        return
 
     # Figure sets: a window sweep is one set per order (windows overlaid),
     # an order sweep one set per window (orders overlaid).  The set's tag
@@ -526,7 +637,7 @@ def run_set(args, tag, sfx, out_dir):
                 series = load_series(args, task, stim, pair)
                 if not series:
                     continue
-                if not args.overview_only:
+                if not args.overview_only and args.sweep != 'arm':
                     print('wrote', plot_pair(args, task, stim, pair, series,
                                              out_dir, sfx))
                 rows += summarize(args, task, stim, pair, series)
