@@ -88,8 +88,8 @@
 # with lambda2 = 1/100 instead of the production 1/9 (config.parse_method).
 # The full string is the {method} path segment everywhere, so the variant
 # gets its own caches / results / GC dirs and never touches the SNR-3 ones:
-#   METHODS="dSPM_snr10" nohup bash exploratory/run_translation_arm.sh \
-#       > logs/translation_arm_dSPM_snr10.log 2>&1 &
+#   METHODS="dSPM_snr10" bash exploratory/run_translation_arm.sh 2>&1 \
+#       | tee logs/translation_arm_dSPM_snr10.log
 #
 # DEC_METHODS (default = METHODS) restricts the decode + latency stages only.
 # dSPM and sLORETA give the same decoding curves (r = 1.000 on overtProd /
