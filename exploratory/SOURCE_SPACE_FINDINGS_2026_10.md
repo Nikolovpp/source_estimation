@@ -330,3 +330,31 @@ result.
   STEPS="gc stats" bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_deflect_gc_demean.log`
   (own `order10_win40ms_fs500_demean_pc3` directories); the review script
   takes the arm as `deflect=dSPM_snr10:deflect:3:demean:gc`.
+* 2026-10-29, sensorimotor strip as a sixth ROI and the custom-ROI
+  comparison (user request). Atlas `sensorEquivSM` = sensorEquiv +
+  `Sensorimotor` (areas 4/3a/3b/1/2, the same parcels as the DeFleCT `_sm`
+  null; map in `ROI_maps/sensorEquiv/`). Nothing that has run contains its
+  time course: in the `deflect_null4_other_rois_sm` arm it is only nulled.
+  Cheapest route for the vertex arm (the five old ROIs' decoding is
+  unchanged, so only the new ROI is decoded; GC needs all six in one cache,
+  which at 500 Hz is small):
+  `ATLAS=sensorEquivSM ROI_SUBSET=Sensorimotor GC_FS=2000 STEPS=localize METHODS=dSPM bash exploratory/run_translation_arm.sh 2>&1 | tee logs/sm_localize2000.log`
+  (2000 Hz cache, strip only);
+  `ATLAS=sensorEquivSM DEC_FS=500 GC_FS=500 STEPS=localize METHODS=dSPM bash exploratory/run_translation_arm.sh 2>&1 | tee logs/sm_localize500.log`
+  (500 Hz cache, all six);
+  `ATLAS=sensorEquivSM ROI_SUBSET=Sensorimotor STEPS=decode METHODS=dSPM bash exploratory/run_translation_arm.sh 2>&1 | tee logs/sm_decode.log`
+  (one ROI, ~1/5 of a full decode per cell); then
+  `python exploratory/merge_decode_rois.py --from-atlas sensorEquiv --to-atlas sensorEquivSM`
+  and `ATLAS=sensorEquivSM STEPS="latency gc stats" GC_JOBS=15 METHODS=dSPM bash exploratory/run_translation_arm.sh 2>&1 | tee logs/sm_gc.log`
+  (15 pairs). A DeFleCT arm on `sensorEquivSM` is one driver call
+  (`ATLAS=sensorEquivSM FEAT=deflect ...`): with the strip inside the set the
+  plain `other_rois` design nulls it for every other ROI, so it replaces the
+  `_sm` variant. Review: `python exploratory/review_translation_arm.py --atlas sensorEquivSM`.
+* Custom-ROI comparison (same arms on the six functional-localizer spheres,
+  `ATLAS=custom CONTROL_ROI=vwfa-lh`): dSPM vertex caches for `custom` at
+  2000 Hz do not exist (the custom arm was LCMV), so this is a full
+  localize (both rates) + four decodes (~1700 min each) + GC; the DeFleCT
+  arm is cheap. Expect from findings 3–4 and 11: owfa ↔ vwfa stay
+  unresolvable (|cos| 0.35–0.51 in every inverse) and the DeFleCT nulls will
+  partly cancel the spheres' own topographies, so the comparison mostly
+  shows what lobe-scale composites buy over 10 mm spheres.

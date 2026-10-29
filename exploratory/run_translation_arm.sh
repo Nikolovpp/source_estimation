@@ -57,6 +57,12 @@
 #   DEC_JOBS  64         (ROI x window) workers for run_decode.py
 #   GC_JOBS   10         pair workers inside run_granger.py (10 pairs)
 #   ORDER / WIN_MS / TARGET_FS   10 / 40 / 500 (the sensor BSMART config)
+#   ATLAS     sensorEquiv   sensorEquivSM adds the sensorimotor strip as a 6th ROI;
+#                         custom = the six localizer spheres (CONTROL_ROI=vwfa-lh)
+#   CONTROL_ROI Visual    control ROI of the latency stage
+#   ROI_SUBSET ""         localize + decode only these ROIs (adding one ROI to an
+#                         existing set: ROI_SUBSET=Sensorimotor, then
+#                         exploratory/merge_decode_rois.py; GC needs a full cache)
 #   NORMALIZE none      run_granger --normalize (demean = ERP removed; own GC tag/dirs)
 #   TRGC      1         0 = directed GC only (DeFleCT arms)
 #   LEAK      ""         set to "--leakage-correction" for the double-corrected arm
@@ -113,6 +119,8 @@ DEC_METHODS="${DEC_METHODS:-$METHODS}"   # decode + latency stages only
 TASKS="${TASKS:-overtProd perception}"
 STIMS="${STIMS:-prodDiff percDiff}"
 ATLAS="${ATLAS:-sensorEquiv}"
+CONTROL_ROI="${CONTROL_ROI:-Visual}"   # decode_onset_latency control (custom atlas: vwfa-lh)
+ROI_SUBSET="${ROI_SUBSET:-}"           # restrict localize + decode to these ROIs (e.g. "Sensorimotor")
 FEAT="${FEAT:-vertex_selectkbest}"
 DEC_FS="${DEC_FS:-2000}"
 GC_FS="${GC_FS:-500}"
@@ -135,6 +143,7 @@ DRY_RUN="${DRY_RUN:-0}"
 
 LEAK_TAG=raw; [ -n "$LEAK" ] && LEAK_TAG=leakage_corrected
 fs_flag () { [ "$1" != "2000" ] && echo "--fs $1"; return 0; }
+SUB=""; [ -n "$ROI_SUBSET" ] && SUB="--roi-subset $ROI_SUBSET"
 # sampling rates to localize: the decoding one and the GC one (deduplicated)
 LOC_FS="$DEC_FS"; [ "$GC_FS" != "$DEC_FS" ] && LOC_FS="$DEC_FS $GC_FS"
 GC_CACHE_TAG="$LEAK_TAG"; [ "$GC_FS" != "2000" ] && GC_CACHE_TAG="${LEAK_TAG}_fs${GC_FS}"
@@ -185,7 +194,7 @@ echo "== localize (subject-parallel, $LOC_JOBS workers; rates: $LOC_FS Hz)"
 for FS in $LOC_FS; do for T in $TASKS; do for M in $METHODS; do
     run "$LOG_ROOT/localize_${T}_${M}${FT}_fs${FS}.log" \
         python run_source_localize.py --task "$T" --stim-class $STIMS --method "$M" \
-            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$FS") --n-jobs "$LOC_JOBS"
+            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$FS") $SUB --n-jobs "$LOC_JOBS"
 done; done; done
 echo
 fi
@@ -196,7 +205,7 @@ echo "== decode (subject-sequential, $DEC_JOBS ROI x window workers, ${DEC_FS} H
 for T in $TASKS; do for S in $STIMS; do for M in $DEC_METHODS; do
     run "$LOG_ROOT/decode_${T}_${S}_${M}${FT}.log" \
         python run_decode.py --task "$T" --stim-class "$S" --method "$M" \
-            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$DEC_FS") \
+            --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$DEC_FS") $SUB \
             --classifier "$CLASSIFIER" --tune-hyperparams --n-jobs "$DEC_JOBS"
 done; done; done
 echo
@@ -204,13 +213,13 @@ fi
 
 # ── 3. decoding timing vs the Visual control ────────────────────────────
 if has latency; then
-echo "== latency (decode_onset_latency.py, control = Visual)"
+echo "== latency (decode_onset_latency.py, control = $CONTROL_ROI)"
 for T in $TASKS; do for M in $DEC_METHODS; do
     run "$LOG_ROOT/latency_${T}_${M}${FT}.log" \
         python exploratory/decode_onset_latency.py --task "$T" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK \
             --classifier "$CLASSIFIER" --tune-hyperparams --stim-classes $STIMS \
-            --control-roi Visual
+            --control-roi "$CONTROL_ROI"
 done; done
 echo
 fi

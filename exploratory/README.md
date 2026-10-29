@@ -131,6 +131,9 @@ the workstation run order and the decision rule.
 - `plot_sensorequiv_rois.py` — brain maps of the five sensorEquiv composites
   and the HCPMMP1 sensorimotor strip (overview, speech ROIs + strip, one
   figure per ROI with its parcels in separate colors) → `ROI_maps/sensorEquiv/`
+- `merge_decode_rois.py` — copies the unchanged ROIs' per-subject decoding
+  rows from one atlas into another after only a new ROI was decoded
+  (`ROI_SUBSET=...`), e.g. sensorEquiv → sensorEquivSM.
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.

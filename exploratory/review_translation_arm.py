@@ -74,18 +74,34 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, TwoSlopeNorm
 from matplotlib.lines import Line2D
 
-from config import DECODE_OUTPUT_ROOT, GC_WINDOWS_OF_INTEREST, canonical_feature_mode
+from config import DECODE_OUTPUT_ROOT, GC_WINDOWS_OF_INTEREST, canonical_feature_mode, SPEECH_ROIS
 from run_granger import GC_OUTPUT_ROOT, gc_tag
 
 ROIS = ['Temporal', 'Inferior_Frontal', 'Superior_Frontal', 'Superior_Parietal', 'Visual']
-ROI_SHORT = {'Temporal': 'Temporal', 'Inferior_Frontal': 'Inf. Frontal',
-             'Superior_Frontal': 'Sup. Frontal', 'Superior_Parietal': 'Sup. Parietal',
-             'Visual': 'Visual (control)'}
-ROI_ABBR = {'Temporal': 'Tmp', 'Inferior_Frontal': 'IFG', 'Superior_Frontal': 'SFG',
-            'Superior_Parietal': 'SPL', 'Visual': 'Vis'}
-ROI_COLORS = {'Temporal': '#1b9e77', 'Inferior_Frontal': '#d95f02',
-              'Superior_Frontal': '#7570b3', 'Superior_Parietal': '#e7298a',
-              'Visual': '#555555'}
+ATLAS = 'sensorEquiv'
+
+
+class _Fallback(dict):
+    def __missing__(self, k):
+        return k.replace('-lh', '').replace('_', ' ') if self is ROI_SHORT else (k[:3] if self is ROI_ABBR else '#999999')
+
+
+ROI_SHORT = _Fallback({'Temporal': 'Temporal', 'Inferior_Frontal': 'Inf. Frontal',
+                       'Superior_Frontal': 'Sup. Frontal', 'Superior_Parietal': 'Sup. Parietal',
+                       'Visual': 'Visual (control)', 'Sensorimotor': 'Sensorimotor strip'})
+ROI_ABBR = _Fallback({'Temporal': 'Tmp', 'Inferior_Frontal': 'IFG', 'Superior_Frontal': 'SFG',
+                      'Superior_Parietal': 'SPL', 'Visual': 'Vis', 'Sensorimotor': 'SM'})
+ROI_COLORS = _Fallback({'Temporal': '#1b9e77', 'Inferior_Frontal': '#d95f02',
+                        'Superior_Frontal': '#7570b3', 'Superior_Parietal': '#e7298a',
+                        'Visual': '#555555', 'Sensorimotor': '#e6ab02'})
+
+
+def set_atlas(atlas):
+    """ROI list, pair list and default control from config for this atlas."""
+    global ROIS, PAIRS, ATLAS
+    ATLAS = atlas
+    ROIS = list(SPEECH_ROIS[atlas].keys()) if atlas in SPEECH_ROIS else ROIS
+    PAIRS[:] = [(a, b) for i, a in enumerate(ROIS) for b in ROIS[i + 1:]]
 ARM_COLORS = ['#1f77b4', '#d62728', '#2ca02c', '#9467bd']
 BANDS = ['theta', 'low_beta', 'high_beta']
 BAND_LABEL = {'theta': 'theta 4-8 Hz', 'low_beta': 'low beta 12-18 Hz',
@@ -124,12 +140,14 @@ DEFAULT_ARMS = ['vertex=dSPM:vertex_selectkbest:1:none:gc+dtrgc',
                 'deflect=dSPM_snr10:deflect:3:none:gc']
 
 
-def decode_dir(arm, task, atlas='sensorEquiv'):
+def decode_dir(arm, task, atlas=None):
+    atlas = atlas or ATLAS
     return (Path(DECODE_OUTPUT_ROOT) / task / arm['method'] / atlas / arm['feat']
             / 'raw' / 'no_pseudo' / '40_5' / 'logistic_tuned')
 
 
-def gc_dir(arm, task, stim, atlas='sensorEquiv'):
+def gc_dir(arm, task, stim, atlas=None):
+    atlas = atlas or ATLAS
     return (Path(GC_OUTPUT_ROOT) / task / arm['method'] / atlas / arm['feat']
             / 'raw' / arm['gc_tag'] / 'all_rois' / stim)
 
@@ -479,7 +497,8 @@ def fig_gc_matrix(arms, task, stim, out):
             any_data = True
         for j, (m, b) in enumerate(cols):
             ax = axes[i, j]
-            M = np.full((5, 5), np.nan)
+            n_roi = len(ROIS)
+            M = np.full((n_roi, n_roi), np.nan)
             ann = {}
             if et is not None:
                 sub = et[(et.measure == m) & (et.band == b)]
@@ -506,7 +525,7 @@ def fig_gc_matrix(arms, task, stim, out):
             for (si, ti), s in ann.items():
                 ax.text(ti, si, s, ha='center', va='center', fontsize=9, fontweight='bold',
                         color='k' if abs(M[si, ti]) < 2 else 'w')
-            ax.set_xticks(range(5)); ax.set_yticks(range(5))
+            ax.set_xticks(range(n_roi)); ax.set_yticks(range(n_roi))
             ax.set_xticklabels([ROI_ABBR[r] for r in ROIS], fontsize=7, rotation=90)
             ax.set_yticklabels([ROI_ABBR[r] for r in ROIS], fontsize=7)
             ax.tick_params(length=0)
@@ -515,7 +534,7 @@ def fig_gc_matrix(arms, task, stim, out):
             if j == 0:
                 ax.set_ylabel(f"{a['label']}\n{pass_label(p)}", fontsize=9)
             if et is None:
-                ax.text(2, 2, 'missing', ha='center', va='center', fontsize=8)
+                ax.text(n_roi / 2 - 0.5, n_roi / 2 - 0.5, 'missing', ha='center', va='center', fontsize=8)
     if not any_data:
         plt.close(fig); return None
     sm1 = plt.cm.ScalarMappable(cmap='Reds', norm=norm_gc)
@@ -659,14 +678,18 @@ def main():
     ap.add_argument('--arms', nargs='+', default=DEFAULT_ARMS,
                     help='label=method:feature_mode[:n_pcs[:normalize[:gc|dtrgc|gc+dtrgc]]]; first = reference')
     ap.add_argument('--tasks', nargs='+', default=['overtProd', 'perception'])
+    ap.add_argument('--atlas', default='sensorEquiv', help='sensorEquiv | sensorEquivSM | custom (ROI list from config.SPEECH_ROIS)')
     ap.add_argument('--stage', choices=['decoding', 'gc', 'all'], default='all')
     ap.add_argument('--out-dir', default=None)
     args = ap.parse_args()
     arms = [parse_arm(s) for s in args.arms]
     root = Path(args.out_dir) if args.out_dir else REVIEW_ROOT
+    set_atlas(args.atlas)
+    if args.atlas != 'sensorEquiv':
+        root = root / args.atlas
     (root / 'decoding').mkdir(parents=True, exist_ok=True)
     (root / 'gc').mkdir(parents=True, exist_ok=True)
-    print(f'review -> {root}')
+    print(f'review -> {root}  (atlas {args.atlas}: {", ".join(ROIS)})')
     for a in arms:
         print(f"  arm {a['label']}: {a['method']} / {a['feat']} / GC tag {a['gc_tag']}")
 
