@@ -119,6 +119,15 @@ the workstation run order and the decision rule.
   per-subject differences (r over time, max group difference, difference at
   the reference peak ± SEM, t-test, vs the group SEM). Decides whether a
   second kernel is worth its 1400 min. `_kernel_comparison/` per task.
+- `review_translation_arm.py` — one-stop review of the translation arm:
+  vertex dSPM vs DeFleCT decoding grids (both arms overlaid, stats above the
+  traces), paired DeFleCT − vertex difference, summary tables, and GC
+  significance matrices / TRGC / directed time courses from the
+  `granger_stats.py` CSVs → `derivatives/source_estimation/TRANSLATION_ARM_REVIEW/`
+- `ctf_region_shares.py` — splits each sensorEquiv ROI's CTF energy by
+  region (own, right mirror, auditory, sensorimotor strip, rest) and gives
+  per-vertex sensitivity ratios, for dSPM (per-subject baseline CTFs) and the
+  DeFleCT banks (template leadfield) → `RESOLUTION_ANALYSIS/{task}/ctf_region_*`
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.

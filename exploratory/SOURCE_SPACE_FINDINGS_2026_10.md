@@ -189,6 +189,68 @@ LCMV alike. The CTF decides where the signal is *attributed*, not whether
 it is decodable, so resolution improvements change interpretation and GC,
 and should not be expected to move decoding peaks.
 
+**10. Translation arm complete, vertex dSPM vs DeFleCT (2026-10-29; both tasks,
+both contrasts, n = 20; review figures in
+`derivatives/source_estimation/TRANSLATION_ARM_REVIEW/`, made by
+`exploratory/review_translation_arm.py`).** Arms: *vertex* = dSPM SNR 3,
+200 selected vertices per ROI (sensitivity: the signal reaches the ROI);
+*deflect* = `deflect_k3_null2_other_rois` at SNR 10, three virtual channels
+per ROI with the two leading topographies of each other ROI nulled
+(specificity: the signal lives in the ROI's own sensor directions).
+
+*Decoding.* overtProd/prodDiff, vertex: every ROI peaks at speech onset
+(Temporal 0.617, IFG 0.610, Visual 0.609, SFG 0.573, SPL 0.550; clusters from
+−630…−260 ms to the end). DeFleCT keeps Temporal 0.566, IFG 0.572 and Visual
+0.551 with the same timing but drops SFG (0.525) and SPL (0.526) to the
+noise floor; paired loss at the vertex peak −0.04…−0.07 (p ≤ .009) except
+SPL (−0.03, p = .06). overtProd/percDiff: vertex 0.53–0.56 at onset,
+DeFleCT ≤ 0.524. perception/percDiff, vertex: all five ROIs decode at
+175–200 ms (SPL 0.592, Visual 0.576, SFG 0.567, Temporal 0.562, IFG 0.540,
+clusters ~80–440 ms); DeFleCT: only SPL survives (0.555, cluster 120–257 ms,
+and the first ROI > Visual cluster of the whole source program, 130–223 ms,
+p = .021); the others fall to 0.513–0.525. perception/prodDiff: chance in both
+arms. Arm curves correlate 0.57–0.97 (production) and 0.33–0.95 (perception)
+over time; the DeFleCT loss is largest for Visual in three of four cells.
+Figures: `TRANSLATION_ARM_REVIEW/decoding/decoding_curves_{task}.png`,
+`decoding_rois_{task}.png`, `decoding_deflect_minus_vertex_{task}.png`;
+tables `decoding_summary.md`, `decoding_arm_comparison.csv`.
+
+*Why Superior Parietal stands out in perception/percDiff.* Not auditory
+leakage: per vertex, SPL's dSPM filter is 0.3 % as sensitive to right
+auditory cortex and 1.4 % to the left Temporal ROI as to its own vertices
+(`exploratory/ctf_region_shares.py`, `RESOLUTION_ANALYSIS/perception_percDiff/
+ctf_region_{shares,gains}_sensorEquiv.csv`). What SPL does hear is the
+peri-central cortex: 26 % per-vertex sensitivity to the left sensorimotor
+strip and 26 % to the right SPL (17 % of its energy is right-hemispheric),
+and the DeFleCT nulls, which target the other four ROIs only, leave that
+untouched (22 % / 24 % after nulling). At the sensor level the percDiff
+discrimination at 100–350 ms peaks over central/fronto-central electrodes
+(F6, FC3, C3, FT8, C4, FC1 at 0.55, 17 subjects, 20 ms windows) while the
+CPz/CP1/P1 pseudo-channel is the weakest of the four (0.525) — so the source
+SPL is not reporting "its" electrodes; the template inverse attributes a
+bilateral central component to the superficial dorsal parietal/postcentral
+cortex, and of the five ROIs SPL (areas 5, 7PC, AIP border the postcentral
+gyrus) is the one whose own leadfield spans it. Decisive test: the
+`deflect_other_rois_sm` variant (adds the sensorimotor-strip null); if SPL
+keeps its percDiff peak, it is parietal; if it falls to the others' level,
+it was central.
+
+*GC.* DeFleCT arm: theta GC rises task-vs-baseline in 17–20 of the 20
+directed edges in all four cells, in both directions, including
+perception/prodDiff where nothing decodes; mean Δ +0.06–0.07 against
++0.00–0.01 in the vertex arm, with the rise starting at stimulus/speech
+onset and peaking ~250 ms in every pair — the evoked response entering the
+3-channel blocks (sensor-faithful config = no ERP removal, 1 PC in the
+vertex arm dilutes it). Net TRGC cancels it: 1–3 edges per cell at
+uncorrected p < .05, none survive FDR, no consistent pair across arms or
+contrasts. Vertex arm: 3–8 theta edges (perception/percDiff: IFG→Temporal,
+IFG→SFG, SPL→Temporal, Visual→IFG survive FDR), nothing in beta, TRGC
+nothing. The vertex-arm GC for overtProd/prodDiff is missing: the directory
+holds one subject and its stats were computed with n = 1.
+Figures: `TRANSLATION_ARM_REVIEW/gc/gc_matrix_{task}_{stim}.png` (overview),
+`gc_trgc_*.png`, `gc_directed_*_{arm}.png`; tables `gc_edge_summary.csv`,
+`gc_significant_edges.md`.
+
 ## Decisions and what runs next
 
 * Keep dSPM/eLORETA (SNR 3) as the production inverse; drop LCMV.
@@ -212,3 +274,14 @@ and should not be expected to move decoding peaks.
   ROI is the alternative if its own time course is of interest. Neither
   explains the Visual control, which needs the sensor-level (EMG / ocular)
   check instead.
+* 2026-10-29, after finding 10: (a) rerun the missing vertex-arm GC cell on
+  the workstation — `STEPS="gc stats" METHODS="dSPM" TASKS=overtProd
+  STIMS=prodDiff nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_dSPM_gc_fix.log 2>&1 &`
+  (resumes past EEGPROD4001) — and delete the stray copy
+  `GC_source_space/dSPM/` (an overtProd/percDiff duplicate without the task
+  level) plus the decode-tree copies under `GC_source_space/{task}/{method}/
+  sensorEquiv/*/raw/no_pseudo/`; (b) run the sensorimotor-null variant for the
+  Superior Parietal question, decoding only:
+  `FEAT=deflect_other_rois_sm METHODS="dSPM_snr10" STEPS="localize decode latency" TASKS=perception STIMS=percDiff nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect_sm.log 2>&1 &`;
+  (c) read DeFleCT GC through TRGC only, or rerun its GC with
+  `--normalize demean` (ERP removal) before trusting any directed theta edge.
