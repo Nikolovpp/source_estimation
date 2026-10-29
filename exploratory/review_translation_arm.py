@@ -34,7 +34,11 @@ GC (TRANSLATION_ARM_REVIEW/gc/)
                                       the directed GC (row -> column, task >
                                       baseline, right-tailed) and the net
                                       Diff-TRGC (upper triangle, signed, two-
-                                      tailed); color = -log10 cluster p,
+                                      tailed). One leakage control per arm:
+                                      a vertex arm reports both (TRGC is its
+                                      control), a DeFleCT arm reports the
+                                      directed GC only (its nulls are the
+                                      control); color = -log10 cluster p,
                                       '*' p < .05 within edge, '**' survives
                                       FDR over the 120 edge x band family
     gc_trgc_{task}_{stim}.png         net TRGC time courses, 10 pairs x 3
@@ -98,17 +102,26 @@ REVIEW_ROOT = Path(DECODE_OUTPUT_ROOT).parent / 'TRANSLATION_ARM_REVIEW'
 # arms
 # ─────────────────────────────────────────────────────────────────────
 def parse_arm(spec):
-    """label=method:feature_mode[:n_pcs]"""
+    """label=method:feature_mode[:n_pcs[:normalize[:measures]]]
+
+    measures = which GC quantity the arm reports, 'gc', 'dtrgc' or
+    'gc+dtrgc' (default: a DeFleCT arm reports the directed GC — its nulls are
+    the leakage control — a vertex arm reports both, TRGC being its control)."""
     label, rest = spec.split('=', 1)
     parts = rest.split(':')
     method, feat = parts[0], canonical_feature_mode(parts[1])
-    n_pcs = int(parts[2]) if len(parts) > 2 else 1
-    return dict(label=label, method=method, feat=feat, n_pcs=n_pcs,
-                gc_tag=gc_tag(10, 40, 500, 'none', n_pcs=n_pcs))
+    n_pcs = int(parts[2]) if len(parts) > 2 and parts[2] else 1
+    normalize = parts[3] if len(parts) > 3 and parts[3] else 'none'
+    if len(parts) > 4 and parts[4]:
+        measures = parts[4].split('+')
+    else:
+        measures = ['gc'] if feat.startswith('deflect') else ['gc', 'dtrgc']
+    return dict(label=label, method=method, feat=feat, n_pcs=n_pcs, normalize=normalize,
+                measures=measures, gc_tag=gc_tag(10, 40, 500, normalize, n_pcs=n_pcs))
 
 
-DEFAULT_ARMS = ['vertex=dSPM:vertex_selectkbest:1',
-                'deflect=dSPM_snr10:deflect:3']
+DEFAULT_ARMS = ['vertex=dSPM:vertex_selectkbest:1:none:gc+dtrgc',
+                'deflect=dSPM_snr10:deflect:3:none:gc']
 
 
 def decode_dir(arm, task, atlas='sensorEquiv'):
@@ -478,6 +491,13 @@ def fig_gc_matrix(arms, task, stim, out):
                     M[si, ti] = v
                     if r.p_cluster < 0.05:
                         ann[(si, ti)] = '**' if r.fam_fdr else '*'
+            if m not in a['measures']:
+                ax.set_axis_off()
+                if j == 0:
+                    ax.set_axis_on(); ax.set_xticks([]); ax.set_yticks([])
+                    ax.set_ylabel(f"{a['label']}\n{pass_label(p)}", fontsize=9)
+                    ax.set_frame_on(False)
+                continue
             cmap = 'Reds' if m == 'gc' else 'RdBu_r'
             norm = norm_gc if m == 'gc' else norm_tr
             Mplot = np.ma.masked_invalid(M)
@@ -505,7 +525,8 @@ def fig_gc_matrix(arms, task, stim, out):
     cb2 = fig.colorbar(sm2, ax=axes[:, len(bands):].ravel().tolist(), shrink=0.5, pad=0.01, location='bottom')
     cb2.set_label('net Diff-TRGC: sign(task − baseline) × −log10 cluster p (two-tailed); red = more row→col in task', fontsize=8)
     n_note = ', '.join(f'{k}: n = {v}' for k, v in n_subj_note.items())
-    fig.suptitle(f'GC task vs baseline, {task} / {stim} — order 10, 40 ms @ 500 Hz, no normalization, 1 PC (vertex) / 3 PCs (DeFleCT)\n'
+    arm_desc = '; '.join(f"{a['label']}: {a['n_pcs']} PC, normalize {a['normalize']}, reports {'+'.join(a['measures'])}" for a in arms)
+    fig.suptitle(f'GC task vs baseline, {task} / {stim} — order 10, 40 ms @ 500 Hz; {arm_desc}\n'
                  f'cell = smallest cluster p of that edge × band within the stats pass; * p < .05 within edge, ** survives FDR over the 120-test family; '
                  f'gray = no cluster. {n_note}', fontsize=9)
     f = out / f'gc_matrix_{task}_{stim}.png'
@@ -519,8 +540,9 @@ def _gc_series(df, measure, src, tgt, band):
 
 
 def fig_gc_trgc(arms, task, stim, out):
+    arms = [a for a in arms if 'dtrgc' in a['measures']]
     dfs = {a['label']: load_gc(a, task, stim, 'group_stats') for a in arms}
-    if all(v is None for v in dfs.values()):
+    if not arms or all(v is None for v in dfs.values()):
         return None
     fig, axes = plt.subplots(len(PAIRS), len(BANDS), figsize=(4.2 * len(BANDS), 1.9 * len(PAIRS)),
                              sharex=True, layout='constrained', squeeze=False)
@@ -624,6 +646,7 @@ def gc_summary_rows(arms, task, stim):
             if df is None:
                 continue
             et = edge_table(df)
+            et = et[et.measure.isin(a['measures'])].copy()
             et.insert(0, 'pass', pass_label(p)); et.insert(0, 'arm', a['label'])
             et.insert(0, 'stim', stim); et.insert(0, 'task', task)
             rows.append(et)
@@ -633,7 +656,8 @@ def gc_summary_rows(arms, task, stim):
 # ─────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--arms', nargs='+', default=DEFAULT_ARMS, help='label=method:feature_mode[:n_pcs]; first = reference')
+    ap.add_argument('--arms', nargs='+', default=DEFAULT_ARMS,
+                    help='label=method:feature_mode[:n_pcs[:normalize[:gc|dtrgc|gc+dtrgc]]]; first = reference')
     ap.add_argument('--tasks', nargs='+', default=['overtProd', 'perception'])
     ap.add_argument('--stage', choices=['decoding', 'gc', 'all'], default='all')
     ap.add_argument('--out-dir', default=None)
@@ -696,7 +720,8 @@ def main():
                     continue
                 fig_gc_trgc(arms, task, stim, out)
                 for a in arms:
-                    fig_gc_directed(a, task, stim, out)
+                    if 'gc' in a['measures']:
+                        fig_gc_directed(a, task, stim, out)
                 all_rows += gc_summary_rows(arms, task, stim)
         if all_rows:
             g = pd.concat(all_rows, ignore_index=True)

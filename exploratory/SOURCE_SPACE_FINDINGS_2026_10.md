@@ -321,5 +321,12 @@ result.
   `FEAT=deflect_null4_other_rois_sm METHODS="dSPM_snr10" N_PCS=3 bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_deflect_sm.log`
   — if Superior Parietal keeps its perception/percDiff peak with the strip
   nulled it is parietal, if it falls to the others' level it was central;
-  (c) read DeFleCT GC through TRGC only, or rerun its GC with
-  `--normalize demean` (ERP removal) before trusting any directed theta edge.
+  (c) one leakage control per arm (user decision 2026-10-29): the vertex
+  arm keeps directed GC + net TRGC (TRGC is its control); a DeFleCT arm has
+  its nulls as the control and reports the directed GC only, which requires
+  the evoked response removed first (finding 10: with `normalize none` the
+  DeFleCT directed theta GC is the ERP in every edge). Rerun the DeFleCT GC
+  as `FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 NORMALIZE=demean TRGC=0
+  STEPS="gc stats" bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_deflect_gc_demean.log`
+  (own `order10_win40ms_fs500_demean_pc3` directories); the review script
+  takes the arm as `deflect=dSPM_snr10:deflect:3:demean:gc`.

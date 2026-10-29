@@ -26,7 +26,11 @@
 #              the Visual control)
 #   GC         run_granger.py order 10 / 40 ms / fs 500 / normalize none /
 #              1 PC per ROI, all 10 pairs of the 5 ROIs in ONE run, --trgc so
-#              plain GC (fxy/fyx) and net TRGC are side by side
+#              plain GC (fxy/fyx) and net TRGC are side by side.  ONE leakage
+#              control per arm (2026-10-29): the vertex arm reads net TRGC;
+#              a DeFleCT arm has its nulls as the control and reads the
+#              directed GC, with the evoked response removed first:
+#                FEAT=deflect... NORMALIZE=demean TRGC=0 N_PCS=3
 #   stats      granger_stats.py: (a) sensor-faithful full-span right-tailed
 #              t vs the leading-100-ms baseline (default), (b) one pass per
 #              a-priori window of interest (config.GC_WINDOWS_OF_INTEREST)
@@ -53,6 +57,8 @@
 #   DEC_JOBS  64         (ROI x window) workers for run_decode.py
 #   GC_JOBS   10         pair workers inside run_granger.py (10 pairs)
 #   ORDER / WIN_MS / TARGET_FS   10 / 40 / 500 (the sensor BSMART config)
+#   NORMALIZE none      run_granger --normalize (demean = ERP removed; own GC tag/dirs)
+#   TRGC      1         0 = directed GC only (DeFleCT arms)
 #   LEAK      ""         set to "--leakage-correction" for the double-corrected arm
 #   DRY_RUN   0          1 = print commands only
 #
@@ -119,6 +125,8 @@ WIN_MS="${WIN_MS:-40}"
 TARGET_FS="${TARGET_FS:-500}"
 CLASSIFIER="${CLASSIFIER:-logistic}"
 N_PCS="${N_PCS:-1}"           # components per ROI for GC (<= k for a DeFleCT arm)
+NORMALIZE="${NORMALIZE:-none}"   # run_granger --normalize: none (sensor-faithful) | demean (ERP removed)
+TRGC="${TRGC:-1}"             # 1 = also compute net TRGC (the vertex arm's leakage control); 0 = directed GC only (DeFleCT arm)
 STEPS="${STEPS:-localize decode latency gc stats}"
 EDGE_GUARD="${EDGE_GUARD:-30}"
 TAIL_GUARD="${TAIL_GUARD:-50}"
@@ -209,13 +217,15 @@ fi
 
 # ── 4. GC: all 10 pairs of the 5 ROIs, plain GC + TRGC ──────────────────
 if has gc; then
-echo "== gc (order $ORDER, $WIN_MS ms @ $TARGET_FS Hz, normalize none, $N_PCS PC/ROI, --trgc; ${GC_FS} Hz caches)"
+TRGC_FLAG=""; [ "$TRGC" = "1" ] && TRGC_FLAG="--trgc"
+NT=""; [ "$NORMALIZE" != "none" ] && NT="_${NORMALIZE}"
+echo "== gc (order $ORDER, $WIN_MS ms @ $TARGET_FS Hz, normalize $NORMALIZE, $N_PCS PC/ROI, trgc=$TRGC; ${GC_FS} Hz caches)"
 for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
-    run "$LOG_ROOT/gc_${T}_${S}_${M}${FT}.log" \
+    run "$LOG_ROOT/gc_${T}_${S}_${M}${FT}${NT}.log" \
         python run_granger.py --task "$T" --stim-class "$S" --method "$M" \
             --atlas "$ATLAS" --feature-mode "$FEAT" $LEAK $(fs_flag "$GC_FS") --gc-mode pairwise \
             --order "$ORDER" --win-ms "$WIN_MS" --target-fs "$TARGET_FS" \
-            --normalize none --n-pcs "$N_PCS" --trgc --n-jobs "$GC_JOBS"
+            --normalize "$NORMALIZE" --n-pcs "$N_PCS" $TRGC_FLAG --n-jobs "$GC_JOBS"
 done; done; done
 echo
 fi
@@ -224,7 +234,8 @@ fi
 if has stats; then
 echo "== stats (granger_stats.py)"
 GC_ROOT=$(python -c "from run_granger import GC_OUTPUT_ROOT, gc_tag; print(GC_OUTPUT_ROOT)")
-TAG=$(python -c "from run_granger import gc_tag; print(gc_tag($ORDER, $WIN_MS, $TARGET_FS, 'none', n_pcs=$N_PCS))")
+NT=""; [ "$NORMALIZE" != "none" ] && NT="_${NORMALIZE}"
+TAG=$(python -c "from run_granger import gc_tag; print(gc_tag($ORDER, $WIN_MS, $TARGET_FS, '$NORMALIZE', n_pcs=$N_PCS))")
 WINDOWS=$(python - <<'EOF'
 from config import GC_WINDOWS_OF_INTEREST
 for task, d in GC_WINDOWS_OF_INTEREST.items():
@@ -237,14 +248,14 @@ for T in $TASKS; do for S in $STIMS; do for M in $METHODS; do
     D="$GC_ROOT/$T/$M/$ATLAS/$FEAT/$LEAK_TAG/$TAG/all_rois/$S"
     if [ ! -d "$D" ] && [ "$DRY_RUN" != "1" ]; then echo "  MISSING $D"; continue; fi
     # (a) sensor-faithful: leading-100 ms baseline, whole task span, right-tailed t
-    run "$LOG_ROOT/stats_${T}_${S}_${M}${FT}_full.log" \
+    run "$LOG_ROOT/stats_${T}_${S}_${M}${FT}${NT}_full.log" \
         python granger_stats.py --gc-dir "$D" --out-dir "$D/group_stats" \
             --edge-guard "$EDGE_GUARD" --tail-guard "$TAIL_GUARD" --n-jobs "$STATS_JOBS"
     # (b) clean baseline + each a-priori window of interest
     BL=$(bl_for "$T")
     echo "$WINDOWS" | while read -r WT WN LO HI; do
         [ "$WT" = "$T" ] || continue
-        run "$LOG_ROOT/stats_${T}_${S}_${M}${FT}_${WN}.log" \
+        run "$LOG_ROOT/stats_${T}_${S}_${M}${FT}${NT}_${WN}.log" \
             python granger_stats.py --gc-dir "$D" --out-dir "$D/group_stats_win_${WN}" \
                 --baseline-start ${BL% *} --baseline-end ${BL#* } \
                 --task-start "$LO" --task-end "$HI" \
