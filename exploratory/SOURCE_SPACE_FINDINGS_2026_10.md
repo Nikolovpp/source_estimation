@@ -291,14 +291,14 @@ result.
 
 * Keep dSPM/eLORETA (SNR 3) as the production inverse; drop LCMV.
 * Run the sharper variant as a comparison arm on sensorEquiv, both tasks:
-  `METHODS="dSPM_snr10" nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_dSPM_snr10.log 2>&1 &`
+  `METHODS="dSPM_snr10" bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_dSPM_snr10.log`
   (own caches/results under `{method} = dSPM_snr10`; resumes like the
   production arm). Whether halved cross-talk at doubled noise helps decoding
   is empirical; the resolution numbers cannot say.
 * DeFleCT is wired (2026-10-26, `deflect.py`, feature mode `deflect`): K
   virtual channels per ROI, other ROIs' topographies nulled, caches ~1 % of
   the vertex caches. Run as its own arm, decoding *and* GC:
-  `FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect.log 2>&1 &`
+  `FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_deflect.log`
   Read the decoding of this arm as the specificity test (finding 9): the
   vertex arm is the upper bound (signal reaches the ROI), the DeFleCT arm the
   lower bound (signal is the ROI's own); a region is implicated when it
@@ -312,13 +312,13 @@ result.
   check instead.
 * 2026-10-29, after finding 10: (a) rerun the missing vertex-arm GC cell on
   the workstation — `STEPS="gc stats" METHODS="dSPM" TASKS=overtProd
-  STIMS=prodDiff nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_dSPM_gc_fix.log 2>&1 &`
+  STIMS=prodDiff bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_dSPM_gc_fix.log`
   (resumes past EEGPROD4001) — and delete the stray copy
   `GC_source_space/dSPM/` (an overtProd/percDiff duplicate without the task
   level) plus the decode-tree copies under `GC_source_space/{task}/{method}/
   sensorEquiv/*/raw/no_pseudo/`; (b) run the sensorimotor-null variant (finding 11: the only
   adjacent null that works at 64 channels), both tasks, decoding + GC:
-  `FEAT=deflect_null4_other_rois_sm METHODS="dSPM_snr10" N_PCS=3 nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect_sm.log 2>&1 &`
+  `FEAT=deflect_null4_other_rois_sm METHODS="dSPM_snr10" N_PCS=3 bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_deflect_sm.log`
   — if Superior Parietal keeps its perception/percDiff peak with the strip
   nulled it is parietal, if it falls to the others' level it was central;
   (c) read DeFleCT GC through TRGC only, or rerun its GC with

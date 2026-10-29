@@ -62,8 +62,8 @@
 # of ROI_TIMESERIES_SAVE_ROOT first.
 #
 #   conda activate mne           # the script activates it itself
-#   # detach it from the terminal/tmux so a crashed session does not kill it:
-#   nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_driver.log 2>&1 &
+#   # run it inside a tmux session on the workstation:
+#   bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_driver.log
 #   tail -f logs/translation_arm_driver.log
 #   STEPS=localize METHODS="dSPM" bash exploratory/run_translation_arm.sh
 #   STEPS="gc stats" TASKS=overtProd bash exploratory/run_translation_arm.sh
@@ -81,7 +81,7 @@
 # (dSPM_snr10 -> 10).  Caches are ~1 % of the vertex caches and the decode
 # stage is correspondingly faster (3 features instead of 200).  Logs carry the
 # feature mode in their name.  GC uses N_PCS components per ROI (<= k).
-#   FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 nohup bash exploratory/run_translation_arm.sh > logs/translation_arm_deflect.log 2>&1 &
+#   FEAT=deflect METHODS="dSPM_snr10" N_PCS=3 bash exploratory/run_translation_arm.sh 2>&1 | tee logs/translation_arm_deflect.log
 #
 # REGULARIZATION VARIANTS (2026-10-26, from the resolution sweep). A method
 # may carry an _snr<N> suffix: METHODS="dSPM_snr10" runs the same pipeline
