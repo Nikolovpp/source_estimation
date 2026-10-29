@@ -128,6 +128,9 @@ the workstation run order and the decision rule.
   region (own, right mirror, auditory, sensorimotor strip, rest) and gives
   per-vertex sensitivity ratios, for dSPM (per-subject baseline CTFs) and the
   DeFleCT banks (template leadfield) → `RESOLUTION_ANALYSIS/{task}/ctf_region_*`
+- `plot_sensorequiv_rois.py` — brain maps of the five sensorEquiv composites
+  and the HCPMMP1 sensorimotor strip (overview, speech ROIs + strip, one
+  figure per ROI with its parcels in separate colors) → `ROI_maps/sensorEquiv/`
 - `run_resolution_sweep.sh` — workstation driver: baseline
   `resolution_analysis.py` + `resolution_sweep.py` + report for both tasks.
 - `INVERSE_OPTIMIZATION_PLAN.md` — the plan behind the three scripts above.
