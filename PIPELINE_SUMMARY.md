@@ -41,7 +41,8 @@ when brain regions discriminate between stimulus classes.
 | `deflect.py` | DeFleCT ROI filter banks (the `deflect*` feature mode) |
 | `qc/resolution_analysis.py` (+ `resolution_sweep*.py`, `resolution_subject_qc.py`, `run_resolution_sweep.sh`) | QC: cross-talk / point-spread of the inverse per ROI, inverse-settings sweep, per-subject flags |
 | `qc/decode_onset_latency.py` | QC: decoding timing per ROI against a control ROI |
-| `exploratory/` | One-off analyses, sweeps and figure scripts built on the toolbox (index in `exploratory/README.md`) |
+| `run_granger_sensor.py`, `compare_gc_conditions.py` | Sensor-space GC runner (pseudo-channels); subject-paired A/B of two GC result directories |
+| `validation/validate_granger*.py` | Synthetic ground-truth checks of the GC engines |
 | `requirements.txt` | Dependency list |
 
 ---

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Inverse-model optimization: resolution baseline + settings sweep + report,
 # for both tasks.  Light (no decoding, no GC); runs alongside the decode
-# queue.  See exploratory/INVERSE_OPTIMIZATION_PLAN.md.
+# queue.
 #
 #   bash qc/run_resolution_sweep.sh 2>&1 | tee logs/resolution_sweep_driver.log
 #

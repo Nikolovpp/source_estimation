@@ -19,8 +19,7 @@
 #              40 ms: 5 samples per trial beyond the lags.
 #   TARGET_FS  rate the virtual channels are resampled to. Default 500.
 #
-#   The former theta arm (MO25 / 200 ms / fs200) is no longer run here; see
-#   exploratory/run_gc_theta_config.sh if it is needed again.
+#   The former theta arm (MO25 / 200 ms / fs200) is no longer run here.
 #
 # Settings: LCMV / custom atlas / vertex_selectkbest / leakage correction,
 # per-trial demean on, --trgc. TRGC is pairwise-only in run_granger.py, and
@@ -234,13 +233,13 @@ xargs -0 -P "$PARALLEL" -n1 bash -c 'eval "$0"' < "$CMD_FILE"
 echo
 echo "$n_total configs attempted in $(( ($(date +%s) - t0) / 60 )) min"
 echo
-echo "Then stats + review figures for these runs (same knobs, so the paths match):"
+echo "Then group stats per result directory:  python granger_stats.py --gc-dir <dir of subject .npz>"
+echo "Runs written by this call:"
 for ORDER in $ORDERS; do
     W=""
     for WIN_MS in $WINS; do fits "$ORDER" "$WIN_MS" && W="$W $WIN_MS"; done
     [ -n "$W" ] || continue
-    echo "  ORDER=$ORDER WINS=\"${W# }\" TARGET_FS=$TARGET_FS NORMALIZE=$NORMALIZE NPCS=$NPCS NPCS_ROI=\"$NPCS_ROI\" \\"
-    echo "  TASKS=\"$TASKS\" STIMS=\"$STIMS\" bash exploratory/run_gc_stats_figs.sh"
+    echo "  ORDER=$ORDER WINS=\"${W# }\" TARGET_FS=$TARGET_FS NORMALIZE=$NORMALIZE NPCS=$NPCS NPCS_ROI=\"$NPCS_ROI\" TASKS=\"$TASKS\" STIMS=\"$STIMS\""
 done
 for d in "${LOG_DIRS[@]}"; do cat "$d"/*.log 2>/dev/null; done \
     | grep 'NON-MINIMUM-PHASE\|consistency:\|\[fixpc\]' | sort | uniq -c | sort -rn | head -20

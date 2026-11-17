@@ -28,7 +28,7 @@ Needed only for specific features:
 |----------|----------|
 | repo root | The toolbox: core modules, the active runners, the GC pipeline, stats/visualization |
 | `qc/` | Quality-control stages: spatial resolution of the inverse, regional specificity of decoding ([Quality Control](#quality-control-qc), `qc/README.md`) |
-| `exploratory/` | One-off analyses, sweeps, estimator comparisons and figure scripts built on the toolbox (`exploratory/README.md`); not required to run it |
+| `validation/` | Synthetic ground-truth checks of the Granger causality engines (`python validation/validate_granger.py`) |
 | `runners_legacy/` | Superseded runners, kept for reference and not maintained |
 
 ## Quick Start
@@ -95,7 +95,7 @@ The preprocessing exports two references per subject, under
   *full* average reference (it reconstructs the implicit recording reference as a
   zero channel, averages over all 65, then drops the reference channel).
 - **`mastoid_ref/`** — use this for the **sensor-space GC / BSMART** comparison
-  (`methods_paper/` sensor pipeline), matching the linked-mastoid convention of that
+  (`run_granger_sensor.py`), matching the linked-mastoid convention of that
   analysis.
 
 Average reference is the standard (and, in MNE, effectively required) reference for
@@ -724,7 +724,7 @@ into source space, plus a modern state-space conditional GC method.
 **Engine** (`granger.py`) — parametric MVAR spectral (Geweke) Granger causality:
 `fit_mvar` is a line-by-line port of BSMART's `armorf` (Morf's LWR estimator),
 and `pairwise_spectral_gc` reproduces BSMART's `pwcausal.m` **to machine
-precision** (verified to 2.8e-16 in `exploratory/validate_granger.py`). Also provides
+precision** (verified to 2.8e-16 in `validation/validate_granger.py`). Also provides
 Diff-TRGC (time-reversed GC; Haufe 2013 / Winkler 2016) as a source-space
 robustness control, AIC/BIC order selection, and band averaging
 (half-open, disjoint bands: theta [4,8), alpha [8,12), low-beta [12,18),
@@ -743,8 +743,8 @@ comparable across the two).
 
 Both remove common-input and mediated/indirect pathways that inflate pairwise
 GC, isolating **direct** influence. Validated on mediation-chain and
-common-driver networks (`exploratory/validate_granger_conditional.py`,
-`exploratory/validate_granger_statespace.py`).
+common-driver networks (`validation/validate_granger_conditional.py`,
+`validation/validate_granger_statespace.py`).
 
 ### ROI signal
 
@@ -770,7 +770,7 @@ python run_granger.py --task overtProd --stim-class prodDiff --method dSPM \
     --gc-mode conditional --order 10 --win-ms 40 --n-jobs 64
 
 # Sensor-space GC (reproduce the MATLAB PWGC from sensor pseudo-channels)
-python exploratory/run_granger_sensor.py --task overtProd --stim-class all \
+python run_granger_sensor.py --task overtProd --stim-class all \
     --order 10 --win-ms 40 --trgc --n-jobs 8
 
 # Group stats + figures — point it at ONE results directory (recommended).
@@ -784,7 +784,7 @@ python granger_stats.py --space source --task overtProd --stim-class prodDiff \
     --order 10 --win-ms 40 --target-fs 500
 
 # A/B two conditions (subject-paired), e.g. ERP removal on vs off
-python exploratory/compare_gc_conditions.py \
+python compare_gc_conditions.py \
     --dir-a .../order6_win60ms_fs200/rois_.../prodDiff \
     --dir-b .../order6_win60ms_fs200_demean/rois_.../prodDiff \
     --label-a raw --label-b demean
@@ -805,7 +805,7 @@ families of p-value into one CSV:
 Report the permutation columns; the pointwise ones are uncorrected across
 windows and are kept for continuity with the v3/v4 figures.
 
-`exploratory/compare_gc_conditions.py` answers a different question — *do two configs give
+`compare_gc_conditions.py` answers a different question — *do two configs give
 different numbers?* — and its headline is the **paired t on the span mean**, not
 the cluster test. A uniform offset (which is what a preprocessing knob usually
 produces) puts a sub-threshold t at every window, so cluster-mass reports a null
@@ -815,7 +815,7 @@ where the paired t is p=2e-4. The cluster/TFCE columns are there to localise
 Neither script can rescue a run with no pre-stimulus baseline: the MNE cwt
 perception runs start at about -45 ms, so their "leading 100 ms" baseline is
 mostly post-stimulus. `granger_stats.py` prints a loud warning in that case —
-use `exploratory/compare_gc_conditions.py` instead of a task-vs-baseline test there.
+use `compare_gc_conditions.py` instead of a task-vs-baseline test there.
 
 Output: per-subject `.npz` under
 `derivatives/source_estimation/GC_source_space/{task}/{method}/{atlas}/{feature_mode}/{leakage_tag}/{gc_tag}/{roiset}/{stim_class}/`
@@ -833,11 +833,11 @@ under `GC_sensor_space/`.
 | `granger.py` | MVAR fit + pairwise Geweke spectral GC + TRGC + Chen conditional GC + band averaging |
 | `granger_statespace.py` | State-space conditional GC (Barnett & Seth 2015; MVGC port) |
 | `run_granger.py` | Source-space runner (`--gc-mode pairwise\|conditional`) |
-| `exploratory/run_granger_sensor.py` | Sensor-space runner (pseudo-channels; reproduces MATLAB PWGC) |
+| `run_granger_sensor.py` | Sensor-space runner (pseudo-channels; reproduces MATLAB PWGC) |
 | `granger_mne.py`, `run_granger_mne.py` | MNE-Connectivity estimator and its runner (wavelet CSD → VAR; same output schema) |
 | `granger_stats.py` | Group aggregation, task-vs-baseline stats (pointwise t/signrank + cluster & TFCE permutation), per-edge figures |
-| `exploratory/compare_gc_conditions.py` | Subject-paired A/B of two GC result directories (any two configs or estimators) |
-| `exploratory/validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |
+| `compare_gc_conditions.py` | Subject-paired A/B of two GC result directories (any two configs or estimators) |
+| `validation/validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |
 
 ### Alternative estimator: MNE-Connectivity GC
 
@@ -873,46 +873,6 @@ Three rules for using it:
 - **No short windows.** The cross-spectrum is nonparametric, so each band needs
   about two cycles inside `--win-ms` (theta 500 ms, alpha 250 ms). The 40–80 ms
   windows of the parametric `granger.py` path are out of reach here.
-
-### GC route comparison — reading the outputs
-
-`exploratory/run_granger_routes.py` writes one `.npz` per subject; `exploratory/granger_routes_stats.py`
-turns a config directory into three CSVs (`missingness`, `arm_contrast`,
-`mediation`).
-
-**Read the missingness report first — it is printed before anything else.**
-This pipeline normally produces no NaN at all, so a NaN is a signal rather than
-noise, and it is **not missing at random**. A (window, edge) cell is marked NaN
-when the estimator cannot support the fit: a singular MVAR, an ill-conditioned
-DARE (scipy's "generalized Schur form" error), or a failed reduced-model
-regression. Those failures concentrate precisely where samples-per-parameter is
-worst — high order, short window, few trials.
-
-The consequence matters for the order sweep in particular: averaging over
-surviving windows at a high order would use a *biased subsample* — the windows
-that happened to be well conditioned — and could make a high order look better
-behaved than it is, inverting the conclusion. So every statistic reports
-`n_valid` and `nan_frac` next to the estimate, cells above `--max-nan-frac`
-(default 0.20) are excluded from group tests and listed by name, and the arm
-contrast is computed only on windows where **both** arms are finite, so the two
-are never compared on different subsets.
-
-If the report reads 0% everywhere, which is the usual case, none of this bites
-and the numbers are the plain ones.
-
-```bash
-python exploratory/granger_routes_stats.py --gc-dir <GC_routes/.../win60ms_order6_fs200_pc1/prodDiff>
-```
-
-| column | meaning |
-|---|---|
-| `nan_frac`, `n_valid` | how much of the cell survived, and how many subjects entered the test |
-| `ratio_par_over_ss` | parametric ÷ state-space; 1.0 means the reduced model made no difference |
-| `M` | mediation index `1 - F(a->c|b)/F(a->c)`; ~1 means `b` explains the influence away |
-| `family` | `primary` (pre-registered triples) and `exploratory` are FDR-corrected separately |
-
-Mediation and common-drive both push `M` toward 1, so a serial chain needs both
-legs to carry influence — `M` alone is necessary, not sufficient.
 
 ## Quality Control (`qc/`)
 

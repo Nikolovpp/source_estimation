@@ -1,13 +1,12 @@
 # qc/
 
 Quality-control stages of the toolbox: checks that say how far a result can
-be trusted, as opposed to the pipeline that produces it (repo root) or the
-one-off analyses built on it (`exploratory/`).
+be trusted, as opposed to the pipeline that produces it (repo root).
 
-Conventions are the same as `exploratory/`: every script inserts the repo
+Every script inserts the repo
 root into `sys.path` and the shell driver `cd`s to the repo root, so
 everything runs from anywhere as `python qc/<script>.py`. Nothing at the repo
-root imports from `qc/`; `qc/` never imports from `exploratory/`.
+root imports from `qc/`.
 
 ## Spatial resolution of the inverse
 

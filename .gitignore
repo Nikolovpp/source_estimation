@@ -34,3 +34,8 @@ Thumbs.db
 .vscode/
 .idea/
 CLAUDE.md
+
+# Personal manuscript analyses and methods-paper side projects: kept on disk,
+# not part of the public toolbox (they consume it; nothing in it needs them).
+exploratory/
+methods_paper/

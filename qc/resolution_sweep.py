@@ -2,7 +2,7 @@
 """
 Inverse-model optimization sweep: ROI resolution metrics across inverse
 settings, so the inverse is chosen on resolvability BEFORE the expensive
-decoding / GC runs (exploratory/INVERSE_OPTIMIZATION_PLAN.md).
+decoding / GC runs.
 
 Every configuration is scored with the same ROI-level cross-talk machinery
 as qc/resolution_analysis.py (CTF = w_i^T K_i P G), plus two

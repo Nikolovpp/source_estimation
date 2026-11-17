@@ -408,7 +408,7 @@ def pairwise_spectral_gc(X, order, freqs, fs, return_model=False):
     This is a verified byte-faithful port of BSMART ``pwcausal.m`` +
     ``spectrum.m``: the ``1/fs`` scaling BSMART applies to ``S`` (and to
     the subtracted term) cancels in the log-ratio, so the values are
-    identical to machine precision (see ``validate_granger.py``,
+    identical to machine precision (see ``validation/validate_granger.py``,
     ``test_matches_bsmart_pwcausal``).
 
     Geweke (1982) / Ding, Chen & Bressler (2006), Eqs. for the bivariate
@@ -492,7 +492,7 @@ def _block_gc_direction(H, S, Sigma, src, tgt):
     groups this is exactly the bivariate formula in
     ``pairwise_spectral_gc`` (``s_yy - s_xy^2/s_xx`` times ``|H_xy|^2``),
     so the scalar path and the block path agree to machine precision
-    (``exploratory/validate_granger_block.py``).
+    (``validation/validate_granger_block.py``).
     """
     src = list(src)
     tgt = list(tgt)

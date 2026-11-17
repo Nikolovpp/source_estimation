@@ -753,7 +753,7 @@ GC_TASK_START = {
 # SUPERSEDED for granger_stats.py (2026-10-10): it now derives the task end
 # from the data as last window start - TAIL_GUARD_MS (50 ms), which is
 # window-length independent; this fixed value let 80 ms windows run to the
-# epoch end.  Still read by run_granger_mne.py (crop) and a few exploratory
+# epoch end.  Still read by run_granger_mne.py (crop) and a few
 # figure scripts.
 #   perception epoch end +0.6 s (last window start +0.56)
 #   overtProd  epoch end +0.4 s (last window start +0.36)
@@ -770,7 +770,7 @@ GC_TASK_END = {
 #              preonset  -0.5..0.0   pre-articulatory planning up to onset
 #   perception auditory   0.15..0.30 post-stimulus auditory-phonological window
 # granger_stats.py takes them as --task-start/--task-end; the translation-arm
-# driver (exploratory/run_translation_arm.sh) runs one stats pass per window.
+# driver runs one stats pass per window.
 GC_WINDOWS_OF_INTEREST = {
     'overtProd': {'phonloop': (-1.200, -0.800), 'preonset': (-0.500, 0.000)},
     'perception': {'auditory': (0.150, 0.300)},

@@ -108,7 +108,7 @@ from config import (SUBJECT_IDS, SPEECH_ROIS, VISUAL_CONTROL_ROI,
 
 OUT_ROOT = PROJECT_ROOT / 'derivatives' / 'source_estimation' / 'RESOLUTION_ANALYSIS'
 
-# The manuscript's sensor-space pseudo-channels (exploratory/run_granger_sensor.py)
+# The manuscript's sensor-space pseudo-channels (run_granger_sensor.py)
 SENSOR_PSEUDOCHANNELS = {
     'Temporal':          ['FT7', 'T7', 'TP7'],
     'Inferior_Frontal':  ['F5', 'FC5', 'FC3'],
