@@ -486,7 +486,7 @@ SPEECH_ROIS['sensorEquiv'] = {
     ],
 }
 # Visual-cortex control ROIs for the standard atlases (used by
-# exploratory/resolution_analysis.py and decode_onset_latency.py; NOT part
+# qc/resolution_analysis.py and decode_onset_latency.py; NOT part
 # of SPEECH_ROIS, so existing HCPMMP1/Schaefer/aparc caches stay valid).
 # sensorEquiv + 'Sensorimotor' = the pre/postcentral strip (areas 4, 3a, 3b,
 # 1, 2; the DeFleCT '*_sm' null region, DEFLECT_SM_PARCELS below).  With the

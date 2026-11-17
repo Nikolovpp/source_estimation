@@ -1,0 +1,23 @@
+# Source estimation / decoding / Granger causality toolbox.
+# Minimum versions are the ones the code was last verified with (Python 3.12);
+# older releases may work but are untested.
+#   pip install -r requirements.txt
+
+# ── core pipeline (source localization, decoding, GC, stats) ──
+mne>=1.10
+numpy>=2.3
+scipy>=1.16
+scikit-learn>=1.7
+pandas>=2.3
+matplotlib>=3.10
+joblib>=1.5
+mat73>=0.65            # EEGLAB v7.3 .mat import (data_loader.py)
+python-dotenv>=1.2     # config.env (config.py)
+statsmodels>=0.14      # FDR in source_stats_viz.py
+seaborn>=0.13          # figures in source_stats_viz.py
+
+# ── needed only for specific features ──
+nilearn>=0.12          # --atlas custom: volumetric NIfTI -> surface projection
+mne-connectivity>=0.8  # run_granger_mne.py / granger_mne.py (MNE GC estimator)
+pyvista>=0.46          # brain renderings: visualize_rois.py, qc --brain-maps
+pyvistaqt>=0.11        # interactive 3-D windows (visualize_rois.py)

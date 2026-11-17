@@ -1,14 +1,35 @@
-# Source Estimation + SVM Decoding Pipeline
+# eeg-source-dynamics
 
-Projects 64-channel BIOSEMI EEG data into source space using the fsaverage template anatomy, then runs sliding-window SVM decoding within cortical ROIs.
+Time-resolved analysis of EEG in source space. Projects 64-channel BIOSEMI EEG data onto the cortex using the fsaverage template anatomy, then runs sliding-window decoding within cortical ROIs, directed connectivity (Granger causality) between them, and quality-control checks on how well the ROIs can be separated.
 
 ## Requirements
 
-- Python 3.9+
-- MNE-Python 1.x (`pip install mne`)
-- scikit-learn
-- mat73 (`pip install mat73`)
+Python 3.9+ (verified on 3.12). Install everything with
+`pip install -r requirements.txt`.
+
+Core pipeline (source localization, decoding, Granger causality, stats):
+
+- MNE-Python 1.x (`mne`)
 - numpy, scipy, pandas, matplotlib
+- scikit-learn, joblib
+- mat73 (EEGLAB v7.3 `.mat` import)
+- python-dotenv (`config.env`)
+- statsmodels, seaborn (`source_stats_viz.py`)
+
+Needed only for specific features:
+
+- nilearn — `--atlas custom` (volumetric NIfTI → surface projection)
+- mne-connectivity ≥ 0.8 — the MNE GC estimator (`run_granger_mne.py`)
+- pyvista, pyvistaqt — brain renderings (`visualize_rois.py`, `--brain-maps` in `qc/`)
+
+## Repository layout
+
+| Location | Contents |
+|----------|----------|
+| repo root | The toolbox: core modules, the active runners, the GC pipeline, stats/visualization |
+| `qc/` | Quality-control stages: spatial resolution of the inverse, regional specificity of decoding ([Quality Control](#quality-control-qc), `qc/README.md`) |
+| `exploratory/` | One-off analyses, sweeps, estimator comparisons and figure scripts built on the toolbox (`exploratory/README.md`); not required to run it |
+| `runners_legacy/` | Superseded runners, kept for reference and not maintained |
 
 ## Quick Start
 
@@ -703,7 +724,7 @@ into source space, plus a modern state-space conditional GC method.
 **Engine** (`granger.py`) — parametric MVAR spectral (Geweke) Granger causality:
 `fit_mvar` is a line-by-line port of BSMART's `armorf` (Morf's LWR estimator),
 and `pairwise_spectral_gc` reproduces BSMART's `pwcausal.m` **to machine
-precision** (verified to 2.8e-16 in `validate_granger.py`). Also provides
+precision** (verified to 2.8e-16 in `exploratory/validate_granger.py`). Also provides
 Diff-TRGC (time-reversed GC; Haufe 2013 / Winkler 2016) as a source-space
 robustness control, AIC/BIC order selection, and band averaging
 (half-open, disjoint bands: theta [4,8), alpha [8,12), low-beta [12,18),
@@ -722,8 +743,8 @@ comparable across the two).
 
 Both remove common-input and mediated/indirect pathways that inflate pairwise
 GC, isolating **direct** influence. Validated on mediation-chain and
-common-driver networks (`validate_granger_conditional.py`,
-`validate_granger_statespace.py`).
+common-driver networks (`exploratory/validate_granger_conditional.py`,
+`exploratory/validate_granger_statespace.py`).
 
 ### ROI signal
 
@@ -749,7 +770,7 @@ python run_granger.py --task overtProd --stim-class prodDiff --method dSPM \
     --gc-mode conditional --order 10 --win-ms 40 --n-jobs 64
 
 # Sensor-space GC (reproduce the MATLAB PWGC from sensor pseudo-channels)
-python run_granger_sensor.py --task overtProd --stim-class all \
+python exploratory/run_granger_sensor.py --task overtProd --stim-class all \
     --order 10 --win-ms 40 --trgc --n-jobs 8
 
 # Group stats + figures — point it at ONE results directory (recommended).
@@ -763,7 +784,7 @@ python granger_stats.py --space source --task overtProd --stim-class prodDiff \
     --order 10 --win-ms 40 --target-fs 500
 
 # A/B two conditions (subject-paired), e.g. ERP removal on vs off
-python compare_gc_conditions.py \
+python exploratory/compare_gc_conditions.py \
     --dir-a .../order6_win60ms_fs200/rois_.../prodDiff \
     --dir-b .../order6_win60ms_fs200_demean/rois_.../prodDiff \
     --label-a raw --label-b demean
@@ -784,7 +805,7 @@ families of p-value into one CSV:
 Report the permutation columns; the pointwise ones are uncorrected across
 windows and are kept for continuity with the v3/v4 figures.
 
-`compare_gc_conditions.py` answers a different question — *do two configs give
+`exploratory/compare_gc_conditions.py` answers a different question — *do two configs give
 different numbers?* — and its headline is the **paired t on the span mean**, not
 the cluster test. A uniform offset (which is what a preprocessing knob usually
 produces) puts a sub-threshold t at every window, so cluster-mass reports a null
@@ -794,7 +815,7 @@ where the paired t is p=2e-4. The cluster/TFCE columns are there to localise
 Neither script can rescue a run with no pre-stimulus baseline: the MNE cwt
 perception runs start at about -45 ms, so their "leading 100 ms" baseline is
 mostly post-stimulus. `granger_stats.py` prints a loud warning in that case —
-use `compare_gc_conditions.py` instead of a task-vs-baseline test there.
+use `exploratory/compare_gc_conditions.py` instead of a task-vs-baseline test there.
 
 Output: per-subject `.npz` under
 `derivatives/source_estimation/GC_source_space/{task}/{method}/{atlas}/{feature_mode}/{leakage_tag}/{gc_tag}/{roiset}/{stim_class}/`
@@ -812,14 +833,50 @@ under `GC_sensor_space/`.
 | `granger.py` | MVAR fit + pairwise Geweke spectral GC + TRGC + Chen conditional GC + band averaging |
 | `granger_statespace.py` | State-space conditional GC (Barnett & Seth 2015; MVGC port) |
 | `run_granger.py` | Source-space runner (`--gc-mode pairwise\|conditional`) |
-| `run_granger_sensor.py` | Sensor-space runner (pseudo-channels; reproduces MATLAB PWGC) |
+| `exploratory/run_granger_sensor.py` | Sensor-space runner (pseudo-channels; reproduces MATLAB PWGC) |
+| `granger_mne.py`, `run_granger_mne.py` | MNE-Connectivity estimator and its runner (wavelet CSD → VAR; same output schema) |
 | `granger_stats.py` | Group aggregation, task-vs-baseline stats (pointwise t/signrank + cluster & TFCE permutation), per-edge figures |
-| `compare_gc_conditions.py` | Subject-paired A/B of two GC result directories (any two configs or estimators) |
-| `validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |
+| `exploratory/compare_gc_conditions.py` | Subject-paired A/B of two GC result directories (any two configs or estimators) |
+| `exploratory/validate_granger*.py` | Validation suites (45 checks: engine=BSMART, conditional, state-space) |
+
+### Alternative estimator: MNE-Connectivity GC
+
+`run_granger_mne.py` (engine `granger_mne.py`) runs the same ROI caches through
+`mne_connectivity.spectral_connectivity_epochs(method=["gc", "gc_tr"])` in
+continuous-wavelet mode, and writes the same `.npz` schema as `run_granger.py`,
+so `granger_stats.py` reads either. Requires `mne-connectivity`.
+
+```bash
+python run_granger_mne.py --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas custom --preset A --n-pcs 2 --trgc --n-jobs 8
+```
+
+What it is: wavelet cross-spectral density → autocovariance → VAR(`gc_n_lags`)
+→ Geweke GC. It is **not** the state-space GC of Barnett & Seth (2015), and
+`gc_n_lags` is the VAR model order. The difference from `granger.py` is that
+the VAR comes from a wavelet cross-spectrum, not from a least-squares fit to
+the samples.
+
+Three rules for using it:
+
+- **Estimate full-band, band-average afterwards.** MNE evaluates the model on a
+  grid that always runs DC → Nyquist, whatever frequencies were requested. A
+  band-limited grid (e.g. 4–30 Hz) is silently stretched over the full range
+  and can invert the GC direction (ground-truth VAR: true net +0.51, 4–30 Hz
+  grid −0.06, full band +0.56). The default grid is therefore DC → Nyquist;
+  `--fmin/--fmax` exist only to reproduce old runs. The grid is part of the
+  output directory tag (`..._fb` = full band); directories without a grid
+  suffix are legacy band-limited runs.
+- **Epoch length sets the lowest frequency.** MNE drops every frequency below
+  `5 · fs / n_times` without a warning: theta from 4 Hz needs a 1250 ms epoch.
+  Bands with no surviving bins come back NaN.
+- **No short windows.** The cross-spectrum is nonparametric, so each band needs
+  about two cycles inside `--win-ms` (theta 500 ms, alpha 250 ms). The 40–80 ms
+  windows of the parametric `granger.py` path are out of reach here.
 
 ### GC route comparison — reading the outputs
 
-`run_granger_routes.py` writes one `.npz` per subject; `granger_routes_stats.py`
+`exploratory/run_granger_routes.py` writes one `.npz` per subject; `exploratory/granger_routes_stats.py`
 turns a config directory into three CSVs (`missingness`, `arm_contrast`,
 `mediation`).
 
@@ -844,7 +901,7 @@ If the report reads 0% everywhere, which is the usual case, none of this bites
 and the numbers are the plain ones.
 
 ```bash
-python granger_routes_stats.py --gc-dir <GC_routes/.../win60ms_order6_fs200_pc1/prodDiff>
+python exploratory/granger_routes_stats.py --gc-dir <GC_routes/.../win60ms_order6_fs200_pc1/prodDiff>
 ```
 
 | column | meaning |
@@ -856,3 +913,58 @@ python granger_routes_stats.py --gc-dir <GC_routes/.../win60ms_order6_fs200_pc1/
 
 Mediation and common-drive both push `M` toward 1, so a serial chain needs both
 legs to carry influence — `M` alone is necessary, not sufficient.
+
+## Quality Control (`qc/`)
+
+Checks on how far a source-space result can be trusted. They are part of the
+toolbox but separate from the pipeline: nothing at the repo root imports from
+`qc/`. Run them from anywhere as `python qc/<script>.py`; see `qc/README.md`.
+
+### Spatial resolution of the inverse
+
+Can the montage and inverse separate the ROIs at all? `resolution_analysis.py`
+computes ROI-level cross-talk (CTF) and point-spread (PSF) functions from the
+pipeline's own inverse operators, without running decoding or GC.
+
+```bash
+# baseline: every inverse method, two ROI sets
+python qc/resolution_analysis.py --task overtProd --stim-class prodDiff \
+    --methods dSPM sLORETA eLORETA LCMV --atlases custom sensorEquiv --n-jobs 4
+
+# inverse-settings sweep + report + per-subject QC
+python qc/resolution_sweep.py --task overtProd --stim-class prodDiff --n-jobs 8
+python qc/resolution_sweep_report.py --task overtProd --stim-class prodDiff
+python qc/resolution_subject_qc.py --task overtProd --stim-class prodDiff
+
+# or all of it for both tasks
+bash qc/run_resolution_sweep.sh 2>&1 | tee logs/resolution_sweep_driver.log
+```
+
+| Metric | Meaning |
+|--------|---------|
+| `se_own` | Fraction of an ROI's cross-talk energy that lies inside the ROI |
+| `peak_in_roi`, `peak_dist_mm` | Whether the CTF peak is inside the ROI, and how far away if not |
+| `sd_mm` | Spatial dispersion of the CTF around the ROI |
+| `pattern_cos` | Overlap of two ROIs' CTFs = their expected zero-lag correlation under independent sources |
+| `ctf_xtalk`, `psf_xtalk` | How much of ROI *j* ends up in ROI *i*'s estimate, and vice versa |
+
+`resolution_subject_qc.py` turns the same metrics into per-subject flags
+(robust-z heatmap, noise gain per ROI, beamformer-collapse detector). The
+forward model is shared across subjects, so subject spread reflects that
+subject's noise and data covariance.
+
+### Regional specificity of decoding
+
+`decode_onset_latency.py` tests whether ROIs differ in *when* information
+appears, against a null ROI: jackknife onset and peak latencies, an
+ROI-vs-control cluster test over time, an ROI × time repeated-measures F, and
+fixed-window accuracy. It reads the per-subject CSVs from `run_decode.py`.
+
+```bash
+python qc/decode_onset_latency.py --task overtProd --method eLORETA \
+    --atlas sensorEquiv --classifier logistic --tune-hyperparams
+```
+
+It needs an atlas with a genuine control region (`sensorEquiv` /
+`sensorEquivSM`: `Visual`). The custom localizer spheres have none, so it does
+not apply to `--atlas custom`.

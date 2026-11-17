@@ -15,7 +15,7 @@ All return the same structure, so downstream ROI extraction and decoding
 code is shared.  ``run_inverse_lowram(method, ...)`` dispatches on the
 method name; ``make_minimum_norm_inverse`` / ``make_lcmv_filters`` expose
 the fitted operators so other tools (e.g. the resolution analysis in
-exploratory/resolution_analysis.py) can use EXACTLY the pipeline's inverse.
+qc/resolution_analysis.py) can use EXACTLY the pipeline's inverse.
 """
 import numpy as np
 import mne
@@ -360,7 +360,7 @@ def make_minimum_norm_inverse(epochs, fwd, baseline_tmin, baseline_tmax,
     orientation, depth 0.8, shrunk noise covariance from the pre-stimulus
     baseline, data-driven rank.  ``depth`` / ``loose`` / ``noise_cov_method``
     (or a precomputed ``noise_cov``) are the knobs swept by
-    exploratory/resolution_sweep.py; ``loose > 0`` gives a free-orientation
+    qc/resolution_sweep.py; ``loose > 0`` gives a free-orientation
     operator that must be applied with ``pick_ori='normal'`` to stay linear.
 
     Returns (inverse_operator, noise_cov, rank)."""
@@ -388,7 +388,7 @@ def make_lcmv_filters(epochs, fwd, baseline_tmin, baseline_tmax,
     settings: empirical data covariance from the post-baseline window,
     shrunk baseline noise covariance, max-power orientation,
     unit-noise-gain, reg 0.05, data-driven rank.  The keyword knobs are
-    swept by exploratory/resolution_sweep.py: ``data_cov_window`` 'task'
+    swept by qc/resolution_sweep.py: ``data_cov_window`` 'task'
     (post-baseline) or 'full' (whole epoch); ``noise_cov_method`` as in
     make_noise_cov, or 'none' for no noise covariance (not allowed with
     weight_norm='nai'); ``pick_ori`` 'max-power' or 'normal' (the forward

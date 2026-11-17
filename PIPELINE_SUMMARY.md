@@ -1,4 +1,4 @@
-# Source Estimation Pipeline — Summary
+# eeg-source-dynamics — Pipeline Summary
 
 ## Overview
 
@@ -35,6 +35,14 @@ when brain regions discriminate between stimulus classes.
 | `visualize_rois.py` | Interactive and publication-ready ROI visualization on fsaverage surface |
 | `explore_decoding.py` | Exploratory sweep over classifiers, window durations, and tuning strategies for a single ROI (decoding only) |
 | `explore_viz_stats.py` | Cluster-permutation stats and comparison figures from `explore_decoding.py` output |
+| `granger.py`, `granger_wilson.py`, `granger_statespace.py` | Granger causality engines: parametric MVAR (BSMART port), Wilson factorization, state-space conditional GC |
+| `run_granger.py`, `granger_stats.py`, `run_gc_final.sh` | Source-space GC runner, group statistics, final-analysis driver |
+| `granger_mne.py`, `run_granger_mne.py` | Alternative GC estimator via MNE-Connectivity (wavelet CSD → VAR), same output schema |
+| `deflect.py` | DeFleCT ROI filter banks (the `deflect*` feature mode) |
+| `qc/resolution_analysis.py` (+ `resolution_sweep*.py`, `resolution_subject_qc.py`, `run_resolution_sweep.sh`) | QC: cross-talk / point-spread of the inverse per ROI, inverse-settings sweep, per-subject flags |
+| `qc/decode_onset_latency.py` | QC: decoding timing per ROI against a control ROI |
+| `exploratory/` | One-off analyses, sweeps and figure scripts built on the toolbox (index in `exploratory/README.md`) |
+| `requirements.txt` | Dependency list |
 
 ---
 
@@ -860,6 +868,73 @@ cached, the forward model is not built at all.
 
 ---
 
+## Quality Control (`qc/`)
+
+Two checks that sit beside the pipeline and say how far its output can be
+trusted. Neither is needed to run the pipeline; both read what it produces.
+
+### Spatial resolution of the inverse (`qc/resolution_analysis.py`)
+
+With 64 channels and a template head model, source estimates of neighbouring
+ROIs overlap. The resolution analysis quantifies this from the pipeline's own
+inverse operators, per subject:
+
+    R = K P G        K  inverse kernel (n_sources × n_channels)
+                     P  average-reference projector
+                     G  fixed-orientation leadfield
+
+- **Cross-talk function (CTF)** of an ROI: what its summary time course picks
+  up from every cortical location.
+- **Point-spread function (PSF)** of an ROI: where a source inside it appears
+  after the inverse.
+
+Per ROI it reports the fraction of CTF energy inside the ROI, the peak
+location and its distance from the ROI, and the spatial dispersion. Per ROI
+pair it reports the CTF overlap (`pattern_cos`, the zero-lag correlation two
+ROI estimates would show under independent sources) and cross-talk ratios. The
+sensor pseudo-channels are scored on the same footing for a sensor-vs-source
+comparison.
+
+`resolution_sweep.py` repeats the metrics across inverse settings (DeFleCT
+filters, regularization and depth weighting, noise covariance, LCMV
+conditioning, loose orientation) together with a noise-gain measure, so that
+sharper filters can be weighed against the noise they add;
+`resolution_sweep_report.py` summarizes the sweep, and
+`resolution_subject_qc.py` flags subjects whose noise or data covariance makes
+their resolution atypical.
+
+### Regional specificity of decoding (`qc/decode_onset_latency.py`)
+
+Because every ROI inherits part of the dominant signal through cross-talk,
+differences in decoding *amplitude* between ROIs are hard to interpret. This
+check asks instead whether ROIs differ in *timing*, and whether any ROI beats a
+control region that should carry nothing task-specific: jackknife onset and
+peak latencies (Miller, Patterson & Ulrich 1998), an ROI-minus-control cluster
+permutation test over time, an ROI × time repeated-measures F, and fixed-window
+accuracy against the control. It requires an atlas with a genuine control ROI
+(`sensorEquiv` / `sensorEquivSM`: `Visual`); the custom atlas has none.
+
+---
+
+## Granger Causality Estimators
+
+The GC pipeline (`run_granger.py`, documented in `README.md`) has two
+interchangeable estimators that read the same ROI caches and write the same
+result schema:
+
+| | `granger.py` (default) | `granger_mne.py` |
+|---|---|---|
+| Model | MVAR fitted to the samples of each moving window (BSMART port) | Wavelet cross-spectral density → VAR(`gc_n_lags`) (MNE-Connectivity `gc`) |
+| Time resolution | 40–80 ms windows with a trial ensemble | About two cycles of the slowest band (theta 500 ms) |
+| Frequency grid | Any; defined at every frequency | Must span DC → Nyquist; band-average afterwards |
+| Lowest frequency | No hard floor | `5 · fs / n_times` (MNE drops lower bins silently) |
+| Extra dependency | none | `mne-connectivity` |
+
+Neither is Barnett–Seth state-space GC; that is `granger_statespace.py`, used
+for the conditional mode of `run_granger.py`.
+
+---
+
 ## Command-Line Reference
 
 ```bash
@@ -947,4 +1022,18 @@ python visualize_rois.py --mode compare --atlas Schaefer200 --save --format svg
 # Custom functional-localizer ROIs
 python visualize_rois.py --atlas custom --save --mode full --hemi lh
 python run_source_svm.py --task overtProd --stim-class prodDiff --method dSPM --atlas custom
+
+# ── Quality control ──
+
+# Resolution of the inverse (cross-talk / point-spread per ROI)
+python qc/resolution_analysis.py --task overtProd --stim-class prodDiff \
+    --methods dSPM sLORETA eLORETA LCMV --atlases custom sensorEquiv --n-jobs 4
+
+# Decoding timing per ROI against the Visual control
+python qc/decode_onset_latency.py --task overtProd --method eLORETA \
+    --atlas sensorEquiv --classifier logistic --tune-hyperparams
+
+# ── Granger causality, MNE-Connectivity estimator (full-band grid by default) ──
+python run_granger_mne.py --task overtProd --stim-class prodDiff --method dSPM \
+    --atlas custom --preset A --n-pcs 2 --trgc --n-jobs 8
 ```
